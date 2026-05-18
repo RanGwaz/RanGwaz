@@ -1,16 +1,29 @@
-## Hi there 👋
+# RanGwaz
 
-<!--
-**RanGwaz/RanGwaz** is a ✨ _special_ ✨ repository because its `README.md` (this file) appears on your GitHub profile.
+RanGwaz is a clean rebuild of an image-first social site inspired by Pinterest.
 
-Here are some ideas to get you started:
+## Modules
 
-- 🔭 I’m currently working on ...
-- 🌱 I’m currently learning ...
-- 👯 I’m looking to collaborate on ...
-- 🤔 I’m looking for help with ...
-- 💬 Ask me about ...
-- 📫 How to reach me: ...
-- 😄 Pronouns: ...
-- ⚡ Fun fact: ...
--->
+- `frontend`: React + Vite image website with masonry feed, infinite scroll, detail page, search, auth, and publish flow.
+- `backend`: Spring Boot MVC API with controller, service, mapper, entity, dto, common, config, and utility-style packages.
+- `infra`: Development middleware managed by Docker Compose.
+
+## Development
+
+1. Start middleware:
+   ```powershell
+   docker compose -f infra/docker-compose.yml up -d
+   ```
+2. Start backend from IDEA or Maven:
+   ```powershell
+   cd backend
+   mvn spring-boot:run
+   ```
+3. Start frontend:
+   ```powershell
+   cd frontend
+   npm install
+   npm run dev
+   ```
+
+The backend rebuilds the development schema on startup and seeds random image data for local work.

@@ -1,0 +1,22 @@
+# Java build output
+backend/target/
+backend-start.pid
+
+# Frontend dependencies and build output
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+
+# Local IDE and runtime files
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+backend/storage/
+
+# Environment overrides
+.env
+.env.local
+*.log
