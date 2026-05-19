@@ -1,12 +1,63 @@
 /** Pinterest-style post detail page with related masonry feed. */
-import { ArrowLeft, ChevronLeft, ChevronRight, Heart, MessageCircle, MoreHorizontal, Send, Star } from 'lucide-react'
-import { CSSProperties, FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Heart, MessageCircle, MoreHorizontal, Send } from 'lucide-react'
+import { CSSProperties, FormEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '../AuthContext'
 import { PostCard } from '../components/PostCard'
 import { api } from '../services/api'
 import type { CommentView, PostView } from '../types'
-import { avatarUrl, countText, distributePosts, postCover, relativeTime } from '../utils/format'
+import { aspectRatio, avatarUrl, countText, postCover, relativeTime } from '../utils/format'
+
+const DETAIL_BACK_COLUMN_WIDTH = 52
+const DETAIL_GRID_GAP = 16
+const DETAIL_TARGET_COLUMN_WIDTH = 240
+const DETAIL_MAX_COLUMNS = 24
+const DETAIL_MAX_PANEL_COLUMNS = 5
+const DETAIL_CARD_CHROME_HEIGHT = 82
+
+/** Clamp a number into an inclusive range. */
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
+}
+
+/** Resolve Pinterest-like fluid columns from the available detail canvas width. */
+function resolveDetailGrid(containerWidth: number) {
+  const pinAreaWidth = Math.max(260, containerWidth - DETAIL_BACK_COLUMN_WIDTH - DETAIL_GRID_GAP)
+  const totalColumns = clampNumber(
+    Math.floor((pinAreaWidth + DETAIL_GRID_GAP) / (DETAIL_TARGET_COLUMN_WIDTH + DETAIL_GRID_GAP)),
+    1,
+    DETAIL_MAX_COLUMNS,
+  )
+  const columnWidth = (pinAreaWidth - (totalColumns - 1) * DETAIL_GRID_GAP) / totalColumns
+  const maxPanelColumns = totalColumns >= 5 ? Math.min(DETAIL_MAX_PANEL_COLUMNS, totalColumns - 2) : Math.max(1, totalColumns - 1)
+  const panelColumns = totalColumns >= 5 ? clampNumber(Math.round(totalColumns * 0.44), 3, maxPanelColumns) : maxPanelColumns
+  return { columnWidth, panelColumns, totalColumns }
+}
+
+/** Estimate rendered card height for the masonry packer. */
+function estimateCardHeight(post: PostView, columnWidth: number) {
+  const [w, h] = aspectRatio(post).split('/').map((item) => Number(item.trim()))
+  const ratio = Number.isFinite(w) && Number.isFinite(h) && w > 0 ? h / w : 1.35
+  return Math.max(136, columnWidth * ratio) + DETAIL_CARD_CHROME_HEIGHT
+}
+
+/** Pack related posts into shortest columns, reserving the detail panel footprint. */
+function layoutRelatedPosts(posts: PostView[], count: number, reservedColumns: number, panelHeight: number, anchorHeight: number, columnWidth: number) {
+  const safeCount = Math.max(1, count)
+  const reservedHeight = anchorHeight > 0 ? anchorHeight + DETAIL_GRID_GAP : 0
+  const reservedDelta = Math.max(0, panelHeight - anchorHeight)
+  const heights = Array.from({ length: safeCount }, (_, index) => (index < reservedColumns ? reservedHeight : 0))
+  const items = posts.map((post) => {
+    const cardHeight = estimateCardHeight(post, columnWidth)
+    const columnIndex = heights.reduce((minIndex, height, index) => (height < heights[minIndex] ? index : minIndex), 0)
+    const x = columnIndex * (columnWidth + DETAIL_GRID_GAP)
+    const y = heights[columnIndex] + (columnIndex < reservedColumns ? reservedDelta : 0)
+    heights[columnIndex] += cardHeight + DETAIL_GRID_GAP
+    return { height: cardHeight, post, width: columnWidth, x, y }
+  })
+  const height = Math.max(...heights.map((height, index) => height + (index < reservedColumns ? reservedDelta : 0)), 1)
+  return { height, items }
+}
 
 export function DetailPage() {
   const { id } = useParams()
@@ -19,17 +70,32 @@ export function DetailPage() {
   const [following, setFollowing] = useState(false)
   const [draft, setDraft] = useState('')
   const [activeAsset, setActiveAsset] = useState(0)
+  const [commentsOpen, setCommentsOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [relatedPage, setRelatedPage] = useState(1)
   const [relatedTotal, setRelatedTotal] = useState(0)
-  const [relatedColumns, setRelatedColumns] = useState(3)
+  const [relatedColumns, setRelatedColumns] = useState(6)
+  const [reservedColumns, setReservedColumns] = useState(3)
+  const [columnWidth, setColumnWidth] = useState(260)
+  const [panelHeight, setPanelHeight] = useState(0)
+  const [layoutAnchorHeight, setLayoutAnchorHeight] = useState(0)
   const [lightbox, setLightbox] = useState(false)
+  const mainRef = useRef<HTMLElement | null>(null)
+  const panelRef = useRef<HTMLElement | null>(null)
   const sentinelRef = useRef<HTMLDivElement | null>(null)
   const navigate = useNavigate()
   const auth = useAuth()
 
-  const relatedMasonry = useMemo(() => distributePosts(related, relatedColumns), [related, relatedColumns])
+  const relatedLayout = useMemo(
+    () => layoutRelatedPosts(related, relatedColumns, reservedColumns, panelHeight, layoutAnchorHeight, columnWidth),
+    [related, relatedColumns, reservedColumns, panelHeight, layoutAnchorHeight, columnWidth],
+  )
   const hasMoreRelated = related.length < relatedTotal || relatedTotal === 0
+  const relatedReady = layoutAnchorHeight > 0 && related.length > 0
+
+  useLayoutEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' })
+  }, [postId])
 
   useEffect(() => {
     if (!Number.isFinite(postId) || postId <= 0) return
@@ -39,10 +105,11 @@ export function DetailPage() {
     setRelated([])
     setRelatedPage(1)
     setActiveAsset(0)
+    setCommentsOpen(false)
     Promise.all([
       api.postDetail(postId),
       api.commentsPage(postId, 1, 12),
-      api.similarPosts(postId, 1, 18),
+      api.similarPosts(postId, 1, 36),
     ]).then(([detail, commentPage, relatedPageData]) => {
       setPost(detail)
       setComments(commentPage.records)
@@ -67,21 +134,49 @@ export function DetailPage() {
   }, [auth.user, post])
 
   useEffect(() => {
-    function update() {
-      const width = window.innerWidth
-      setRelatedColumns(width >= 1320 ? 3 : width >= 820 ? 2 : 1)
+    const target = mainRef.current
+    if (!target) return
+    const update = () => {
+      const grid = resolveDetailGrid(target.clientWidth)
+      setRelatedColumns(grid.totalColumns)
+      setReservedColumns(grid.panelColumns)
+      setColumnWidth(grid.columnWidth)
     }
     update()
+    const observer = new ResizeObserver(update)
+    observer.observe(target)
     window.addEventListener('resize', update)
-    return () => window.removeEventListener('resize', update)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', update)
+    }
   }, [])
+
+  useLayoutEffect(() => {
+    const target = panelRef.current
+    if (!target) return
+    const update = () => {
+      const height = target.offsetHeight
+      setPanelHeight(height)
+      setLayoutAnchorHeight((current) => (current > 0 && commentsOpen ? current : height))
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(target)
+    return () => observer.disconnect()
+  }, [post, commentsOpen])
+
+  useLayoutEffect(() => {
+    setPanelHeight(0)
+    setLayoutAnchorHeight(0)
+  }, [postId])
 
   useEffect(() => {
     const target = sentinelRef.current
     if (!target || !post || !hasMoreRelated) return
     const observer = new IntersectionObserver((entries) => {
       if (!entries.some((entry) => entry.isIntersecting)) return
-      api.similarPosts(post.id, relatedPage, 18).then((page) => {
+      api.similarPosts(post.id, relatedPage, 36).then((page) => {
         setRelated((current) => [...current, ...page.records.filter((item) => !current.some((known) => known.id === item.id))])
         setRelatedTotal(page.total)
         setRelatedPage((value) => value + 1)
@@ -133,6 +228,7 @@ export function DetailPage() {
     }
     const created = await api.comment(post.id, draft.trim())
     setDraft('')
+    setCommentsOpen(true)
     setComments((current) => [created, ...current])
     setPost({ ...post, commentCount: post.commentCount + 1 })
   }
@@ -147,16 +243,32 @@ export function DetailPage() {
     navigate(`/posts/${target.id}`)
   }
 
-  if (loading || !post) {
-    return <div className="detail-page"><main className="detail-page__state">正在加载详情...</main></div>
+  if (loading || !post || post.id !== postId) {
+    return (
+      <div className="detail-page">
+        <main className="detail-page__loading">
+          <span />
+          <section><i /><b /><b /><em /></section>
+          <section><i /><b /><b /><em /></section>
+          <section><i /><b /><b /><em /></section>
+        </main>
+      </div>
+    )
   }
 
   return (
     <div className="detail-page">
-      <main className="detail-page__main">
+      <main
+        ref={mainRef}
+        className="detail-page__main"
+        style={{
+          '--detail-columns': relatedColumns,
+          '--detail-reserved-columns': reservedColumns,
+        } as CSSProperties}
+      >
+        <button className="detail-page__back-btn" type="button" onClick={() => navigate(-1)} aria-label="返回"><ArrowLeft size={24} /></button>
         <section className="detail-page__focus">
-          <button className="detail-page__back-btn" type="button" onClick={() => navigate(-1)} aria-label="返回"><ArrowLeft size={24} /></button>
-          <article className="detail-panel">
+          <article className="detail-panel" ref={panelRef}>
             <div className="detail-panel__toolbar">
               <div>
                 <button type="button" className={liked ? 'is-active' : ''} onClick={toggleLike}><Heart size={24} /><strong>{countText(post.likeCount)}</strong></button>
@@ -170,7 +282,9 @@ export function DetailPage() {
               </div>
             </div>
             <div className="detail-panel__media">
-              <img src={postCover(post, activeAsset)} alt={post.title} onClick={() => setLightbox(true)} />
+              <button className="detail-panel__image-frame" type="button" onClick={() => setLightbox(true)} aria-label="查看大图">
+                <img src={postCover(post, activeAsset)} alt={post.title} style={{ aspectRatio: aspectRatio(post) }} />
+              </button>
               {post.assets.length > 1 && (
                 <>
                   <button className="detail-panel__arrow is-left" type="button" onClick={() => nextAsset(-1)}><ChevronLeft size={22} /></button>
@@ -191,32 +305,47 @@ export function DetailPage() {
                 {post.content && <p>{post.content}</p>}
                 <div>{post.tags.map((tag) => <span key={tag}>#{tag}</span>)}</div>
               </div>
-              <form className="detail-panel__comment-editor" onSubmit={submitComment}>
-                <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="说点什么..." />
-                <button type="submit"><Send size={18} /></button>
-              </form>
               <section className="detail-panel__comments">
-                <strong>评论 ({post.commentCount})</strong>
-                {comments.map((comment) => (
-                  <article key={comment.id}>
-                    <img src={avatarUrl(comment.author.avatarUrl)} alt="" />
-                    <span><b>{comment.author.nickname}</b><small>{relativeTime(comment.createdAt)}</small><p>{comment.content}</p></span>
-                  </article>
-                ))}
+                <button className="detail-panel__comments-toggle" type="button" onClick={() => setCommentsOpen((value) => !value)} aria-expanded={commentsOpen}>
+                  <strong>评论 ({post.commentCount})</strong>
+                  {commentsOpen ? <ChevronUp size={22} /> : <ChevronDown size={22} />}
+                </button>
+                {commentsOpen && (
+                  <div className="detail-panel__comments-body">
+                    <form className="detail-panel__comment-editor" onSubmit={submitComment}>
+                      <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="说点什么..." />
+                      <button type="submit"><Send size={18} /></button>
+                    </form>
+                    <div className="detail-panel__comments-list">
+                      {comments.map((comment) => (
+                        <article key={comment.id}>
+                          <img src={avatarUrl(comment.author.avatarUrl)} alt="" />
+                          <span><b>{comment.author.nickname}</b><small>{relativeTime(comment.createdAt)}</small><p>{comment.content}</p></span>
+                        </article>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </section>
             </section>
           </article>
         </section>
-        <section className="detail-related">
-          <div className="detail-related__waterfall" style={{ '--column-count': relatedColumns } as CSSProperties}>
-            {relatedMasonry.map((column, index) => (
-              <div className="detail-related__column" key={index}>
-                {column.map((item) => <PostCard key={item.id} post={item} onOpen={openRelated} />)}
-              </div>
-            ))}
-          </div>
-          <div ref={sentinelRef} className="detail-related__sentinel" />
+        <section className={relatedReady ? 'detail-related' : 'detail-related is-loading'}>
+          {relatedReady ? (
+            <div className="detail-related__waterfall" style={{ height: relatedLayout.height } as CSSProperties}>
+              {relatedLayout.items.map((item) => (
+                <div
+                  className="detail-related__item"
+                  key={item.post.id}
+                  style={{ transform: `translate3d(${item.x}px,${item.y}px,0)`, width: item.width } as CSSProperties}
+                >
+                  <PostCard post={item.post} onOpen={openRelated} />
+                </div>
+              ))}
+            </div>
+          ) : <div className="detail-related__loading" />}
         </section>
+        <div ref={sentinelRef} className="detail-related__sentinel" />
       </main>
       {lightbox && <button type="button" className="lightbox" onClick={() => setLightbox(false)}><img src={postCover(post, activeAsset)} alt={post.title} /></button>}
     </div>

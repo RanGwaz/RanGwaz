@@ -23,7 +23,6 @@ export function PostCard({ post, onOpen, onLike, liked }: PostCardProps) {
         <img src={postCover(post)} alt={post.title || '图片'} loading="lazy" decoding="async" />
       </div>
       <div className="feed-card__body">
-        <h2>{post.title || '未命名作品'}</h2>
         <div className="feed-card__meta">
           <img src={avatarUrl(post.author.avatarUrl)} alt="" loading="lazy" />
           <span>{post.author.nickname}</span>
