@@ -41,21 +41,20 @@ function estimateCardHeight(post: PostView, columnWidth: number) {
   return Math.max(136, columnWidth * ratio) + DETAIL_CARD_CHROME_HEIGHT
 }
 
-/** Pack related posts into shortest columns, reserving the detail panel footprint. */
-function layoutRelatedPosts(posts: PostView[], count: number, reservedColumns: number, panelHeight: number, anchorHeight: number, columnWidth: number) {
+/** Pack related posts into shortest columns, reserving only the detail panel columns. */
+function layoutRelatedPosts(posts: PostView[], count: number, reservedColumns: number, panelHeight: number, columnWidth: number) {
   const safeCount = Math.max(1, count)
-  const reservedHeight = anchorHeight > 0 ? anchorHeight + DETAIL_GRID_GAP : 0
-  const reservedDelta = Math.max(0, panelHeight - anchorHeight)
+  const reservedHeight = panelHeight > 0 ? panelHeight + DETAIL_GRID_GAP : 0
   const heights = Array.from({ length: safeCount }, (_, index) => (index < reservedColumns ? reservedHeight : 0))
   const items = posts.map((post) => {
     const cardHeight = estimateCardHeight(post, columnWidth)
     const columnIndex = heights.reduce((minIndex, height, index) => (height < heights[minIndex] ? index : minIndex), 0)
     const x = columnIndex * (columnWidth + DETAIL_GRID_GAP)
-    const y = heights[columnIndex] + (columnIndex < reservedColumns ? reservedDelta : 0)
+    const y = heights[columnIndex]
     heights[columnIndex] += cardHeight + DETAIL_GRID_GAP
     return { height: cardHeight, post, width: columnWidth, x, y }
   })
-  const height = Math.max(...heights.map((height, index) => height + (index < reservedColumns ? reservedDelta : 0)), 1)
+  const height = Math.max(...heights, 1)
   return { height, items }
 }
 
@@ -77,8 +76,8 @@ export function DetailPage() {
   const [relatedColumns, setRelatedColumns] = useState(6)
   const [reservedColumns, setReservedColumns] = useState(3)
   const [columnWidth, setColumnWidth] = useState(260)
+  const [gridReady, setGridReady] = useState(false)
   const [panelHeight, setPanelHeight] = useState(0)
-  const [layoutAnchorHeight, setLayoutAnchorHeight] = useState(0)
   const [lightbox, setLightbox] = useState(false)
   const mainRef = useRef<HTMLElement | null>(null)
   const panelRef = useRef<HTMLElement | null>(null)
@@ -87,11 +86,11 @@ export function DetailPage() {
   const auth = useAuth()
 
   const relatedLayout = useMemo(
-    () => layoutRelatedPosts(related, relatedColumns, reservedColumns, panelHeight, layoutAnchorHeight, columnWidth),
-    [related, relatedColumns, reservedColumns, panelHeight, layoutAnchorHeight, columnWidth],
+    () => layoutRelatedPosts(related, relatedColumns, reservedColumns, panelHeight, columnWidth),
+    [related, relatedColumns, reservedColumns, panelHeight, columnWidth],
   )
   const hasMoreRelated = related.length < relatedTotal || relatedTotal === 0
-  const relatedReady = layoutAnchorHeight > 0 && related.length > 0
+  const relatedReady = gridReady && panelHeight > 0 && related.length > 0
 
   useLayoutEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: 'auto' })
@@ -106,6 +105,8 @@ export function DetailPage() {
     setRelatedPage(1)
     setActiveAsset(0)
     setCommentsOpen(false)
+    setGridReady(false)
+    setPanelHeight(0)
     Promise.all([
       api.postDetail(postId),
       api.commentsPage(postId, 1, 12),
@@ -133,24 +134,31 @@ export function DetailPage() {
     api.followStatus(post.author.id).then((status) => setFollowing(status.following)).catch(() => undefined)
   }, [auth.user, post])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const target = mainRef.current
     if (!target) return
+    let frame = 0
     const update = () => {
-      const grid = resolveDetailGrid(target.clientWidth)
-      setRelatedColumns(grid.totalColumns)
-      setReservedColumns(grid.panelColumns)
-      setColumnWidth(grid.columnWidth)
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => {
+        if (!target.clientWidth) return
+        const grid = resolveDetailGrid(target.clientWidth)
+        setRelatedColumns(grid.totalColumns)
+        setReservedColumns(grid.panelColumns)
+        setColumnWidth(grid.columnWidth)
+        setGridReady(true)
+      })
     }
     update()
     const observer = new ResizeObserver(update)
     observer.observe(target)
     window.addEventListener('resize', update)
     return () => {
+      cancelAnimationFrame(frame)
       observer.disconnect()
       window.removeEventListener('resize', update)
     }
-  }, [])
+  }, [post?.id])
 
   useLayoutEffect(() => {
     const target = panelRef.current
@@ -158,7 +166,6 @@ export function DetailPage() {
     const update = () => {
       const height = target.offsetHeight
       setPanelHeight(height)
-      setLayoutAnchorHeight((current) => (current > 0 && commentsOpen ? current : height))
     }
     update()
     const observer = new ResizeObserver(update)
@@ -168,7 +175,6 @@ export function DetailPage() {
 
   useLayoutEffect(() => {
     setPanelHeight(0)
-    setLayoutAnchorHeight(0)
   }, [postId])
 
   useEffect(() => {
@@ -264,6 +270,7 @@ export function DetailPage() {
         style={{
           '--detail-columns': relatedColumns,
           '--detail-reserved-columns': reservedColumns,
+          '--detail-column-width': `${columnWidth}px`,
         } as CSSProperties}
       >
         <button className="detail-page__back-btn" type="button" onClick={() => navigate(-1)} aria-label="返回"><ArrowLeft size={24} /></button>
