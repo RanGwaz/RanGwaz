@@ -1,10 +1,12 @@
 /** Creator page for publishing image posts. */
-import { ArrowLeft, Check, ImagePlus, Plus, Send, X } from 'lucide-react'
+import { ArrowLeft, Check, ImagePlus, Loader2, Plus, Save, Send, X } from 'lucide-react'
 import { ChangeEvent, FormEvent, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../AuthContext'
 import { api } from '../services/api'
 import type { TopicView, UploadResponse } from '../types'
+
+const DRAFT_KEY = 'rangwaz-publish-draft'
 
 export function PublishPage() {
   const auth = useAuth()
@@ -16,20 +18,48 @@ export function PublishPage() {
   const [assets, setAssets] = useState<UploadResponse[]>([])
   const [suggestions, setSuggestions] = useState<TopicView[]>([])
   const [saving, setSaving] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [error, setError] = useState('')
 
   useEffect(() => {
     api.trendingTopics(10).then(setSuggestions).catch(() => undefined)
   }, [])
 
   useEffect(() => {
-    if (!auth.user) auth.openAuth()
-  }, [auth])
+    if (auth.ready && !auth.user) auth.openAuth()
+  }, [auth.ready, auth.user, auth.openAuth])
+
+  useEffect(() => {
+    const saved = localStorage.getItem(DRAFT_KEY)
+    if (!saved) return
+    try {
+      const draft = JSON.parse(saved) as { title?: string; content?: string; topics?: string[] }
+      setTitle(draft.title || '')
+      setContent(draft.content || '')
+      setTopics(draft.topics?.length ? draft.topics : ['旅行碎片'])
+    } catch {
+      localStorage.removeItem(DRAFT_KEY)
+    }
+  }, [])
+
+  useEffect(() => {
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({ content, title, topics }))
+  }, [content, title, topics])
 
   async function selectFile(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0]
-    if (!file) return
-    const response = await api.uploadImage(file)
-    setAssets((current) => [...current, response])
+    const files = Array.from(event.target.files || [])
+    if (!files.length) return
+    setUploading(true)
+    setError('')
+    try {
+      const uploaded = await Promise.all(files.map((file) => api.uploadImage(file)))
+      setAssets((current) => [...current, ...uploaded].slice(0, 9))
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '图片上传失败')
+    } finally {
+      setUploading(false)
+      event.target.value = ''
+    }
   }
 
   function addTopic(raw = topicInput) {
@@ -41,8 +71,17 @@ export function PublishPage() {
 
   async function submit(event: FormEvent) {
     event.preventDefault()
+    setError('')
     if (!auth.user) {
       auth.openAuth()
+      return
+    }
+    if (!assets.length) {
+      setError('请至少上传一张图片')
+      return
+    }
+    if (!title.trim() && !content.trim()) {
+      setError('请写一个标题或描述')
       return
     }
     setSaving(true)
@@ -56,7 +95,10 @@ export function PublishPage() {
         imageUrls: assets.map((asset) => asset.fileUrl),
         assets: assets.map((asset, index) => ({ ...asset, sortOrder: index })),
       })
+      localStorage.removeItem(DRAFT_KEY)
       navigate(`/posts/${created.id}`)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '发布失败')
     } finally {
       setSaving(false)
     }
@@ -66,11 +108,11 @@ export function PublishPage() {
     <div className="publish-page">
       <aside className="publish-page__left">
         <section>
-          <h3>草稿箱 <em>(0)</em></h3>
-          <p>开始编辑后会自动保存在本地，后续可以继续扩展草稿能力。</p>
-          <button type="button"><Plus size={16} />新建草稿</button>
+          <h3>发布检查</h3>
+          <p>完善图片、标题、描述和话题后再发布，内容会自动保存为本地草稿。</p>
+          <button type="button" onClick={() => { setTitle(''); setContent(''); setTopics(['旅行碎片']); setAssets([]); localStorage.removeItem(DRAFT_KEY) }}><Plus size={16} />新建草稿</button>
         </section>
-        <footer><Check size={16} />正在编辑中</footer>
+        <footer><Save size={16} />草稿已自动保存</footer>
       </aside>
       <form className="publish-page__editor" onSubmit={submit}>
         <header>
@@ -88,6 +130,7 @@ export function PublishPage() {
                 {topics.map((topic) => <span key={topic}>#{topic}<button type="button" onClick={() => setTopics((current) => current.filter((item) => item !== topic))}><X size={12} /></button></span>)}
               </div>
               <textarea value={content} onChange={(event) => setContent(event.target.value)} placeholder="分享图片背后的故事..." />
+              <small>{content.length}/5000</small>
               <div className="publish-page__topic-entry">
                 <input value={topicInput} onChange={(event) => setTopicInput(event.target.value)} placeholder="# 添加话题" />
                 <button type="button" onClick={() => addTopic()}>添加</button>
@@ -103,10 +146,10 @@ export function PublishPage() {
                   <button type="button" onClick={() => setAssets((current) => current.filter((_, i) => i !== index))}><X size={14} /></button>
                 </article>
               ))}
-              <span>
-                <ImagePlus size={24} />
-                上传图片
-                <input type="file" accept="image/*" onChange={selectFile} />
+              <span className={uploading ? 'is-uploading' : undefined}>
+                {uploading ? <Loader2 size={24} /> : <ImagePlus size={24} />}
+                {uploading ? '上传中' : '上传图片'}
+                <input type="file" accept="image/*" multiple onChange={selectFile} />
               </span>
             </div>
           </label>
@@ -114,10 +157,14 @@ export function PublishPage() {
             <strong>推荐话题</strong>
             {suggestions.slice(0, 8).map((topic) => <button key={topic.id} type="button" onClick={() => addTopic(topic.name)}>#{topic.name}</button>)}
           </div>
+          {error && <p className="publish-page__error">{error}</p>}
         </section>
         <footer className="publish-page__bottom">
           <button type="button" onClick={() => navigate('/home')}>取消</button>
-          <button className="is-primary" type="submit" disabled={saving}><Send size={17} />{saving ? '发布中...' : '发布'}</button>
+          <button className="is-primary" type="submit" disabled={saving || uploading}>
+            {saving ? <Loader2 size={17} /> : <Send size={17} />}
+            {saving ? '发布中...' : '发布'}
+          </button>
         </footer>
       </form>
       <aside className="publish-page__preview">

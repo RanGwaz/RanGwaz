@@ -44,6 +44,9 @@ export const api = {
   login(payload: { username: string; password: string }) {
     return request<AuthTokenResponse>('/api/auth/login', { method: 'POST', body: JSON.stringify(payload) })
   },
+  logout() {
+    return request<void>('/api/auth/logout', { method: 'POST' })
+  },
   me() {
     return request<AuthTokenResponse>('/api/auth/me')
   },
@@ -98,6 +101,9 @@ export const api = {
   },
   profile(userId: number) {
     return request<UserSummary>(`/api/users/${userId}`)
+  },
+  updateProfile(payload: { nickname: string; avatarUrl?: string; backgroundUrl?: string; bio?: string }) {
+    return request<UserSummary>('/api/users/me', { method: 'PUT', body: JSON.stringify(payload) })
   },
   userStats(userId: number) {
     return request<UserStats>(`/api/users/${userId}/stats`)

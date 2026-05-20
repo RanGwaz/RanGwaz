@@ -2,7 +2,7 @@
 import { Search } from 'lucide-react'
 import { FormEvent, useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { PostCard } from '../components/PostCard'
+import { MasonryGrid } from '../components/MasonryGrid'
 import { api } from '../services/api'
 import type { SearchResult } from '../types'
 import { avatarUrl, countText } from '../utils/format'
@@ -72,9 +72,7 @@ export function SearchPage() {
         {!loading && result.posts.length > 0 && (
           <section className="search-page__section">
             <h2>笔记</h2>
-            <div className="search-page__post-grid">
-              {result.posts.map((post) => <PostCard key={post.id} post={post} onOpen={(target) => navigate(`/posts/${target.id}`)} />)}
-            </div>
+            <MasonryGrid posts={result.posts} onOpen={(target) => navigate(`/posts/${target.id}`)} />
           </section>
         )}
       </main>

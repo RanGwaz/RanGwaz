@@ -1,11 +1,10 @@
 /** Home feed page with masonry layout and infinite scroll. */
-import { CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../AuthContext'
-import { PostCard } from '../components/PostCard'
+import { MasonryGrid } from '../components/MasonryGrid'
 import { api } from '../services/api'
 import type { PostView } from '../types'
-import { distributePosts } from '../utils/format'
 
 const pageSize = 30
 
@@ -15,15 +14,12 @@ export function FeedPage() {
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [columnCount, setColumnCount] = useState(5)
   const [liked, setLiked] = useState<Set<number>>(new Set())
-  const shellRef = useRef<HTMLDivElement | null>(null)
   const sentinelRef = useRef<HTMLDivElement | null>(null)
   const navigate = useNavigate()
   const auth = useAuth()
 
   const hasMore = posts.length < total || total === 0
-  const columns = useMemo(() => distributePosts(posts, columnCount), [columnCount, posts])
 
   const loadPage = useCallback(async (targetPage: number, reset = false) => {
     if (loading) return
@@ -47,21 +43,6 @@ export function FeedPage() {
 
   useEffect(() => {
     void loadPage(1, true)
-  }, [])
-
-  useEffect(() => {
-    function updateColumns() {
-      const width = shellRef.current?.clientWidth || window.innerWidth - 112
-      setColumnCount(Math.max(1, Math.min(7, Math.floor((width + 14) / 246))))
-    }
-    updateColumns()
-    const observer = new ResizeObserver(updateColumns)
-    if (shellRef.current) observer.observe(shellRef.current)
-    window.addEventListener('resize', updateColumns)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', updateColumns)
-    }
   }, [])
 
   useEffect(() => {
@@ -107,14 +88,8 @@ export function FeedPage() {
 
   return (
     <div className="feed-page">
-      <main ref={shellRef} className="feed-page__main">
-        <section className="feed-page__waterfall" style={{ '--feed-columns': columnCount } as CSSProperties}>
-          {columns.map((column, index) => (
-            <div className="feed-page__column" key={index}>
-              {column.map((post) => <PostCard key={post.id} post={post} liked={liked.has(post.id)} onOpen={openPost} onLike={toggleLike} />)}
-            </div>
-          ))}
-        </section>
+      <main className="feed-page__main">
+        <MasonryGrid posts={posts} liked={liked} emptyLabel={loading ? '正在加载推荐...' : '还没有内容'} onOpen={openPost} onLike={toggleLike} />
         {error && <div className="feed-page__state"><span>{error}</span><button type="button" onClick={reloadFeed}>重新加载</button></div>}
         <div ref={sentinelRef} className="feed-page__sentinel" />
         {loading && <div className="feed-page__loading"><span /><span /><span /></div>}
