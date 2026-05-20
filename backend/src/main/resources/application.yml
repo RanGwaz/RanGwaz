@@ -43,3 +43,10 @@ management:
 app:
   upload-root: storage/uploads
   public-upload-prefix: /uploads
+  storage:
+    minio:
+      endpoint: http://localhost:9000
+      access-key: minioadmin
+      secret-key: minioadmin
+      bucket: rangwaz-media
+      object-url-prefix: /api/media/object
