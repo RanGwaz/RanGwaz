@@ -14,9 +14,16 @@ frontend/vite.config.d.ts
 *.iml
 .DS_Store
 Thumbs.db
+__pycache__/
+*.pyc
 backend/storage/
 
 # Environment overrides
 .env
 .env.local
 *.log
+
+# Dataset collector runtime output
+tools/downloaded_dataset/
+tools/.collector_browser/
+dataset/images/
