@@ -21,7 +21,7 @@ import java.time.Duration;
  * Media upload endpoints.
  */
 @RestController
-@RequestMapping("/api/media")
+@RequestMapping("/media")
 public class MediaController {
     private final MediaService mediaService;
 
@@ -53,7 +53,7 @@ public class MediaController {
      */
     @GetMapping("/object/**")
     public ResponseEntity<byte[]> object(HttpServletRequest request) {
-        String prefix = request.getContextPath() + "/api/media/object/";
+        String prefix = request.getContextPath() + "/media/object/";
         String objectKey = request.getRequestURI().substring(prefix.length());
         MediaObject media = mediaService.read(objectKey);
         return ResponseEntity.ok()

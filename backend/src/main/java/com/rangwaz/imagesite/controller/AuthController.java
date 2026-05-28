@@ -16,7 +16,7 @@ import org.springframework.web.bind.annotation.RestController;
  * Authentication endpoints for local development accounts.
  */
 @RestController
-@RequestMapping("/api/auth")
+@RequestMapping("/auth")
 public class AuthController {
     private final AuthService authService;
     private final AuthContext authContext;

@@ -1,13 +1,14 @@
-/** Login and registration modal matching the existing soft overlay style. */
+/** Login and registration modal. */
 import { Loader2, Lock, UserRound, X } from 'lucide-react'
 import { FormEvent, useState } from 'react'
 import { useAuth } from '../AuthContext'
+import { BrandLogo } from './BrandLogo'
 
 export function AuthModal() {
   const auth = useAuth()
   const [mode, setMode] = useState<'login' | 'register'>('login')
   const [username, setUsername] = useState('mira')
-  const [password, setPassword] = useState('123456')
+  const [password, setPassword] = useState('RanGwaz147..')
   const [nickname, setNickname] = useState('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -45,15 +46,21 @@ export function AuthModal() {
       <form className="auth-modal" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}>
         <button className="auth-modal__close" type="button" onClick={auth.closeAuth} aria-label="关闭"><X size={20} /></button>
         <section className="auth-modal__left">
-          <span>RanGwaz</span>
-          <h2>收藏灵感，发布生活里的好画面</h2>
-          <p>登录后可以发布图片、关注创作者、点赞收藏并维护自己的主页。</p>
+          <BrandLogo />
+          <h2>收藏灵感，整理你的高质量图片库</h2>
+          <p>登录后可以发布图片、收藏喜欢的作品、关注创作者，并持续沉淀自己的视觉主页。</p>
+          <div>
+            <span>高清图片</span>
+            <span>多标签检索</span>
+            <span>个人收藏</span>
+          </div>
         </section>
         <section className="auth-modal__right">
-          <h2>{mode === 'login' ? '欢迎回来' : '创建账号'}</h2>
+          <BrandLogo className="auth-modal__mobile-logo" />
+          <h2>{mode === 'login' ? '欢迎回来' : '创建 Vibelo 账号'}</h2>
           <div className="auth-modal__tabs">
-            <button type="button" className={mode === 'login' ? 'is-active' : ''} onClick={() => setMode('login')}>用户名密码</button>
-            <button type="button" className={mode === 'register' ? 'is-active' : ''} onClick={() => setMode('register')}>注册账号</button>
+            <button type="button" className={mode === 'login' ? 'is-active' : ''} onClick={() => setMode('login')}>登录</button>
+            <button type="button" className={mode === 'register' ? 'is-active' : ''} onClick={() => setMode('register')}>注册</button>
           </div>
           <label>
             用户名
@@ -74,7 +81,7 @@ export function AuthModal() {
             {submitting && <Loader2 size={17} />}
             {mode === 'login' ? '登录' : '注册并登录'}
           </button>
-          <p className="auth-modal__hint">测试账号：mira / 123456</p>
+          <p className="auth-modal__hint">开发账号：mira / RanGwaz147..</p>
         </section>
       </form>
     </div>

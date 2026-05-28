@@ -1,4 +1,4 @@
-/** Authentication context for local token-backed sessions. */
+﻿/** Authentication context for local token-backed sessions. */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { api, getToken, setToken } from './services/api'
 import type { UserSummary } from './types'

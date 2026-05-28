@@ -21,7 +21,9 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.security.MessageDigest;
 import java.time.LocalDate;
+import java.util.HexFormat;
 import java.util.Locale;
 import java.util.UUID;
 
@@ -54,14 +56,15 @@ public class MediaServiceImpl implements MediaService {
      */
     @Override
     public ApiDtos.UploadResponse upload(MultipartFile file) {
-        if (file == null || file.isEmpty()) throw new BusinessException("EMPTY_FILE", "请选择图片");
+        if (file == null || file.isEmpty()) throw new BusinessException("EMPTY_FILE", "文件不能为空");
         String contentType = file.getContentType() == null ? "" : file.getContentType().toLowerCase(Locale.ROOT);
-        if (!contentType.startsWith("image/")) throw new BusinessException("BAD_FILE_TYPE", "只支持图片上传");
+        if (!contentType.startsWith("image/")) throw new BusinessException("BAD_FILE_TYPE", "只能上传图片文件");
         try {
             ensureBucket();
             byte[] originalBytes = file.getBytes();
+            String hash = sha256(originalBytes);
             BufferedImage image = ImageIO.read(new ByteArrayInputStream(originalBytes));
-            if (image == null) throw new BusinessException("BAD_IMAGE", "图片解析失败");
+            if (image == null) throw new BusinessException("BAD_IMAGE", "图片无法解析");
             String ext = extension(file.getOriginalFilename(), contentType);
             String datePath = LocalDate.now().toString().replace("-", "/");
             String uuid = UUID.randomUUID().toString();
@@ -75,12 +78,14 @@ public class MediaServiceImpl implements MediaService {
                     "image",
                     publicUrl(thumbKey),
                     image.getWidth(),
-                    image.getHeight()
+                    image.getHeight(),
+                    (long) originalBytes.length,
+                    hash
             );
         } catch (BusinessException exception) {
             throw exception;
         } catch (Exception exception) {
-            throw new BusinessException("UPLOAD_FAILED", "图片保存失败");
+            throw new BusinessException("UPLOAD_FAILED", "图片上传失败");
         }
     }
 
@@ -142,7 +147,7 @@ public class MediaServiceImpl implements MediaService {
     private String publicUrl(String objectKey) {
         String prefix = StringUtils.hasText(properties.getObjectUrlPrefix())
                 ? properties.getObjectUrlPrefix()
-                : "/api/media/object";
+                : "/media/object";
         return prefix.replaceAll("/$", "") + "/" + objectKey;
     }
 
@@ -209,7 +214,7 @@ public class MediaServiceImpl implements MediaService {
     }
 
     /**
-     * Normalizes a public object key.
+            throw new BusinessException("BAD_OBJECT_KEY", "图片路径不合法");
      *
      * @param objectKey object key
      * @return safe key
@@ -218,8 +223,19 @@ public class MediaServiceImpl implements MediaService {
         String key = objectKey == null ? "" : objectKey.replace("\\", "/");
         while (key.startsWith("/")) key = key.substring(1);
         if (!StringUtils.hasText(key) || key.contains("..")) {
-            throw new BusinessException("BAD_OBJECT_KEY", "图片地址非法");
+            throw new BusinessException("BAD_OBJECT_KEY", "鍥剧墖鍦板潃闈炴硶");
         }
         return key;
+    }
+
+    /**
+     * Computes a stable image content hash.
+     *
+     * @param bytes image bytes
+     * @return sha256 hex
+     */
+    private String sha256(byte[] bytes) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        return HexFormat.of().formatHex(digest.digest(bytes));
     }
 }

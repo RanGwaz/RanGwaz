@@ -32,7 +32,7 @@ public interface InteractionService {
      * @param postId post id
      * @return status response
      */
-    ApiDtos.PostInteractionStatus status(Long userId, Long postId);
+    ApiDtos.ImageInteractionStatus status(Long userId, Long postId);
 
     /**
      * Pages comments.

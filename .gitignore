@@ -24,6 +24,8 @@ backend/storage/
 *.log
 
 # Dataset collector runtime output
+dataset/
 tools/downloaded_dataset/
 tools/.collector_browser/
+tools/import_results.jsonl
 dataset/images/

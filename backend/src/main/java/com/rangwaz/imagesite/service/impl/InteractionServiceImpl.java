@@ -7,8 +7,8 @@ import com.rangwaz.imagesite.entity.CommentEntity;
 import com.rangwaz.imagesite.entity.UserEntity;
 import com.rangwaz.imagesite.mapper.CommentMapper;
 import com.rangwaz.imagesite.mapper.FollowMapper;
+import com.rangwaz.imagesite.mapper.ImageContentMapper;
 import com.rangwaz.imagesite.mapper.InteractionMapper;
-import com.rangwaz.imagesite.mapper.PostMapper;
 import com.rangwaz.imagesite.mapper.UserMapper;
 import com.rangwaz.imagesite.service.InteractionService;
 import org.springframework.stereotype.Service;
@@ -25,10 +25,10 @@ public class InteractionServiceImpl implements InteractionService {
     private final InteractionMapper interactionMapper;
     private final CommentMapper commentMapper;
     private final FollowMapper followMapper;
-    private final PostMapper postMapper;
+    private final ImageContentMapper imageContentMapper;
     private final UserMapper userMapper;
     private final UserServiceImpl userService;
-    private final PostServiceImpl postService;
+    private final ImageServiceImpl imageService;
 
     /**
      * Creates the interaction service.
@@ -36,25 +36,25 @@ public class InteractionServiceImpl implements InteractionService {
      * @param interactionMapper interaction mapper
      * @param commentMapper comment mapper
      * @param followMapper follow mapper
-     * @param postMapper post mapper
+     * @param imageContentMapper image content mapper
      * @param userMapper user mapper
      * @param userService user service
-     * @param postService post service
+     * @param imageService post service
      */
     public InteractionServiceImpl(InteractionMapper interactionMapper,
                                   CommentMapper commentMapper,
                                   FollowMapper followMapper,
-                                  PostMapper postMapper,
+                                  ImageContentMapper imageContentMapper,
                                   UserMapper userMapper,
                                   UserServiceImpl userService,
-                                  PostServiceImpl postService) {
+                                  ImageServiceImpl imageService) {
         this.interactionMapper = interactionMapper;
         this.commentMapper = commentMapper;
         this.followMapper = followMapper;
-        this.postMapper = postMapper;
+        this.imageContentMapper = imageContentMapper;
         this.userMapper = userMapper;
         this.userService = userService;
-        this.postService = postService;
+        this.imageService = imageService;
     }
 
     /**
@@ -67,11 +67,11 @@ public class InteractionServiceImpl implements InteractionService {
     @Override
     @Transactional
     public ApiDtos.ToggleResult toggleLike(Long userId, Long postId) {
-        postService.requirePost(postId);
+        imageService.requirePost(postId);
         boolean active = interactionMapper.countActive(userId, postId, LIKE) == 0;
         interactionMapper.upsert(userId, postId, LIKE, active);
-        postMapper.changeLike(postId, active ? 1 : -1);
-        postService.trackBehavior(userId, postId, active ? "like" : "unlike", "interaction", null, null);
+        imageContentMapper.changeLike(postId, active ? 1 : -1);
+        imageService.trackBehavior(userId, postId, active ? "like" : "unlike", "interaction", null, null);
         return new ApiDtos.ToggleResult(active);
     }
 
@@ -85,11 +85,11 @@ public class InteractionServiceImpl implements InteractionService {
     @Override
     @Transactional
     public ApiDtos.ToggleResult toggleFavorite(Long userId, Long postId) {
-        postService.requirePost(postId);
+        imageService.requirePost(postId);
         boolean active = interactionMapper.countActive(userId, postId, FAVORITE) == 0;
         interactionMapper.upsert(userId, postId, FAVORITE, active);
-        postMapper.changeFavorite(postId, active ? 1 : -1);
-        postService.trackBehavior(userId, postId, active ? "favorite" : "unfavorite", "interaction", null, null);
+        imageContentMapper.changeFavorite(postId, active ? 1 : -1);
+        imageService.trackBehavior(userId, postId, active ? "favorite" : "unfavorite", "interaction", null, null);
         return new ApiDtos.ToggleResult(active);
     }
 
@@ -101,8 +101,8 @@ public class InteractionServiceImpl implements InteractionService {
      * @return status response
      */
     @Override
-    public ApiDtos.PostInteractionStatus status(Long userId, Long postId) {
-        return new ApiDtos.PostInteractionStatus(
+    public ApiDtos.ImageInteractionStatus status(Long userId, Long postId) {
+        return new ApiDtos.ImageInteractionStatus(
                 interactionMapper.countActive(userId, postId, LIKE) > 0,
                 interactionMapper.countActive(userId, postId, FAVORITE) > 0
         );
@@ -118,12 +118,12 @@ public class InteractionServiceImpl implements InteractionService {
      */
     @Override
     public PageResponse<ApiDtos.CommentView> comments(Long postId, int page, int size) {
-        postService.requirePost(postId);
+        imageService.requirePost(postId);
         int safePage = Math.max(1, page);
         int safeSize = Math.max(1, Math.min(size, 80));
         int offset = (safePage - 1) * safeSize;
-        var records = commentMapper.pageByPostId(postId, offset, safeSize).stream().map(this::toView).toList();
-        return new PageResponse<>(records, commentMapper.countByPostId(postId), safePage, safeSize);
+        var records = commentMapper.pageByImageId(postId, offset, safeSize).stream().map(this::toView).toList();
+        return new PageResponse<>(records, commentMapper.countByImageId(postId), safePage, safeSize);
     }
 
     /**
@@ -137,16 +137,16 @@ public class InteractionServiceImpl implements InteractionService {
     @Override
     @Transactional
     public ApiDtos.CommentView comment(Long userId, Long postId, ApiDtos.CreateCommentRequest request) {
-        postService.requirePost(postId);
+        imageService.requirePost(postId);
         CommentEntity comment = new CommentEntity();
         comment.setAuthorId(userId);
-        comment.setPostId(postId);
+        comment.setImageId(postId);
         comment.setParentCommentId(request.parentCommentId());
         comment.setContent(request.content().trim());
         comment.setStatus("VISIBLE");
         commentMapper.insert(comment);
-        postMapper.changeComment(postId, 1);
-        postService.trackBehavior(userId, postId, "comment", "detail", null, null);
+        imageContentMapper.changeComment(postId, 1);
+        imageService.trackBehavior(userId, postId, "comment", "detail", null, null);
         return toView(commentMapper.findById(comment.getId()));
     }
 
@@ -195,9 +195,9 @@ public class InteractionServiceImpl implements InteractionService {
      */
     @Override
     public void behavior(Long userId, ApiDtos.BehaviorRequest request) {
-        if (request.postId() == null) throw new BusinessException("POST_REQUIRED", "缺少图片内容");
-        postService.requirePost(request.postId());
-        postService.trackBehavior(userId, request.postId(), request.behaviorType(), request.scene(), request.position(), request.duration());
+        if (request.imageId() == null) throw new BusinessException("IMAGE_REQUIRED", "缂哄皯鍥剧墖鍐呭");
+        imageService.requirePost(request.imageId());
+        imageService.trackBehavior(userId, request.imageId(), request.behaviorType(), request.scene(), request.position(), request.duration());
     }
 
     /**

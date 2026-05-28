@@ -1,4 +1,4 @@
-/** React entry point for the RanGwaz image website. */
+﻿/** React entry point for the RanGwaz image website. */
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'

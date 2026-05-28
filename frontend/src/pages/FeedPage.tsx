@@ -1,87 +1,83 @@
 /** Home feed page with masonry layout and infinite scroll. */
+import { RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useAuth } from '../AuthContext'
 import { MasonryGrid } from '../components/MasonryGrid'
 import { api } from '../services/api'
-import type { PostView } from '../types'
+import type { ImageView } from '../types'
 
 const pageSize = 30
 
 export function FeedPage() {
-  const [posts, setPosts] = useState<PostView[]>([])
+  const [images, setImages] = useState<ImageView[]>([])
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
+  const [loadedOnce, setLoadedOnce] = useState(false)
+  const [exhausted, setExhausted] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [liked, setLiked] = useState<Set<number>>(new Set())
   const sentinelRef = useRef<HTMLDivElement | null>(null)
+  const loadingRef = useRef(false)
+  const requestedPagesRef = useRef<Set<number>>(new Set())
   const navigate = useNavigate()
-  const auth = useAuth()
 
-  const hasMore = posts.length < total || total === 0
+  const hasMore = loadedOnce && !exhausted && images.length < total
 
   const loadPage = useCallback(async (targetPage: number, reset = false) => {
-    if (loading) return
+    if (loadingRef.current) return
+    if (!reset && requestedPagesRef.current.has(targetPage)) return
+    if (reset) requestedPagesRef.current.clear()
+    requestedPagesRef.current.add(targetPage)
+    loadingRef.current = true
     setLoading(true)
     setError('')
     try {
       const response = await api.homeFeed(targetPage, pageSize)
       setTotal(response.total)
       setPage(targetPage + 1)
-      setPosts((current) => {
+      setLoadedOnce(true)
+      if (response.records.length === 0) setExhausted(true)
+      setImages((current) => {
         const base = reset ? [] : current
-        const seen = new Set(base.map((post) => post.id))
-        return [...base, ...response.records.filter((post) => !seen.has(post.id))]
+        const seen = new Set(base.map((image) => image.id))
+        return [...base, ...response.records.filter((image) => !seen.has(image.id))]
       })
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '推荐流加载失败')
+      requestedPagesRef.current.delete(targetPage)
+      setLoadedOnce(true)
+      setError(reason instanceof Error ? reason.message : '图片流加载失败')
     } finally {
+      loadingRef.current = false
       setLoading(false)
     }
-  }, [loading])
+  }, [])
 
   useEffect(() => {
     void loadPage(1, true)
-  }, [])
+  }, [loadPage])
 
   useEffect(() => {
     const target = sentinelRef.current
     if (!target) return
     const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting) && hasMore && !loading) void loadPage(page)
-    }, { rootMargin: '1200px 0px' })
+      if (entries.some((entry) => entry.isIntersecting) && hasMore && !loadingRef.current) void loadPage(page)
+    }, { rootMargin: '560px 0px' })
     observer.observe(target)
     return () => observer.disconnect()
-  }, [hasMore, loadPage, loading, page])
+  }, [hasMore, loadPage, page])
 
-  async function openPost(post: PostView) {
-    await api.trackPostClick(post.id, 'home', posts.findIndex((item) => item.id === post.id) + 1).catch(() => undefined)
-    navigate(`/posts/${post.id}`)
-  }
-
-  async function toggleLike(post: PostView) {
-    if (!auth.user) {
-      auth.openAuth()
-      return
-    }
-    const result = await api.toggleLike(post.id)
-    setLiked((current) => {
-      const next = new Set(current)
-      if (result.active) next.add(post.id)
-      else next.delete(post.id)
-      return next
-    })
-    setPosts((current) => current.map((item) => item.id === post.id ? {
-      ...item,
-      likeCount: Math.max(0, item.likeCount + (result.active ? 1 : -1)),
-    } : item))
+  async function openImage(image: ImageView) {
+    await api.trackImageClick(image.id, 'home', images.findIndex((item) => item.id === image.id) + 1).catch(() => undefined)
+    navigate(`/image/${image.id}`)
   }
 
   function reloadFeed() {
-    setPosts([])
+    requestedPagesRef.current.clear()
+    setImages([])
     setTotal(0)
     setPage(1)
+    setLoadedOnce(false)
+    setExhausted(false)
     void loadPage(1, true)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
@@ -89,11 +85,16 @@ export function FeedPage() {
   return (
     <div className="feed-page">
       <main className="feed-page__main">
-        <MasonryGrid posts={posts} liked={liked} emptyLabel={loading ? '正在加载推荐...' : '还没有内容'} onOpen={openPost} onLike={toggleLike} />
-        {error && <div className="feed-page__state"><span>{error}</span><button type="button" onClick={reloadFeed}>重新加载</button></div>}
+        <MasonryGrid posts={images} loading={loading && images.length === 0} emptyLabel={loading ? '正在加载图片...' : '还没有图片'} onOpen={openImage} />
+        {error && (
+          <div className="feed-page__state">
+            <span>{error}</span>
+            <button type="button" onClick={reloadFeed}><RefreshCw size={15} />重新加载</button>
+          </div>
+        )}
         <div ref={sentinelRef} className="feed-page__sentinel" />
-        {loading && <div className="feed-page__loading"><span /><span /><span /></div>}
-        {!loading && posts.length > 0 && !hasMore && <p className="feed-page__ending">已经到底了</p>}
+        {loading && images.length > 0 && <div className="feed-page__loading"><span /><span /><span /></div>}
+        {!loading && images.length > 0 && !hasMore && <p className="feed-page__ending">已经到底了</p>}
       </main>
     </div>
   )

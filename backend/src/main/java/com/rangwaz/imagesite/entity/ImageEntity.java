@@ -6,17 +6,26 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 /**
- * Database entity for an image post.
+ * Canonical content row for one stored image.
  */
 @Data
-public class PostEntity {
+public class ImageEntity {
     private Long id;
     private Long authorId;
     private String title;
     private String content;
-    private String coverUrl;
-    private String thumbUrl;
     private String postType;
+    private String description;
+    private String objectKey;
+    private String fileUrl;
+    private String fileType;
+    private String thumbnailUrl;
+    private Integer width;
+    private Integer height;
+    private String ratio;
+    private Long fileSize;
+    private String hash;
+    private Long mainCategoryId;
     private String status;
     private Integer likeCount;
     private Integer favoriteCount;

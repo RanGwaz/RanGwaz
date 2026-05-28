@@ -14,7 +14,7 @@ import org.springframework.web.bind.annotation.RestController;
  * Behavior collection endpoint for future recommendation models.
  */
 @RestController
-@RequestMapping("/api/behaviors")
+@RequestMapping("/behaviors")
 public class BehaviorController {
     private final InteractionService interactionService;
     private final AuthContext authContext;

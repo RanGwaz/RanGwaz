@@ -1,7 +1,7 @@
 package com.rangwaz.imagesite.service.impl;
 
 import com.rangwaz.imagesite.dto.ApiDtos;
-import com.rangwaz.imagesite.mapper.PostMapper;
+import com.rangwaz.imagesite.mapper.ImageContentMapper;
 import com.rangwaz.imagesite.service.SearchService;
 import com.rangwaz.imagesite.service.TopicService;
 import com.rangwaz.imagesite.service.UserService;
@@ -15,22 +15,22 @@ import java.util.List;
  */
 @Service
 public class SearchServiceImpl implements SearchService {
-    private final PostMapper postMapper;
-    private final PostServiceImpl postService;
+    private final ImageContentMapper imageContentMapper;
+    private final ImageServiceImpl imageService;
     private final UserService userService;
     private final TopicService topicService;
 
     /**
      * Creates the search service.
      *
-     * @param postMapper post mapper
-     * @param postService post service
+     * @param imageContentMapper image content mapper
+     * @param imageService post service
      * @param userService user service
      * @param topicService topic service
      */
-    public SearchServiceImpl(PostMapper postMapper, PostServiceImpl postService, UserService userService, TopicService topicService) {
-        this.postMapper = postMapper;
-        this.postService = postService;
+    public SearchServiceImpl(ImageContentMapper imageContentMapper, ImageServiceImpl imageService, UserService userService, TopicService topicService) {
+        this.imageContentMapper = imageContentMapper;
+        this.imageService = imageService;
         this.userService = userService;
         this.topicService = topicService;
     }
@@ -47,9 +47,7 @@ public class SearchServiceImpl implements SearchService {
         if (!StringUtils.hasText(trimmed)) {
             return new ApiDtos.SearchResult(List.of(), List.of(), topicService.trending(12));
         }
-        var posts = postMapper.search(trimmed, 36).stream()
-                .map(post -> postService.toView(post, "搜索关键词匹配"))
-                .toList();
+        var posts = imageService.toViews(imageContentMapper.search(trimmed, 36), "search");
         return new ApiDtos.SearchResult(userService.search(trimmed, 12), posts, topicService.search(trimmed, 12));
     }
 }

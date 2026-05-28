@@ -1,25 +1,24 @@
-/** Shared responsive masonry grid for post cards across feed-like pages. */
+﻿/** Shared responsive masonry grid for post cards across feed-like pages. */
 import { CSSProperties, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { PostView } from '../types'
+import type { ImageView } from '../types'
 import { aspectRatio } from '../utils/format'
 import { PostCard } from './PostCard'
 
-const MASONRY_GAP = 16
+const MASONRY_GAP = 10
 const MASONRY_TARGET_WIDTH = 236
 const MASONRY_MAX_COLUMNS = 12
-const MASONRY_CARD_CHROME = 82
+const MASONRY_CARD_CHROME = 0
 
 interface MasonryGridProps {
-  posts: PostView[]
-  liked?: Set<number>
+  posts: ImageView[]
+  loading?: boolean
   emptyLabel?: string
-  onOpen: (post: PostView) => void
-  onLike?: (post: PostView) => void
+  onOpen: (post: ImageView) => void
 }
 
 interface MasonryItem {
   height: number
-  post: PostView
+  post: ImageView
   width: number
   x: number
   y: number
@@ -38,14 +37,14 @@ function resolveMasonry(width: number) {
 }
 
 /** Estimate the final card height for absolute masonry packing. */
-function estimateHeight(post: PostView, columnWidth: number) {
+function estimateHeight(post: ImageView, columnWidth: number) {
   const [w, h] = aspectRatio(post).split('/').map((item) => Number(item.trim()))
   const ratio = Number.isFinite(w) && Number.isFinite(h) && w > 0 ? h / w : 1.35
   return Math.max(136, columnWidth * ratio) + MASONRY_CARD_CHROME
 }
 
 /** Pack cards into shortest columns while preserving a stable visual order. */
-function packPosts(posts: PostView[], columnCount: number, columnWidth: number) {
+function packPosts(posts: ImageView[], columnCount: number, columnWidth: number) {
   const heights = Array.from({ length: Math.max(1, columnCount) }, () => 0)
   const items: MasonryItem[] = posts.map((post) => {
     const height = estimateHeight(post, columnWidth)
@@ -58,7 +57,15 @@ function packPosts(posts: PostView[], columnCount: number, columnWidth: number) 
   return { height: Math.max(...heights, 1), items }
 }
 
-export function MasonryGrid({ posts, liked, emptyLabel = '暂无内容', onOpen, onLike }: MasonryGridProps) {
+function SkeletonGrid() {
+  return (
+    <div className="masonry-grid masonry-grid--skeleton">
+      {Array.from({ length: 18 }, (_, index) => <span key={index} />)}
+    </div>
+  )
+}
+
+export function MasonryGrid({ posts, loading = false, emptyLabel = '暂无内容', onOpen }: MasonryGridProps) {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const [metrics, setMetrics] = useState({ columnCount: 1, columnWidth: MASONRY_TARGET_WIDTH, ready: false })
   const layout = useMemo(() => packPosts(posts, metrics.columnCount, metrics.columnWidth), [metrics.columnCount, metrics.columnWidth, posts])
@@ -85,6 +92,8 @@ export function MasonryGrid({ posts, liked, emptyLabel = '暂无内容', onOpen,
     }
   }, [])
 
+  if (!posts.length && loading) return <SkeletonGrid />
+
   if (!posts.length) {
     return <div ref={rootRef} className="masonry-grid masonry-grid--empty">{emptyLabel}</div>
   }
@@ -99,7 +108,7 @@ export function MasonryGrid({ posts, liked, emptyLabel = '暂无内容', onOpen,
               key={item.post.id}
               style={{ transform: `translate3d(${item.x}px,${item.y}px,0)`, width: item.width } as CSSProperties}
             >
-              <PostCard post={item.post} liked={liked?.has(item.post.id)} onOpen={onOpen} onLike={onLike} />
+              <PostCard post={item.post} onOpen={onOpen} />
             </div>
           ))}
         </div>

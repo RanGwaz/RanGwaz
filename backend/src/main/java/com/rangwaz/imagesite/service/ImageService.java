@@ -7,7 +7,7 @@ import java.util.List;
 /**
  * Service interface for post creation, detail, and related reads.
  */
-public interface PostService {
+public interface ImageService {
     /**
      * Creates a post.
      *
@@ -15,7 +15,7 @@ public interface PostService {
      * @param request creation request
      * @return created post view
      */
-    ApiDtos.PostView create(Long authorId, ApiDtos.CreatePostRequest request);
+    ApiDtos.ImageView create(Long authorId, ApiDtos.CreateImageRequest request);
 
     /**
      * Gets a post detail.
@@ -24,7 +24,7 @@ public interface PostService {
      * @param viewerId optional viewer id
      * @return post view
      */
-    ApiDtos.PostView detail(Long postId, Long viewerId);
+    ApiDtos.ImageView detail(Long postId, Long viewerId);
 
     /**
      * Lists posts authored by a user.
@@ -33,7 +33,7 @@ public interface PostService {
      * @param limit maximum rows
      * @return post views
      */
-    List<ApiDtos.PostView> byUser(Long userId, int limit);
+    List<ApiDtos.ImageView> byUser(Long userId, int limit);
 
     /**
      * Tracks a post click.

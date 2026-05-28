@@ -39,6 +39,6 @@ public class AuthContext {
      * @return user id
      */
     public Long requireUserId(String authorization) {
-        return currentUserId(authorization).orElseThrow(() -> new BusinessException("AUTH_REQUIRED", "请先登录"));
+        return currentUserId(authorization).orElseThrow(() -> new BusinessException("AUTH_REQUIRED", "璇峰厛鐧诲綍"));
     }
 }

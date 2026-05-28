@@ -33,6 +33,20 @@ public interface UserMapper {
     UserEntity findById(@Param("id") Long id);
 
     /**
+     * Finds users by ids.
+     *
+     * @param ids user ids
+     * @return user entities
+     */
+    @Select({
+            "<script>",
+            "SELECT * FROM app_users WHERE id IN",
+            "<foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach>",
+            "</script>"
+    })
+    List<UserEntity> findByIds(@Param("ids") List<Long> ids);
+
+    /**
      * Finds a user by username.
      *
      * @param username username

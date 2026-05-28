@@ -68,11 +68,11 @@ public class TopicServiceImpl implements TopicService {
         TopicEntity topic = new TopicEntity();
         topic.setName(normalized);
         topic.setSlug(slug(normalized));
-        topic.setDescription("关于 " + normalized + " 的灵感集合");
-        topic.setCoverUrl("https://picsum.photos/seed/topic-" + Math.abs(normalized.hashCode()) + "/600/400");
+        topic.setDescription("");
+        topic.setCoverUrl(null);
         topic.setPostCount(0);
         topic.setFollowerCount(0);
-        topic.setHotScore(BigDecimal.valueOf(10));
+        topic.setHotScore(BigDecimal.ZERO);
         topicMapper.insert(topic);
         return topic;
     }

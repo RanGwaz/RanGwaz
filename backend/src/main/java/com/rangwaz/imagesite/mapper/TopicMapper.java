@@ -11,7 +11,7 @@ import org.apache.ibatis.annotations.Update;
 import java.util.List;
 
 /**
- * Mapper for topics and post-topic bindings.
+ * Mapper for topics and image-topic bindings.
  */
 @Mapper
 public interface TopicMapper {
@@ -69,33 +69,66 @@ public interface TopicMapper {
     List<TopicEntity> search(@Param("keyword") String keyword, @Param("limit") int limit);
 
     /**
-     * Binds a topic to a post.
+     * Binds a topic to an image.
      *
-     * @param postId post id
+     * @param imageId image id
      * @param topicId topic id
      */
-    @Insert("INSERT IGNORE INTO post_topics(post_id,topic_id) VALUES(#{postId},#{topicId})")
-    void bindPost(@Param("postId") Long postId, @Param("topicId") Long topicId);
+    @Insert("INSERT IGNORE INTO image_topics(image_id,topic_id) VALUES(#{imageId},#{topicId})")
+    void bindImage(@Param("imageId") Long imageId, @Param("topicId") Long topicId);
 
     /**
-     * Lists topics attached to a post.
+     * Lists topics attached to an image.
      *
-     * @param postId post id
+     * @param imageId image id
      * @return topics
      */
     @Select("""
             SELECT t.* FROM topics t
-            JOIN post_topics pt ON pt.topic_id=t.id
-            WHERE pt.post_id=#{postId}
+            JOIN image_topics it ON it.topic_id=t.id
+            WHERE it.image_id=#{imageId}
             ORDER BY t.hot_score DESC
             """)
-    List<TopicEntity> findByPostId(@Param("postId") Long postId);
+    List<TopicEntity> findByImageId(@Param("imageId") Long imageId);
+
+    /**
+     * Lists topics for a batch of images.
+     *
+     * @param imageIds image ids
+     * @return image-topic projection rows
+     */
+    @Select({
+            "<script>",
+            "SELECT it.image_id AS image_id,t.id,t.name,t.slug,t.description,t.cover_url,t.post_count,t.follower_count,t.hot_score,t.created_at,t.updated_at",
+            "FROM topics t",
+            "JOIN image_topics it ON it.topic_id=t.id",
+            "WHERE it.image_id IN",
+            "<foreach collection='imageIds' item='id' open='(' separator=',' close=')'>#{id}</foreach>",
+            "ORDER BY it.image_id,t.hot_score DESC,t.id",
+            "</script>"
+    })
+    List<ImageTopicRow> findRowsByImageIds(@Param("imageIds") List<Long> imageIds);
 
     /**
      * Increments topic post count.
      *
      * @param topicId topic id
      */
-    @Update("UPDATE topics SET post_count=post_count+1,hot_score=hot_score+0.6 WHERE id=#{topicId}")
+    @Update("UPDATE topics SET post_count=post_count+1 WHERE id=#{topicId}")
     void incrementPostCount(@Param("topicId") Long topicId);
+
+    /**
+     * Projection for batch image-topic reads.
+     */
+    class ImageTopicRow extends TopicEntity {
+        private Long imageId;
+
+        public Long getImageId() {
+            return imageId;
+        }
+
+        public void setImageId(Long imageId) {
+            this.imageId = imageId;
+        }
+    }
 }

@@ -41,43 +41,98 @@ public final class ApiDtos {
     /**
      * Media upload response.
      */
-    public record UploadResponse(String objectKey, String fileUrl, String fileType, String thumbUrl, Integer width, Integer height) {
+    public record UploadResponse(String objectKey,
+                                 String fileUrl,
+                                 String fileType,
+                                 String thumbUrl,
+                                 Integer width,
+                                 Integer height,
+                                 Long fileSize,
+                                 String hash) {
     }
 
     /**
      * Asset request used when creating a post.
      */
-    public record PostAssetRequest(String objectKey, String fileUrl, String fileType, String thumbUrl, Integer width, Integer height, Integer sortOrder) {
+    public record ImageAssetRequest(String objectKey,
+                                   String fileUrl,
+                                   String fileType,
+                                   String thumbUrl,
+                                   Integer width,
+                                   Integer height,
+                                   Long fileSize,
+                                   String hash,
+                                   Integer sortOrder) {
     }
 
     /**
      * Asset view used by feeds and detail pages.
      */
-    public record PostAssetView(Long id, String objectKey, String fileUrl, String fileType, String thumbUrl, Integer width, Integer height, Integer sortOrder) {
+    public record ImageAssetView(Long id,
+                                String objectKey,
+                                String fileUrl,
+                                String fileType,
+                                String thumbUrl,
+                                Integer width,
+                                Integer height,
+                                Long fileSize,
+                                String hash,
+                                Integer sortOrder,
+                                ImageMetadataView metadata) {
     }
 
     /**
      * Image compatibility view for old frontend consumers.
      */
-    public record PostImageView(String url, Integer width, Integer height) {
+    public record ImageSourceView(String url, Integer width, Integer height) {
     }
 
     /**
      * Post creation request.
      */
-    public record CreatePostRequest(@NotBlank @Size(max = 160) String title,
+    public record CreateImageRequest(@NotBlank @Size(max = 160) String title,
                                     @Size(max = 5000) String content,
                                     String postType,
                                     List<String> imageUrls,
                                     List<String> tags,
                                     List<String> topics,
-                                    @Valid List<PostAssetRequest> assets) {
+                                    @Valid List<ImageAssetRequest> assets) {
+    }
+
+    /**
+     * Hierarchical image category view.
+     */
+    public record CategoryView(Long id, String name, Long parentId, String slug, Integer sortNo, List<CategoryView> children) {
+    }
+
+    /**
+     * Typed image tag view.
+     */
+    public record TagView(Long id, String name, String type, String slug) {
+    }
+
+    /**
+     * Image tag assignment view with confidence and source.
+     */
+    public record ImageTagView(Long id, String name, String type, String slug, Double confidence, String source) {
+    }
+
+    /**
+     * Image metadata view used by assets and future vector workers.
+     */
+    public record ImageMetadataView(Long id,
+                                    Long imageId,
+                                    CategoryView mainCategory,
+                                    String ratio,
+                                    Long fileSize,
+                                    String hash,
+                                    List<ImageTagView> tags) {
     }
 
     /**
      * Post view shared by feed, search, and detail pages.
      */
-    public record PostView(Long id,
+    public record ImageView(Long id,
                            UserSummary author,
                            String title,
                            String content,
@@ -85,8 +140,8 @@ public final class ApiDtos {
                            String channel,
                            String channelCode,
                            String postType,
-                           List<PostAssetView> assets,
-                           List<PostImageView> images,
+                           List<ImageAssetView> assets,
+                           List<ImageSourceView> images,
                            String coverUrl,
                            String thumbUrl,
                            Integer likeCount,
@@ -112,9 +167,9 @@ public final class ApiDtos {
     }
 
     /**
-     * Search response containing users, posts, and topics.
+     * Search response containing users, images, and topics.
      */
-    public record SearchResult(List<UserSummary> users, List<PostView> posts, List<TopicView> topics) {
+    public record SearchResult(List<UserSummary> users, List<ImageView> images, List<TopicView> topics) {
     }
 
     /**
@@ -126,7 +181,7 @@ public final class ApiDtos {
     /**
      * Interaction status response for a post and current user.
      */
-    public record PostInteractionStatus(boolean liked, boolean favorited) {
+    public record ImageInteractionStatus(boolean liked, boolean favorited) {
     }
 
     /**
@@ -138,13 +193,13 @@ public final class ApiDtos {
     /**
      * User statistics response.
      */
-    public record UserStats(long postCount, long followingCount, long followerCount) {
+    public record UserStats(long imageCount, long followingCount, long followerCount) {
     }
 
     /**
-     * Behavior tracking request for recommendation data collection.
+     * Behavior tracking request for image analytics.
      */
-    public record BehaviorRequest(Long postId, String behaviorType, String scene, Integer position, Integer duration) {
+    public record BehaviorRequest(Long imageId, String behaviorType, String scene, Integer position, Integer duration) {
     }
 
     /**

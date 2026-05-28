@@ -1,4 +1,4 @@
-/** Shared frontend API types for the image website. */
+﻿/** Shared frontend API types for the image website. */
 export interface ApiResponse<T> {
   success: boolean
   code: string
@@ -23,7 +23,7 @@ export interface AuthTokenResponse {
   me: UserSummary
 }
 
-export interface PostAssetView {
+export interface ImageAssetView {
   id: number
   objectKey: string
   fileUrl: string
@@ -31,16 +31,19 @@ export interface PostAssetView {
   thumbUrl?: string
   width?: number
   height?: number
+  fileSize?: number
+  hash?: string
   sortOrder: number
+  metadata?: ImageMetadataView
 }
 
-export interface PostImageView {
+export interface ImageSourceView {
   url: string
   width?: number
   height?: number
 }
 
-export interface PostView {
+export interface ImageView {
   id: number
   author: UserSummary
   title: string
@@ -49,8 +52,8 @@ export interface PostView {
   channel?: string
   channelCode?: string
   postType?: string
-  assets: PostAssetView[]
-  images?: PostImageView[]
+  assets: ImageAssetView[]
+  images?: ImageSourceView[]
   coverUrl?: string
   thumbUrl?: string
   likeCount: number
@@ -90,9 +93,40 @@ export interface TopicView {
   hotScore?: number
 }
 
+export interface CategoryView {
+  id: number
+  name: string
+  parentId?: number
+  slug: string
+  sortNo?: number
+  children?: CategoryView[]
+}
+
+export interface TagView {
+  id: number
+  name: string
+  type: string
+  slug: string
+}
+
+export interface ImageTagView extends TagView {
+  confidence: number
+  source: string
+}
+
+export interface ImageMetadataView {
+  id: number
+  imageId: number
+  mainCategory?: CategoryView
+  ratio?: string
+  fileSize?: number
+  hash?: string
+  tags: ImageTagView[]
+}
+
 export interface SearchResult {
   users: UserSummary[]
-  posts: PostView[]
+  images: ImageView[]
   topics: TopicView[]
 }
 
@@ -103,13 +137,15 @@ export interface UploadResponse {
   thumbUrl?: string
   width?: number
   height?: number
+  fileSize?: number
+  hash?: string
 }
 
 export interface ToggleResult {
   active: boolean
 }
 
-export interface PostInteractionStatus {
+export interface ImageInteractionStatus {
   liked: boolean
   favorited: boolean
 }
@@ -119,7 +155,7 @@ export interface FollowStatus {
 }
 
 export interface UserStats {
-  postCount: number
+  imageCount: number
   followingCount: number
   followerCount: number
 }

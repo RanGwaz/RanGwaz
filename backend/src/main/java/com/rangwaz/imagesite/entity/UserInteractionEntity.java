@@ -11,7 +11,7 @@ import java.time.LocalDateTime;
 public class UserInteractionEntity {
     private Long id;
     private Long userId;
-    private Long postId;
+    private Long imageId;
     private String interactionType;
     private Boolean active;
     private LocalDateTime createdAt;

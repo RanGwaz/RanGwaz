@@ -1,4 +1,4 @@
-/** Top navigation shell for the Pinterest-style image feed. */
+/** Top navigation shell for the image feed. */
 import { ChevronDown, LogIn, LogOut, Plus, Search, User } from 'lucide-react'
 import { FormEvent, PropsWithChildren, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -16,7 +16,7 @@ export function AppShell({ children }: PropsWithChildren) {
   function submit(event: FormEvent) {
     event.preventDefault()
     const q = keyword.trim()
-    if (q) navigate(`/search?q=${encodeURIComponent(q)}`)
+    if (q) navigate(`/discover?q=${encodeURIComponent(q)}`)
   }
 
   useEffect(() => {
@@ -41,23 +41,28 @@ export function AppShell({ children }: PropsWithChildren) {
       <header className="app-shell__topbar">
         <form className="app-shell__search" onSubmit={submit}>
           <Search size={19} />
-          <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索" />
+          <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索图片、标签或用户" />
         </form>
         <div className="app-shell__account" ref={menuRef}>
-          <button className="app-shell__avatar-btn" type="button" onClick={() => (auth.user ? setMenuOpen((value) => !value) : auth.openAuth())}>
-            {auth.user ? <img src={avatarUrl(auth.user.avatarUrl)} alt={auth.user.nickname} /> : <span>H</span>}
-            <ChevronDown size={15} />
-          </button>
-          {menuOpen && (
-            <nav className="app-shell__account-menu" aria-label="账户菜单">
-              {auth.user ? (
-                <>
-                  <button type="button" onClick={() => openAuthed('/profile')}><User size={17} />个人资料</button>
+          {auth.user ? (
+            <>
+              <button className="app-shell__avatar-btn" type="button" onClick={() => setMenuOpen((value) => !value)} aria-label="账户菜单">
+                <img src={avatarUrl(auth.user.avatarUrl)} alt={auth.user.nickname} />
+                <ChevronDown size={15} />
+              </button>
+              {menuOpen && (
+                <nav className="app-shell__account-menu" aria-label="账户菜单">
+                  <button type="button" onClick={() => openAuthed('/profile')}><User size={17} />个人主页</button>
                   <button type="button" onClick={() => openAuthed('/publish')}><Plus size={17} />发布图片</button>
                   <button type="button" onClick={() => { setMenuOpen(false); void auth.logout() }}><LogOut size={17} />退出登录</button>
-                </>
-              ) : <button type="button" onClick={auth.openAuth}><LogIn size={17} />登录 / 注册</button>}
-            </nav>
+                </nav>
+              )}
+            </>
+          ) : (
+            <button className="app-shell__login-btn" type="button" onClick={auth.openAuth}>
+              <LogIn size={17} />
+              登录
+            </button>
           )}
         </div>
       </header>

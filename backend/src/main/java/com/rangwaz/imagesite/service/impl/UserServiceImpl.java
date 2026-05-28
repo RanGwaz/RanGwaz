@@ -4,7 +4,7 @@ import com.rangwaz.imagesite.common.exception.BusinessException;
 import com.rangwaz.imagesite.dto.ApiDtos;
 import com.rangwaz.imagesite.entity.UserEntity;
 import com.rangwaz.imagesite.mapper.FollowMapper;
-import com.rangwaz.imagesite.mapper.PostMapper;
+import com.rangwaz.imagesite.mapper.ImageContentMapper;
 import com.rangwaz.imagesite.mapper.UserMapper;
 import com.rangwaz.imagesite.service.UserService;
 import org.springframework.stereotype.Service;
@@ -18,19 +18,19 @@ import java.util.List;
 @Service
 public class UserServiceImpl implements UserService {
     private final UserMapper userMapper;
-    private final PostMapper postMapper;
+    private final ImageContentMapper imageContentMapper;
     private final FollowMapper followMapper;
 
     /**
      * Creates the user service.
      *
      * @param userMapper user mapper
-     * @param postMapper post mapper
+     * @param imageContentMapper image content mapper
      * @param followMapper follow mapper
      */
-    public UserServiceImpl(UserMapper userMapper, PostMapper postMapper, FollowMapper followMapper) {
+    public UserServiceImpl(UserMapper userMapper, ImageContentMapper imageContentMapper, FollowMapper followMapper) {
         this.userMapper = userMapper;
-        this.postMapper = postMapper;
+        this.imageContentMapper = imageContentMapper;
         this.followMapper = followMapper;
     }
 
@@ -72,7 +72,7 @@ public class UserServiceImpl implements UserService {
     @Override
     public ApiDtos.UserStats stats(Long userId) {
         return new ApiDtos.UserStats(
-                postMapper.findByAuthor(userId, 10_000).size(),
+                imageContentMapper.findByAuthor(userId, 10_000).size(),
                 followMapper.countFollowing(userId),
                 followMapper.countFollowers(userId)
         );

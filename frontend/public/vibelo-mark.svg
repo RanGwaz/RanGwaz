@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">Vibelo</title>
+  <rect x="2" y="2" width="60" height="60" rx="18" fill="#ffffff"/>
+  <rect x="2" y="2" width="60" height="60" rx="18" fill="none" stroke="#e6e9ee" stroke-width="2"/>
+  <path d="M17 18.5c0-2.5 2-4.5 4.5-4.5h1.1c2.1 0 3.9 1.4 4.4 3.4l5 19.7 5-19.7c.5-2 2.3-3.4 4.4-3.4h1.1c2.5 0 4.5 2 4.5 4.5 0 .5-.1 1-.2 1.5L39.3 44c-.8 2.7-3.3 4.6-6.1 4.6h-2.4c-2.8 0-5.3-1.9-6.1-4.6L17.2 20c-.1-.5-.2-1-.2-1.5Z" fill="#ff604b"/>
+  <circle cx="46.5" cy="18" r="4.8" fill="#42c7b7"/>
+</svg>

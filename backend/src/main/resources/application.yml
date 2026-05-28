@@ -23,7 +23,7 @@ spring:
       max-request-size: 60MB
   sql:
     init:
-      mode: always
+      mode: never
       schema-locations: classpath:db/schema.sql
   jackson:
     default-property-inclusion: non_null
@@ -49,4 +49,4 @@ app:
       access-key: minioadmin
       secret-key: minioadmin
       bucket: rangwaz-media
-      object-url-prefix: /api/media/object
+      object-url-prefix: /media/object

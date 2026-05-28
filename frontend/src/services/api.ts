@@ -2,12 +2,14 @@
 import type {
   ApiResponse,
   AuthTokenResponse,
+  CategoryView,
   CommentView,
   FollowStatus,
   PageResponse,
-  PostInteractionStatus,
-  PostView,
+  ImageInteractionStatus,
+  ImageView,
   SearchResult,
+  TagView,
   ToggleResult,
   TopicView,
   UploadResponse,
@@ -32,89 +34,109 @@ async function request<T>(path: string, init: RequestInit = {}) {
   if (token) headers.set('Authorization', `Bearer ${token}`)
   if (!(init.body instanceof FormData) && init.body !== undefined) headers.set('Content-Type', 'application/json')
   const response = await fetch(path, { ...init, headers })
-  const payload = (await response.json()) as ApiResponse<T>
+  const text = await response.text()
+  let payload: ApiResponse<T>
+  try {
+    payload = text ? JSON.parse(text) as ApiResponse<T> : {
+      code: response.ok ? 'OK' : 'EMPTY_RESPONSE',
+      data: undefined as T,
+      message: '',
+      success: response.ok,
+      timestamp: new Date().toISOString(),
+    }
+  } catch {
+    throw new Error(`接口 ${path} 返回了非 JSON 内容，请检查前端代理或后端路由`)
+  }
   if (!response.ok || !payload.success) throw new Error(payload.message || '请求失败')
   return payload.data
 }
 
 export const api = {
   register(payload: { username: string; password: string; nickname: string }) {
-    return request<AuthTokenResponse>('/api/auth/register', { method: 'POST', body: JSON.stringify(payload) })
+    return request<AuthTokenResponse>('/auth/register', { method: 'POST', body: JSON.stringify(payload) })
   },
   login(payload: { username: string; password: string }) {
-    return request<AuthTokenResponse>('/api/auth/login', { method: 'POST', body: JSON.stringify(payload) })
+    return request<AuthTokenResponse>('/auth/login', { method: 'POST', body: JSON.stringify(payload) })
   },
   logout() {
-    return request<void>('/api/auth/logout', { method: 'POST' })
+    return request<void>('/auth/logout', { method: 'POST' })
   },
   me() {
-    return request<AuthTokenResponse>('/api/auth/me')
+    return request<AuthTokenResponse>('/auth/me')
   },
   homeFeed(page = 1, pageSize = 30) {
-    return request<PageResponse<PostView>>(`/api/feed?page=${page}&pageSize=${pageSize}`)
+    return request<PageResponse<ImageView>>(`/feed?page=${page}&pageSize=${pageSize}`)
   },
-  similarPosts(postId: number, page = 1, size = 24) {
-    return request<PageResponse<PostView>>(`/api/feed/posts/${postId}/similar?page=${page}&size=${size}`)
+  similarImages(imageId: number, page = 1, size = 24) {
+    return request<PageResponse<ImageView>>(`/feed/images/${imageId}/similar?page=${page}&size=${size}`)
   },
-  postDetail(postId: number) {
-    return request<PostView>(`/api/posts/${postId}`)
+  imageDetail(imageId: number) {
+    return request<ImageView>(`/images/${imageId}`)
   },
-  trackPostClick(postId: number, scene = 'feed', position?: number) {
+  trackImageClick(imageId: number, scene = 'feed', position?: number) {
     const query = new URLSearchParams({ scene })
     if (position) query.set('position', String(position))
-    return request<void>(`/api/posts/${postId}/click?${query.toString()}`, { method: 'POST' })
+    return request<void>(`/images/${imageId}/click?${query.toString()}`, { method: 'POST' })
   },
-  trackPostShare(postId: number) {
-    return request<void>(`/api/posts/${postId}/share`, { method: 'POST' })
+  trackImageShare(imageId: number) {
+    return request<void>(`/images/${imageId}/share`, { method: 'POST' })
   },
-  createPost(payload: unknown) {
-    return request<PostView>('/api/posts', { method: 'POST', body: JSON.stringify(payload) })
+  createImage(payload: unknown) {
+    return request<ImageView>('/images', { method: 'POST', body: JSON.stringify(payload) })
   },
   uploadImage(file: File) {
     const form = new FormData()
     form.append('file', file)
-    return request<UploadResponse>('/api/media/upload', { method: 'POST', body: form })
+    return request<UploadResponse>('/media/upload', { method: 'POST', body: form })
   },
-  toggleLike(postId: number) {
-    return request<ToggleResult>(`/api/interactions/posts/${postId}/like/toggle`, { method: 'POST' })
+  toggleLike(imageId: number) {
+    return request<ToggleResult>(`/interactions/images/${imageId}/like/toggle`, { method: 'POST' })
   },
-  toggleFavorite(postId: number) {
-    return request<ToggleResult>(`/api/interactions/posts/${postId}/favorite/toggle`, { method: 'POST' })
+  toggleFavorite(imageId: number) {
+    return request<ToggleResult>(`/interactions/images/${imageId}/favorite/toggle`, { method: 'POST' })
   },
-  commentsPage(postId: number, page = 1, size = 20) {
-    return request<PageResponse<CommentView>>(`/api/interactions/posts/${postId}/comments/page?page=${page}&size=${size}`)
+  commentsPage(imageId: number, page = 1, size = 20) {
+    return request<PageResponse<CommentView>>(`/interactions/images/${imageId}/comments/page?page=${page}&size=${size}`)
   },
-  comment(postId: number, content: string, parentCommentId?: number) {
-    return request<CommentView>(`/api/interactions/posts/${postId}/comments`, { method: 'POST', body: JSON.stringify({ content, parentCommentId }) })
+  comment(imageId: number, content: string, parentCommentId?: number) {
+    return request<CommentView>(`/interactions/images/${imageId}/comments`, { method: 'POST', body: JSON.stringify({ content, parentCommentId }) })
   },
-  interactionStatus(postId: number) {
-    return request<PostInteractionStatus>(`/api/interactions/posts/${postId}/status`)
+  interactionStatus(imageId: number) {
+    return request<ImageInteractionStatus>(`/interactions/images/${imageId}/status`)
   },
   follow(userId: number, scene = 'detail') {
-    return request<void>(`/api/social/follow/${userId}?scene=${encodeURIComponent(scene)}`, { method: 'POST' })
+    return request<void>(`/social/follow/${userId}?scene=${encodeURIComponent(scene)}`, { method: 'POST' })
   },
   unfollow(userId: number) {
-    return request<void>(`/api/social/follow/${userId}`, { method: 'DELETE' })
+    return request<void>(`/social/follow/${userId}`, { method: 'DELETE' })
   },
   followStatus(userId: number) {
-    return request<FollowStatus>(`/api/social/follow-status/${userId}`)
+    return request<FollowStatus>(`/social/follow-status/${userId}`)
   },
   profile(userId: number) {
-    return request<UserSummary>(`/api/users/${userId}`)
+    return request<UserSummary>(`/users/${userId}`)
   },
   updateProfile(payload: { nickname: string; avatarUrl?: string; backgroundUrl?: string; bio?: string }) {
-    return request<UserSummary>('/api/users/me', { method: 'PUT', body: JSON.stringify(payload) })
+    return request<UserSummary>('/users/me', { method: 'PUT', body: JSON.stringify(payload) })
   },
   userStats(userId: number) {
-    return request<UserStats>(`/api/users/${userId}/stats`)
+    return request<UserStats>(`/users/${userId}/stats`)
   },
-  userPosts(userId: number, limit = 30) {
-    return request<PostView[]>(`/api/users/${userId}/posts?limit=${limit}`)
+  userImages(userId: number, limit = 30) {
+    return request<ImageView[]>(`/users/${userId}/images?limit=${limit}`)
   },
   search(keyword: string) {
-    return request<SearchResult>(`/api/search?keyword=${encodeURIComponent(keyword)}`)
+    return request<SearchResult>(`/search?keyword=${encodeURIComponent(keyword)}`)
   },
   trendingTopics(limit = 20) {
-    return request<TopicView[]>(`/api/topics/trending?limit=${limit}`)
+    return request<TopicView[]>(`/topics/trending?limit=${limit}`)
+  },
+  categoryTree() {
+    return request<CategoryView[]>('/metadata/categories/tree')
+  },
+  imageTags(type?: string, limit = 100) {
+    const query = new URLSearchParams({ limit: String(limit) })
+    if (type) query.set('type', type)
+    return request<TagView[]>(`/metadata/tags?${query.toString()}`)
   },
 }

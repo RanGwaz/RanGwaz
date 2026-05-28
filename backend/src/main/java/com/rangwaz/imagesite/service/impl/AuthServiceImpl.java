@@ -43,14 +43,14 @@ public class AuthServiceImpl implements AuthService {
     @Override
     public ApiDtos.AuthTokenResponse register(ApiDtos.RegisterRequest request) {
         if (userMapper.findByUsername(request.username()) != null) {
-            throw new BusinessException("USERNAME_EXISTS", "用户名已存在");
+            throw new BusinessException("USERNAME_EXISTS", "鐢ㄦ埛鍚嶅凡瀛樺湪");
         }
         UserEntity user = new UserEntity();
         user.setUsername(request.username().trim());
         user.setPasswordHash(PasswordHasher.hash(request.password()));
         user.setNickname(request.nickname().trim());
         user.setAvatarUrl("https://api.dicebear.com/9.x/adventurer/svg?seed=" + user.getUsername());
-        user.setBio("用图片记录今天的灵感");
+        user.setBio("鐢ㄥ浘鐗囪褰曚粖澶╃殑鐏垫劅");
         user.setStatus("ACTIVE");
         userMapper.insert(user);
         return tokenResponse(user);
@@ -66,7 +66,7 @@ public class AuthServiceImpl implements AuthService {
     public ApiDtos.AuthTokenResponse login(ApiDtos.LoginRequest request) {
         UserEntity user = userMapper.findByUsername(request.username());
         if (user == null || !PasswordHasher.matches(request.password(), user.getPasswordHash())) {
-            throw new BusinessException("BAD_CREDENTIALS", "用户名或密码错误");
+            throw new BusinessException("BAD_CREDENTIALS", "鐢ㄦ埛鍚嶆垨瀵嗙爜閿欒");
         }
         return tokenResponse(user);
     }

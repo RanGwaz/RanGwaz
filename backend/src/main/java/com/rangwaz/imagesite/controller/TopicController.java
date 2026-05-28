@@ -14,7 +14,7 @@ import java.util.List;
  * Topic discovery endpoints.
  */
 @RestController
-@RequestMapping("/api/topics")
+@RequestMapping("/topics")
 public class TopicController {
     private final TopicService topicService;
 

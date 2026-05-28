@@ -36,7 +36,7 @@ public class GlobalExceptionHandler {
         String message = exception.getBindingResult().getFieldErrors().stream()
                 .findFirst()
                 .map(error -> error.getField() + " " + error.getDefaultMessage())
-                .orElse("参数校验失败");
+                .orElse("鍙傛暟鏍￠獙澶辫触");
         return ApiResponse.fail("VALIDATION_ERROR", message);
     }
 

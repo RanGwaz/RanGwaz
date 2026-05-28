@@ -2,7 +2,7 @@ package com.rangwaz.imagesite.service.impl;
 
 import com.rangwaz.imagesite.common.api.PageResponse;
 import com.rangwaz.imagesite.dto.ApiDtos;
-import com.rangwaz.imagesite.mapper.PostMapper;
+import com.rangwaz.imagesite.mapper.ImageContentMapper;
 import com.rangwaz.imagesite.service.FeedService;
 import org.springframework.stereotype.Service;
 
@@ -11,18 +11,18 @@ import org.springframework.stereotype.Service;
  */
 @Service
 public class FeedServiceImpl implements FeedService {
-    private final PostMapper postMapper;
-    private final PostServiceImpl postService;
+    private final ImageContentMapper imageContentMapper;
+    private final ImageServiceImpl imageService;
 
     /**
      * Creates the feed service.
      *
-     * @param postMapper post mapper
-     * @param postService post service
+     * @param imageContentMapper image content mapper
+     * @param imageService post service
      */
-    public FeedServiceImpl(PostMapper postMapper, PostServiceImpl postService) {
-        this.postMapper = postMapper;
-        this.postService = postService;
+    public FeedServiceImpl(ImageContentMapper imageContentMapper, ImageServiceImpl imageService) {
+        this.imageContentMapper = imageContentMapper;
+        this.imageService = imageService;
     }
 
     /**
@@ -34,14 +34,12 @@ public class FeedServiceImpl implements FeedService {
      * @return page response
      */
     @Override
-    public PageResponse<ApiDtos.PostView> home(Long userId, int page, int size) {
+    public PageResponse<ApiDtos.ImageView> home(Long userId, int page, int size) {
         int safePage = Math.max(1, page);
         int safeSize = Math.max(1, Math.min(size, 60));
         int offset = (safePage - 1) * safeSize;
-        var records = postMapper.selectFeed(offset, safeSize).stream()
-                .map(post -> postService.toView(post, "热门图片与新鲜内容混排"))
-                .toList();
-        return new PageResponse<>(records, postMapper.countPublished(), safePage, safeSize);
+        var records = imageService.toViews(imageContentMapper.selectFeed(offset, safeSize), "home");
+        return new PageResponse<>(records, imageContentMapper.countPublished(), safePage, safeSize);
     }
 
     /**
@@ -53,14 +51,12 @@ public class FeedServiceImpl implements FeedService {
      * @return page response
      */
     @Override
-    public PageResponse<ApiDtos.PostView> similar(Long postId, int page, int size) {
-        postService.requirePost(postId);
+    public PageResponse<ApiDtos.ImageView> similar(Long postId, int page, int size) {
+        imageService.requirePost(postId);
         int safePage = Math.max(1, page);
         int safeSize = Math.max(1, Math.min(size, 60));
         int offset = (safePage - 1) * safeSize;
-        var records = postMapper.selectSimilar(postId, offset, safeSize).stream()
-                .map(post -> postService.toView(post, "与你正在看的内容相似"))
-                .toList();
-        return new PageResponse<>(records, postMapper.countSimilar(postId), safePage, safeSize);
+        var records = imageService.toViews(imageContentMapper.selectSimilar(postId, offset, safeSize), "similar");
+        return new PageResponse<>(records, imageContentMapper.countSimilar(postId), safePage, safeSize);
     }
 }

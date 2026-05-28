@@ -5,7 +5,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '../AuthContext'
 import { MasonryGrid } from '../components/MasonryGrid'
 import { api } from '../services/api'
-import type { PostView, UserStats, UserSummary } from '../types'
+import type { ImageView, UserStats, UserSummary } from '../types'
 import { avatarUrl, countText } from '../utils/format'
 
 interface ProfileDraft {
@@ -15,7 +15,6 @@ interface ProfileDraft {
   nickname: string
 }
 
-/** Create editable profile fields from a summary. */
 function toDraft(profile: UserSummary): ProfileDraft {
   return {
     avatarUrl: profile.avatarUrl || '',
@@ -33,7 +32,7 @@ export function ProfilePage() {
   const isOwnProfile = Boolean(auth.user && targetId === auth.user.id)
   const [profile, setProfile] = useState<UserSummary | null>(null)
   const [stats, setStats] = useState<UserStats | null>(null)
-  const [posts, setPosts] = useState<PostView[]>([])
+  const [images, setImages] = useState<ImageView[]>([])
   const [draft, setDraft] = useState<ProfileDraft | null>(null)
   const [editing, setEditing] = useState(false)
   const [following, setFollowing] = useState(false)
@@ -50,11 +49,11 @@ export function ProfilePage() {
     }
     setLoading(true)
     setError('')
-    Promise.all([api.profile(targetId), api.userStats(targetId), api.userPosts(targetId, 60)]).then(([user, userStats, userPosts]) => {
+    Promise.all([api.profile(targetId), api.userStats(targetId), api.userImages(targetId, 60)]).then(([user, userStats, userImages]) => {
       setProfile(user)
       setDraft(toDraft(user))
       setStats(userStats)
-      setPosts(userPosts)
+      setImages(userImages)
       if (auth.user && auth.user.id !== targetId) {
         api.followStatus(targetId).then((status) => setFollowing(status.following)).catch(() => undefined)
       }
@@ -133,7 +132,7 @@ export function ProfilePage() {
             <small>{profile.bio || '用图片记录今天的灵感'}</small>
           </section>
           <nav>
-            <strong>{countText(stats?.postCount)}<small>笔记</small></strong>
+            <strong>{countText(stats?.imageCount)}<small>图片</small></strong>
             <strong>{countText(stats?.followingCount)}<small>关注</small></strong>
             <strong>{countText(stats?.followerCount)}<small>粉丝</small></strong>
           </nav>
@@ -165,11 +164,11 @@ export function ProfilePage() {
       </header>
       <main className="profile-page__body">
         <div className="profile-page__tabs">
-          <button className="is-active" type="button">作品</button>
+          <button className="is-active" type="button">图片</button>
           <button type="button">收藏</button>
           <button type="button">喜欢</button>
         </div>
-        <MasonryGrid posts={posts} emptyLabel={isOwnProfile ? '发布第一张图片，开始你的主页' : '这个用户还没有发布内容'} onOpen={(target) => navigate(`/posts/${target.id}`)} />
+        <MasonryGrid posts={images} emptyLabel={isOwnProfile ? '发布第一张图片，开始你的主页' : '这个用户还没有发布内容'} onOpen={(target) => navigate(`/image/${target.id}`)} />
       </main>
     </div>
   )

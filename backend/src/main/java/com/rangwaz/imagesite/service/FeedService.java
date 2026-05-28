@@ -15,7 +15,7 @@ public interface FeedService {
      * @param size page size
      * @return page response
      */
-    PageResponse<ApiDtos.PostView> home(Long userId, int page, int size);
+    PageResponse<ApiDtos.ImageView> home(Long userId, int page, int size);
 
     /**
      * Loads posts similar to a detail post.
@@ -25,5 +25,5 @@ public interface FeedService {
      * @param size page size
      * @return page response
      */
-    PageResponse<ApiDtos.PostView> similar(Long postId, int page, int size);
+    PageResponse<ApiDtos.ImageView> similar(Long postId, int page, int size);
 }

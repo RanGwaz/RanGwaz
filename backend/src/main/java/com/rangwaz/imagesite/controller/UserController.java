@@ -3,7 +3,7 @@ package com.rangwaz.imagesite.controller;
 import com.rangwaz.imagesite.common.api.ApiResponse;
 import com.rangwaz.imagesite.common.auth.AuthContext;
 import com.rangwaz.imagesite.dto.ApiDtos;
-import com.rangwaz.imagesite.service.PostService;
+import com.rangwaz.imagesite.service.ImageService;
 import com.rangwaz.imagesite.service.UserService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -20,22 +20,22 @@ import java.util.List;
  * User profile endpoints.
  */
 @RestController
-@RequestMapping("/api/users")
+@RequestMapping("/users")
 public class UserController {
     private final UserService userService;
-    private final PostService postService;
+    private final ImageService imageService;
     private final AuthContext authContext;
 
     /**
      * Creates the user controller.
      *
      * @param userService user service
-     * @param postService post service
+     * @param imageService post service
      * @param authContext auth context
      */
-    public UserController(UserService userService, PostService postService, AuthContext authContext) {
+    public UserController(UserService userService, ImageService imageService, AuthContext authContext) {
         this.userService = userService;
-        this.postService = postService;
+        this.imageService = imageService;
         this.authContext = authContext;
     }
 
@@ -68,10 +68,10 @@ public class UserController {
      * @param limit maximum rows
      * @return post list
      */
-    @GetMapping("/{userId}/posts")
-    public ApiResponse<List<ApiDtos.PostView>> posts(@PathVariable Long userId,
+    @GetMapping("/{userId}/images")
+    public ApiResponse<List<ApiDtos.ImageView>> posts(@PathVariable Long userId,
                                                      @RequestParam(defaultValue = "30") int limit) {
-        return ApiResponse.ok(postService.byUser(userId, limit));
+        return ApiResponse.ok(imageService.byUser(userId, limit));
     }
 
     /**

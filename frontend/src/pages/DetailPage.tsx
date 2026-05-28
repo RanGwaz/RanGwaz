@@ -1,26 +1,24 @@
-/** Pinterest-style post detail page with related masonry feed. */
-import { ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Heart, MessageCircle, MoreHorizontal, Send } from 'lucide-react'
+/** Image detail page with Pinterest-like panel and related masonry feed. */
+import { ArrowLeft, ChevronLeft, ChevronRight, Heart, MessageCircle, MoreHorizontal, Send, Star } from 'lucide-react'
 import { CSSProperties, FormEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '../AuthContext'
 import { PostCard } from '../components/PostCard'
 import { api } from '../services/api'
-import type { CommentView, PostView } from '../types'
-import { aspectRatio, avatarUrl, countText, postCover, relativeTime } from '../utils/format'
+import type { CommentView, ImageView } from '../types'
+import { aspectRatio, avatarUrl, countText, imageOriginal, relativeTime } from '../utils/format'
 
 const DETAIL_BACK_COLUMN_WIDTH = 52
-const DETAIL_GRID_GAP = 16
-const DETAIL_TARGET_COLUMN_WIDTH = 240
+const DETAIL_GRID_GAP = 10
+const DETAIL_TARGET_COLUMN_WIDTH = 236
 const DETAIL_MAX_COLUMNS = 24
 const DETAIL_MAX_PANEL_COLUMNS = 5
-const DETAIL_CARD_CHROME_HEIGHT = 82
+const DETAIL_CARD_CHROME_HEIGHT = 0
 
-/** Clamp a number into an inclusive range. */
 function clampNumber(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
 }
 
-/** Resolve Pinterest-like fluid columns from the available detail canvas width. */
 function resolveDetailGrid(containerWidth: number) {
   const pinAreaWidth = Math.max(260, containerWidth - DETAIL_BACK_COLUMN_WIDTH - DETAIL_GRID_GAP)
   const totalColumns = clampNumber(
@@ -34,36 +32,56 @@ function resolveDetailGrid(containerWidth: number) {
   return { columnWidth, panelColumns, totalColumns }
 }
 
-/** Estimate rendered card height for the masonry packer. */
-function estimateCardHeight(post: PostView, columnWidth: number) {
-  const [w, h] = aspectRatio(post).split('/').map((item) => Number(item.trim()))
+function estimateCardHeight(image: ImageView, columnWidth: number) {
+  const [w, h] = aspectRatio(image).split('/').map((item) => Number(item.trim()))
   const ratio = Number.isFinite(w) && Number.isFinite(h) && w > 0 ? h / w : 1.35
   return Math.max(136, columnWidth * ratio) + DETAIL_CARD_CHROME_HEIGHT
 }
 
-/** Pack related posts into shortest columns, reserving only the detail panel columns. */
-function layoutRelatedPosts(posts: PostView[], count: number, reservedColumns: number, panelHeight: number, columnWidth: number) {
+function layoutRelatedImages(images: ImageView[], count: number, reservedColumns: number, panelHeight: number, columnWidth: number) {
   const safeCount = Math.max(1, count)
   const reservedHeight = panelHeight > 0 ? panelHeight + DETAIL_GRID_GAP : 0
   const heights = Array.from({ length: safeCount }, (_, index) => (index < reservedColumns ? reservedHeight : 0))
-  const items = posts.map((post) => {
-    const cardHeight = estimateCardHeight(post, columnWidth)
+  const items = images.map((image) => {
+    const cardHeight = estimateCardHeight(image, columnWidth)
     const columnIndex = heights.reduce((minIndex, height, index) => (height < heights[minIndex] ? index : minIndex), 0)
     const x = columnIndex * (columnWidth + DETAIL_GRID_GAP)
     const y = heights[columnIndex]
     heights[columnIndex] += cardHeight + DETAIL_GRID_GAP
-    return { height: cardHeight, post, width: columnWidth, x, y }
+    return { height: cardHeight, image, width: columnWidth, x, y }
   })
-  const height = Math.max(...heights, 1)
-  return { height, items }
+  return { height: Math.max(...heights, 1), items }
+}
+
+function DetailSkeleton() {
+  return (
+    <div className="detail-page">
+      <main className="detail-page__loading">
+        <section className="detail-page__loading-panel">
+          <i />
+          <div>
+            <b />
+            <b />
+            <span />
+            <em />
+            <b />
+            <b />
+          </div>
+        </section>
+        <section className="detail-page__loading-related">
+          {Array.from({ length: 12 }, (_, index) => <i key={index} />)}
+        </section>
+      </main>
+    </div>
+  )
 }
 
 export function DetailPage() {
   const { id } = useParams()
-  const postId = Number(id)
-  const [post, setPost] = useState<PostView | null>(null)
+  const imageId = Number(id)
+  const [image, setImage] = useState<ImageView | null>(null)
   const [comments, setComments] = useState<CommentView[]>([])
-  const [related, setRelated] = useState<PostView[]>([])
+  const [related, setRelated] = useState<ImageView[]>([])
   const [liked, setLiked] = useState(false)
   const [favorited, setFavorited] = useState(false)
   const [following, setFollowing] = useState(false)
@@ -86,20 +104,21 @@ export function DetailPage() {
   const auth = useAuth()
 
   const relatedLayout = useMemo(
-    () => layoutRelatedPosts(related, relatedColumns, reservedColumns, panelHeight, columnWidth),
+    () => layoutRelatedImages(related, relatedColumns, reservedColumns, panelHeight, columnWidth),
     [related, relatedColumns, reservedColumns, panelHeight, columnWidth],
   )
   const hasMoreRelated = related.length < relatedTotal || relatedTotal === 0
   const relatedReady = gridReady && panelHeight > 0 && related.length > 0
+  const canShowFollow = !auth.user || auth.user.id !== image?.author.id
 
   useLayoutEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: 'auto' })
-  }, [postId])
+  }, [imageId])
 
   useEffect(() => {
-    if (!Number.isFinite(postId) || postId <= 0) return
+    if (!Number.isFinite(imageId) || imageId <= 0) return
     setLoading(true)
-    setPost(null)
+    setImage(null)
     setComments([])
     setRelated([])
     setRelatedPage(1)
@@ -108,31 +127,35 @@ export function DetailPage() {
     setGridReady(false)
     setPanelHeight(0)
     Promise.all([
-      api.postDetail(postId),
-      api.commentsPage(postId, 1, 12),
-      api.similarPosts(postId, 1, 36),
+      api.imageDetail(imageId),
+      api.commentsPage(imageId, 1, 12),
+      api.similarImages(imageId, 1, 36),
     ]).then(([detail, commentPage, relatedPageData]) => {
-      setPost(detail)
+      setImage(detail)
       setComments(commentPage.records)
       setRelated(relatedPageData.records)
       setRelatedTotal(relatedPageData.total)
       setRelatedPage(2)
     }).finally(() => setLoading(false))
-  }, [postId])
+  }, [imageId])
 
   useEffect(() => {
-    if (!auth.user || !post) {
+    if (!auth.user || !image) {
       setLiked(false)
       setFavorited(false)
       setFollowing(false)
       return
     }
-    api.interactionStatus(post.id).then((status) => {
+    api.interactionStatus(image.id).then((status) => {
       setLiked(status.liked)
       setFavorited(status.favorited)
     }).catch(() => undefined)
-    api.followStatus(post.author.id).then((status) => setFollowing(status.following)).catch(() => undefined)
-  }, [auth.user, post])
+    if (auth.user.id !== image.author.id) {
+      api.followStatus(image.author.id).then((status) => setFollowing(status.following)).catch(() => undefined)
+    } else {
+      setFollowing(false)
+    }
+  }, [auth.user, image])
 
   useLayoutEffect(() => {
     const target = mainRef.current
@@ -158,109 +181,99 @@ export function DetailPage() {
       observer.disconnect()
       window.removeEventListener('resize', update)
     }
-  }, [post?.id])
+  }, [image?.id])
 
   useLayoutEffect(() => {
     const target = panelRef.current
     if (!target) return
-    const update = () => {
-      const height = target.offsetHeight
-      setPanelHeight(height)
-    }
+    const update = () => setPanelHeight(target.offsetHeight)
     update()
     const observer = new ResizeObserver(update)
     observer.observe(target)
     return () => observer.disconnect()
-  }, [post, commentsOpen])
+  }, [image, commentsOpen])
 
   useLayoutEffect(() => {
     setPanelHeight(0)
-  }, [postId])
+  }, [imageId])
 
   useEffect(() => {
     const target = sentinelRef.current
-    if (!target || !post || !hasMoreRelated) return
+    if (!target || !image || !hasMoreRelated) return
     const observer = new IntersectionObserver((entries) => {
       if (!entries.some((entry) => entry.isIntersecting)) return
-      api.similarPosts(post.id, relatedPage, 36).then((page) => {
+      api.similarImages(image.id, relatedPage, 36).then((page) => {
         setRelated((current) => [...current, ...page.records.filter((item) => !current.some((known) => known.id === item.id))])
         setRelatedTotal(page.total)
         setRelatedPage((value) => value + 1)
       }).catch(() => undefined)
-    }, { rootMargin: '1200px 0px' })
+    }, { rootMargin: '1100px 0px' })
     observer.observe(target)
     return () => observer.disconnect()
-  }, [hasMoreRelated, post, relatedPage])
+  }, [hasMoreRelated, image, relatedPage])
 
   async function toggleLike() {
-    if (!post) return
+    if (!image) return
     if (!auth.user) {
       auth.openAuth()
       return
     }
-    const result = await api.toggleLike(post.id)
+    const result = await api.toggleLike(image.id)
     setLiked(result.active)
-    setPost({ ...post, likeCount: Math.max(0, post.likeCount + (result.active ? 1 : -1)) })
+    setImage({ ...image, likeCount: Math.max(0, image.likeCount + (result.active ? 1 : -1)) })
   }
 
   async function toggleFavorite() {
-    if (!post) return
+    if (!image) return
     if (!auth.user) {
       auth.openAuth()
       return
     }
-    const result = await api.toggleFavorite(post.id)
+    const result = await api.toggleFavorite(image.id)
     setFavorited(result.active)
-    setPost({ ...post, favoriteCount: Math.max(0, post.favoriteCount + (result.active ? 1 : -1)) })
+    setImage({ ...image, favoriteCount: Math.max(0, image.favoriteCount + (result.active ? 1 : -1)) })
   }
 
   async function toggleFollow() {
-    if (!post) return
+    if (!image) return
     if (!auth.user) {
       auth.openAuth()
       return
     }
-    if (following) await api.unfollow(post.author.id)
-    else await api.follow(post.author.id, 'detail')
+    if (auth.user.id === image.author.id) {
+      navigate('/profile')
+      return
+    }
+    if (following) await api.unfollow(image.author.id)
+    else await api.follow(image.author.id, 'detail')
     setFollowing(!following)
   }
 
   async function submitComment(event: FormEvent) {
     event.preventDefault()
-    if (!post || !draft.trim()) return
+    if (!image || !draft.trim()) return
     if (!auth.user) {
       auth.openAuth()
       return
     }
-    const created = await api.comment(post.id, draft.trim())
+    const created = await api.comment(image.id, draft.trim())
     setDraft('')
     setCommentsOpen(true)
     setComments((current) => [created, ...current])
-    setPost({ ...post, commentCount: post.commentCount + 1 })
+    setImage({ ...image, commentCount: image.commentCount + 1 })
   }
 
   function nextAsset(delta: number) {
-    if (!post?.assets?.length) return
-    setActiveAsset((value) => (value + delta + post.assets.length) % post.assets.length)
+    if (!image?.assets?.length) return
+    setActiveAsset((value) => (value + delta + image.assets.length) % image.assets.length)
   }
 
-  function openRelated(target: PostView) {
-    void api.trackPostClick(target.id, 'similar').catch(() => undefined)
-    navigate(`/posts/${target.id}`)
+  function openRelated(target: ImageView) {
+    void api.trackImageClick(target.id, 'similar').catch(() => undefined)
+    navigate(`/image/${target.id}`)
   }
 
-  if (loading || !post || post.id !== postId) {
-    return (
-      <div className="detail-page">
-        <main className="detail-page__loading">
-          <span />
-          <section><i /><b /><b /><em /></section>
-          <section><i /><b /><b /><em /></section>
-          <section><i /><b /><b /><em /></section>
-        </main>
-      </div>
-    )
-  }
+  if (loading || !image || image.id !== imageId) return <DetailSkeleton />
 
   return (
     <div className="detail-page">
@@ -276,52 +289,53 @@ export function DetailPage() {
         <button className="detail-page__back-btn" type="button" onClick={() => navigate(-1)} aria-label="返回"><ArrowLeft size={24} /></button>
         <section className="detail-page__focus">
           <article className="detail-panel" ref={panelRef}>
-            <div className="detail-panel__toolbar">
-              <div>
-                <button type="button" className={liked ? 'is-active' : ''} onClick={toggleLike}><Heart size={24} /><strong>{countText(post.likeCount)}</strong></button>
-                <button type="button"><MessageCircle size={22} /></button>
-                <button type="button" onClick={() => api.trackPostShare(post.id)}><Send size={22} /></button>
-                <button type="button"><MoreHorizontal size={22} /></button>
-              </div>
-              <div>
-                <button type="button" onClick={() => navigate(`/users/${post.author.id}`)}>个人资料</button>
-                <button className={favorited ? 'is-active save' : 'save'} type="button" onClick={toggleFavorite}>保存</button>
-              </div>
-            </div>
             <div className="detail-panel__media">
               <button className="detail-panel__image-frame" type="button" onClick={() => setLightbox(true)} aria-label="查看大图">
-                <img src={postCover(post, activeAsset)} alt={post.title} style={{ aspectRatio: aspectRatio(post) }} />
+                <img src={imageOriginal(image, activeAsset)} alt={image.title} style={{ aspectRatio: aspectRatio(image) }} />
               </button>
-              {post.assets.length > 1 && (
+              {image.assets.length > 1 && (
                 <>
-                  <button className="detail-panel__arrow is-left" type="button" onClick={() => nextAsset(-1)}><ChevronLeft size={22} /></button>
-                  <button className="detail-panel__arrow is-right" type="button" onClick={() => nextAsset(1)}><ChevronRight size={22} /></button>
+                  <button className="detail-panel__arrow is-left" type="button" onClick={() => nextAsset(-1)} aria-label="上一张"><ChevronLeft size={22} /></button>
+                  <button className="detail-panel__arrow is-right" type="button" onClick={() => nextAsset(1)} aria-label="下一张"><ChevronRight size={22} /></button>
                 </>
               )}
             </div>
-            <section className="detail-panel__meta">
-              <header className="detail-panel__author">
-                <button type="button" onClick={() => navigate(`/users/${post.author.id}`)}>
-                  <img src={avatarUrl(post.author.avatarUrl)} alt="" />
-                  <span><strong>{post.author.nickname}</strong><small>@{post.author.username} · {relativeTime(post.createdAt)}</small></span>
-                </button>
-                {auth.user?.id !== post.author.id && <button type="button" className={following ? 'is-following' : ''} onClick={toggleFollow}>{following ? '已关注' : '+ 关注'}</button>}
-              </header>
-              <div className="detail-panel__copy">
-                <h1>{post.title}</h1>
-                {post.content && <p>{post.content}</p>}
-                <div>{post.tags.map((tag) => <span key={tag}>#{tag}</span>)}</div>
+            <section className="detail-panel__info">
+              <div className="detail-panel__toolbar">
+                <div className="detail-panel__tool-group">
+                  <button type="button" className={liked ? 'is-active' : ''} onClick={toggleLike} aria-label="点赞"><Heart size={23} /><strong>{countText(image.likeCount)}</strong></button>
+                  <button type="button" onClick={() => setCommentsOpen((value) => !value)} aria-label="评论"><MessageCircle size={21} /></button>
+                  <button type="button" className={favorited ? 'is-active' : ''} onClick={toggleFavorite} aria-label="收藏"><Star size={21} /></button>
+                  <button type="button" onClick={() => api.trackImageShare(image.id)} aria-label="分享"><Send size={21} /></button>
+                  <button type="button" aria-label="更多"><MoreHorizontal size={21} /></button>
+                </div>
               </div>
+              <div className="detail-panel__copy">
+                <h1>{image.title}</h1>
+                {image.content && <p>{image.content}</p>}
+                {image.tags.length > 0 && <div>{image.tags.map((tag) => <span key={tag}>#{tag}</span>)}</div>}
+              </div>
+              <header className="detail-panel__author">
+                <button className="detail-panel__author-card" type="button" onClick={() => navigate(`/profile/${image.author.id}`)}>
+                  <img src={avatarUrl(image.author.avatarUrl)} alt="" />
+                  <span>
+                    <strong>{image.author.nickname}</strong>
+                    <small>@{image.author.username} · {relativeTime(image.createdAt)}</small>
+                  </span>
+                </button>
+                <button className={following ? 'detail-panel__follow-btn is-following' : 'detail-panel__follow-btn'} type="button" onClick={toggleFollow}>
+                  {canShowFollow ? (following ? '已关注' : '关注') : '个人主页'}
+                </button>
+              </header>
               <section className="detail-panel__comments">
                 <button className="detail-panel__comments-toggle" type="button" onClick={() => setCommentsOpen((value) => !value)} aria-expanded={commentsOpen}>
-                  <strong>评论 ({post.commentCount})</strong>
-                  {commentsOpen ? <ChevronUp size={22} /> : <ChevronDown size={22} />}
+                  <strong>评论 ({image.commentCount})</strong>
                 </button>
                 {commentsOpen && (
                   <div className="detail-panel__comments-body">
                     <form className="detail-panel__comment-editor" onSubmit={submitComment}>
-                      <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="说点什么..." />
-                      <button type="submit"><Send size={18} /></button>
+                      <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="添加评论或展开对话讨论" />
+                      <button type="submit" aria-label="发送评论"><Send size={18} /></button>
                     </form>
                     <div className="detail-panel__comments-list">
                       {comments.map((comment) => (
@@ -343,18 +357,18 @@ export function DetailPage() {
               {relatedLayout.items.map((item) => (
                 <div
                   className="detail-related__item"
-                  key={item.post.id}
+                  key={item.image.id}
                   style={{ transform: `translate3d(${item.x}px,${item.y}px,0)`, width: item.width } as CSSProperties}
                 >
-                  <PostCard post={item.post} onOpen={openRelated} />
+                  <PostCard post={item.image} onOpen={openRelated} />
                 </div>
               ))}
             </div>
-          ) : <div className="detail-related__loading" />}
+          ) : <div className="detail-related__skeleton">{Array.from({ length: 12 }, (_, index) => <span key={index} />)}</div>}
         </section>
         <div ref={sentinelRef} className="detail-related__sentinel" />
       </main>
-      {lightbox && <button type="button" className="lightbox" onClick={() => setLightbox(false)}><img src={postCover(post, activeAsset)} alt={post.title} /></button>}
+      {lightbox && <button type="button" className="lightbox" onClick={() => setLightbox(false)} aria-label="关闭大图"><img src={imageOriginal(image, activeAsset)} alt={image.title} /></button>}
     </div>
   )
 }

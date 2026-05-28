@@ -10,7 +10,7 @@ import org.apache.ibatis.annotations.Select;
 import java.util.List;
 
 /**
- * Mapper for post comments.
+ * Mapper for image comments.
  */
 @Mapper
 public interface CommentMapper {
@@ -20,8 +20,8 @@ public interface CommentMapper {
      * @param comment comment entity
      */
     @Insert("""
-            INSERT INTO comments(post_id,author_id,parent_comment_id,content,status)
-            VALUES(#{postId},#{authorId},#{parentCommentId},#{content},#{status})
+            INSERT INTO comments(image_id,author_id,parent_comment_id,content,status)
+            VALUES(#{imageId},#{authorId},#{parentCommentId},#{content},#{status})
             """)
     @Options(useGeneratedKeys = true, keyProperty = "id")
     void insert(CommentEntity comment);
@@ -36,27 +36,27 @@ public interface CommentMapper {
     CommentEntity findById(@Param("id") Long id);
 
     /**
-     * Counts visible comments for a post.
+     * Counts visible comments for an image.
      *
-     * @param postId post id
+     * @param imageId image id
      * @return comment count
      */
-    @Select("SELECT COUNT(*) FROM comments WHERE post_id=#{postId} AND status='VISIBLE'")
-    long countByPostId(@Param("postId") Long postId);
+    @Select("SELECT COUNT(*) FROM comments WHERE image_id=#{imageId} AND status='VISIBLE'")
+    long countByImageId(@Param("imageId") Long imageId);
 
     /**
-     * Pages visible comments for a post.
+     * Pages visible comments for an image.
      *
-     * @param postId post id
+     * @param imageId image id
      * @param offset row offset
      * @param size page size
      * @return comments
      */
     @Select("""
             SELECT * FROM comments
-            WHERE post_id=#{postId} AND status='VISIBLE'
+            WHERE image_id=#{imageId} AND status='VISIBLE'
             ORDER BY created_at DESC,id DESC
             LIMIT #{size} OFFSET #{offset}
             """)
-    List<CommentEntity> pageByPostId(@Param("postId") Long postId, @Param("offset") int offset, @Param("size") int size);
+    List<CommentEntity> pageByImageId(@Param("imageId") Long imageId, @Param("offset") int offset, @Param("size") int size);
 }

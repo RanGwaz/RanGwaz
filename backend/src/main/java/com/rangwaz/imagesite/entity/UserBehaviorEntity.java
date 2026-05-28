@@ -3,12 +3,12 @@ package com.rangwaz.imagesite.entity;
 import lombok.Data;
 
 /**
- * Database entity for feed behavior events used by future recommendation jobs.
+ * Database entity for image behavior events.
  */
 @Data
 public class UserBehaviorEntity {
     private Long userId;
-    private Long postId;
+    private Long imageId;
     private String behaviorType;
     private String scene;
     private Integer positionNo;

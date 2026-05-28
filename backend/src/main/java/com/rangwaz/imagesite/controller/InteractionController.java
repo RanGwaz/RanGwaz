@@ -19,7 +19,7 @@ import org.springframework.web.bind.annotation.RestController;
  * Interaction endpoints for likes, favorites, comments, and behavior tracking.
  */
 @RestController
-@RequestMapping("/api/interactions")
+@RequestMapping("/interactions")
 public class InteractionController {
     private final InteractionService interactionService;
     private final AuthContext authContext;
@@ -42,10 +42,10 @@ public class InteractionController {
      * @param postId post id
      * @return toggle result
      */
-    @PostMapping("/posts/{postId}/like/toggle")
+    @PostMapping("/images/{imageId}/like/toggle")
     public ApiResponse<ApiDtos.ToggleResult> toggleLike(@RequestHeader(value = "Authorization", required = false) String authorization,
-                                                        @PathVariable Long postId) {
-        return ApiResponse.ok(interactionService.toggleLike(authContext.requireUserId(authorization), postId));
+                                                        @PathVariable Long imageId) {
+        return ApiResponse.ok(interactionService.toggleLike(authContext.requireUserId(authorization), imageId));
     }
 
     /**
@@ -55,10 +55,10 @@ public class InteractionController {
      * @param postId post id
      * @return toggle result
      */
-    @PostMapping("/posts/{postId}/favorite/toggle")
+    @PostMapping("/images/{imageId}/favorite/toggle")
     public ApiResponse<ApiDtos.ToggleResult> toggleFavorite(@RequestHeader(value = "Authorization", required = false) String authorization,
-                                                            @PathVariable Long postId) {
-        return ApiResponse.ok(interactionService.toggleFavorite(authContext.requireUserId(authorization), postId));
+                                                            @PathVariable Long imageId) {
+        return ApiResponse.ok(interactionService.toggleFavorite(authContext.requireUserId(authorization), imageId));
     }
 
     /**
@@ -68,10 +68,10 @@ public class InteractionController {
      * @param postId post id
      * @return status response
      */
-    @GetMapping("/posts/{postId}/status")
-    public ApiResponse<ApiDtos.PostInteractionStatus> status(@RequestHeader(value = "Authorization", required = false) String authorization,
-                                                             @PathVariable Long postId) {
-        return ApiResponse.ok(interactionService.status(authContext.requireUserId(authorization), postId));
+    @GetMapping("/images/{imageId}/status")
+    public ApiResponse<ApiDtos.ImageInteractionStatus> status(@RequestHeader(value = "Authorization", required = false) String authorization,
+                                                             @PathVariable Long imageId) {
+        return ApiResponse.ok(interactionService.status(authContext.requireUserId(authorization), imageId));
     }
 
     /**
@@ -82,11 +82,11 @@ public class InteractionController {
      * @param size page size
      * @return comment page
      */
-    @GetMapping("/posts/{postId}/comments/page")
-    public ApiResponse<PageResponse<ApiDtos.CommentView>> comments(@PathVariable Long postId,
+    @GetMapping("/images/{imageId}/comments/page")
+    public ApiResponse<PageResponse<ApiDtos.CommentView>> comments(@PathVariable Long imageId,
                                                                    @RequestParam(defaultValue = "1") int page,
                                                                    @RequestParam(defaultValue = "20") int size) {
-        return ApiResponse.ok(interactionService.comments(postId, page, size));
+        return ApiResponse.ok(interactionService.comments(imageId, page, size));
     }
 
     /**
@@ -97,10 +97,10 @@ public class InteractionController {
      * @param request creation request
      * @return created comment
      */
-    @PostMapping("/posts/{postId}/comments")
+    @PostMapping("/images/{imageId}/comments")
     public ApiResponse<ApiDtos.CommentView> comment(@RequestHeader(value = "Authorization", required = false) String authorization,
-                                                    @PathVariable Long postId,
+                                                    @PathVariable Long imageId,
                                                     @Valid @RequestBody ApiDtos.CreateCommentRequest request) {
-        return ApiResponse.ok(interactionService.comment(authContext.requireUserId(authorization), postId, request));
+        return ApiResponse.ok(interactionService.comment(authContext.requireUserId(authorization), imageId, request));
     }
 }

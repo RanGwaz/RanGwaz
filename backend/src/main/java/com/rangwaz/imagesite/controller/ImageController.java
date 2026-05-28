@@ -3,7 +3,7 @@ package com.rangwaz.imagesite.controller;
 import com.rangwaz.imagesite.common.api.ApiResponse;
 import com.rangwaz.imagesite.common.auth.AuthContext;
 import com.rangwaz.imagesite.dto.ApiDtos;
-import com.rangwaz.imagesite.service.PostService;
+import com.rangwaz.imagesite.service.ImageService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -15,80 +15,80 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Post endpoints for publishing, detail reading, and analytics events.
+ * Image endpoints for publishing, detail reading, and analytics events.
  */
 @RestController
-@RequestMapping("/api/posts")
-public class PostController {
-    private final PostService postService;
+@RequestMapping("/images")
+public class ImageController {
+    private final ImageService imageService;
     private final AuthContext authContext;
 
     /**
-     * Creates the post controller.
+     * Creates the image controller.
      *
-     * @param postService post service
+     * @param imageService image content service
      * @param authContext auth context
      */
-    public PostController(PostService postService, AuthContext authContext) {
-        this.postService = postService;
+    public ImageController(ImageService imageService, AuthContext authContext) {
+        this.imageService = imageService;
         this.authContext = authContext;
     }
 
     /**
-     * Creates a new post.
+     * Creates a new image content row.
      *
      * @param authorization authorization header
      * @param request creation request
-     * @return created post
+     * @return created image
      */
     @PostMapping
-    public ApiResponse<ApiDtos.PostView> create(@RequestHeader(value = "Authorization", required = false) String authorization,
-                                                @Valid @RequestBody ApiDtos.CreatePostRequest request) {
-        return ApiResponse.ok(postService.create(authContext.requireUserId(authorization), request));
+    public ApiResponse<ApiDtos.ImageView> create(@RequestHeader(value = "Authorization", required = false) String authorization,
+                                                @Valid @RequestBody ApiDtos.CreateImageRequest request) {
+        return ApiResponse.ok(imageService.create(authContext.requireUserId(authorization), request));
     }
 
     /**
-     * Reads a post detail.
+     * Reads an image detail.
      *
      * @param authorization authorization header
-     * @param postId post id
-     * @return post detail
+     * @param imageId image id
+     * @return image detail
      */
-    @GetMapping("/{postId}")
-    public ApiResponse<ApiDtos.PostView> detail(@RequestHeader(value = "Authorization", required = false) String authorization,
-                                                @PathVariable Long postId) {
+    @GetMapping("/{imageId}")
+    public ApiResponse<ApiDtos.ImageView> detail(@RequestHeader(value = "Authorization", required = false) String authorization,
+                                                @PathVariable Long imageId) {
         Long userId = authContext.currentUserId(authorization).orElse(null);
-        return ApiResponse.ok(postService.detail(postId, userId));
+        return ApiResponse.ok(imageService.detail(imageId, userId));
     }
 
     /**
-     * Tracks a post click.
+     * Tracks an image click.
      *
      * @param authorization authorization header
-     * @param postId post id
+     * @param imageId image id
      * @param scene scene name
      * @param position feed position
      * @return empty response
      */
-    @PostMapping("/{postId}/click")
+    @PostMapping("/{imageId}/click")
     public ApiResponse<Void> click(@RequestHeader(value = "Authorization", required = false) String authorization,
-                                   @PathVariable Long postId,
+                                   @PathVariable Long imageId,
                                    @RequestParam(defaultValue = "feed") String scene,
                                    @RequestParam(required = false) Integer position) {
         Long userId = authContext.currentUserId(authorization).orElse(null);
-        postService.click(postId, userId, scene, position);
+        imageService.click(imageId, userId, scene, position);
         return ApiResponse.ok(null);
     }
 
     /**
-     * Tracks a post share.
+     * Tracks an image share.
      *
-     * @param postId post id
+     * @param imageId image id
      * @return empty response
      */
-    @PostMapping("/{postId}/share")
-    public ApiResponse<Void> share(@PathVariable Long postId) {
-        postService.share(postId);
+    @PostMapping("/{imageId}/share")
+    public ApiResponse<Void> share(@PathVariable Long imageId) {
+        imageService.share(imageId);
         return ApiResponse.ok(null);
     }
 }

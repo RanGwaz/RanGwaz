@@ -16,7 +16,7 @@ import org.springframework.web.bind.annotation.RestController;
  * Feed endpoints for home and detail recommendations.
  */
 @RestController
-@RequestMapping("/api/feed")
+@RequestMapping("/feed")
 public class FeedController {
     private final FeedService feedService;
     private final AuthContext authContext;
@@ -41,7 +41,7 @@ public class FeedController {
      * @return feed page
      */
     @GetMapping
-    public ApiResponse<PageResponse<ApiDtos.PostView>> home(@RequestHeader(value = "Authorization", required = false) String authorization,
+    public ApiResponse<PageResponse<ApiDtos.ImageView>> home(@RequestHeader(value = "Authorization", required = false) String authorization,
                                                             @RequestParam(defaultValue = "1") int page,
                                                             @RequestParam(defaultValue = "30") int pageSize) {
         Long userId = authContext.currentUserId(authorization).orElse(null);
@@ -56,10 +56,10 @@ public class FeedController {
      * @param size page size
      * @return similar posts page
      */
-    @GetMapping("/posts/{postId}/similar")
-    public ApiResponse<PageResponse<ApiDtos.PostView>> similar(@PathVariable Long postId,
+    @GetMapping("/images/{imageId}/similar")
+    public ApiResponse<PageResponse<ApiDtos.ImageView>> similar(@PathVariable Long imageId,
                                                                @RequestParam(defaultValue = "1") int page,
                                                                @RequestParam(defaultValue = "24") int size) {
-        return ApiResponse.ok(feedService.similar(postId, page, size));
+        return ApiResponse.ok(feedService.similar(imageId, page, size));
     }
 }

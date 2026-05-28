@@ -1,4 +1,4 @@
-/** Search page for posts, users, and topics. */
+/** Search page for images, users, and topics. */
 import { Search } from 'lucide-react'
 import { FormEvent, useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
@@ -11,14 +11,14 @@ export function SearchPage() {
   const [params] = useSearchParams()
   const navigate = useNavigate()
   const [keyword, setKeyword] = useState(params.get('q') || '')
-  const [result, setResult] = useState<SearchResult>({ users: [], posts: [], topics: [] })
+  const [result, setResult] = useState<SearchResult>({ users: [], images: [], topics: [] })
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
     const q = params.get('q') || ''
     setKeyword(q)
     if (!q.trim()) {
-      setResult({ users: [], posts: [], topics: [] })
+      setResult({ users: [], images: [], topics: [] })
       return
     }
     setLoading(true)
@@ -27,7 +27,7 @@ export function SearchPage() {
 
   function submit(event: FormEvent) {
     event.preventDefault()
-    if (keyword.trim()) navigate(`/search?q=${encodeURIComponent(keyword.trim())}`)
+    if (keyword.trim()) navigate(`/discover?q=${encodeURIComponent(keyword.trim())}`)
   }
 
   return (
@@ -35,10 +35,10 @@ export function SearchPage() {
       <header className="search-page__head">
         <form className="search-page__search" onSubmit={submit}>
           <Search size={20} />
-          <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索笔记、用户或标签" />
+          <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索图片、用户或标签" />
           <button type="submit">搜索</button>
         </form>
-        <p>{keyword.trim() ? `搜索 “${keyword.trim()}”` : '输入关键词发现内容、用户和标签'}</p>
+        <p>{keyword.trim() ? `搜索 "${keyword.trim()}"` : '输入关键词发现图片、用户和标签'}</p>
       </header>
       <main className="search-page__body">
         {loading && <section className="search-page__state">正在搜索...</section>}
@@ -47,9 +47,9 @@ export function SearchPage() {
             <h2>标签</h2>
             <div className="search-page__topic-row">
               {result.topics.map((topic) => (
-                <button key={topic.id} type="button" onClick={() => navigate(`/search?q=${encodeURIComponent(topic.name)}`)}>
+                <button key={topic.id} type="button" onClick={() => navigate(`/discover?q=${encodeURIComponent(topic.name)}`)}>
                   <strong>#{topic.name}</strong>
-                  <span>{countText(topic.postCount)} 篇内容</span>
+                  <span>{countText(topic.postCount)} 张图片</span>
                 </button>
               ))}
             </div>
@@ -60,7 +60,7 @@ export function SearchPage() {
             <h2>用户</h2>
             <div className="search-page__user-list">
               {result.users.map((user) => (
-                <article key={user.id} onClick={() => navigate(`/users/${user.id}`)}>
+                <article key={user.id} onClick={() => navigate(`/profile/${user.id}`)}>
                   <img src={avatarUrl(user.avatarUrl)} alt="" />
                   <span><strong>{user.nickname}</strong><small>@{user.username}</small></span>
                   <button type="button">主页</button>
@@ -69,10 +69,10 @@ export function SearchPage() {
             </div>
           </section>
         )}
-        {!loading && result.posts.length > 0 && (
-          <section className="search-page__section">
-            <h2>笔记</h2>
-            <MasonryGrid posts={result.posts} onOpen={(target) => navigate(`/posts/${target.id}`)} />
+        {!loading && result.images.length > 0 && (
+          <section className="search-page__section search-page__section--plain">
+            <h2>图片</h2>
+            <MasonryGrid posts={result.images} onOpen={(target) => navigate(`/image/${target.id}`)} />
           </section>
         )}
       </main>

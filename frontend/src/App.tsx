@@ -18,12 +18,11 @@ export function App() {
         <Routes location={location}>
           <Route path="/" element={<Navigate to="/home" replace />} />
           <Route path="/home" element={<FeedPage />} />
-          <Route path="/feed" element={<FeedPage />} />
-          <Route path="/posts/:id" element={<DetailPage />} />
-          <Route path="/search" element={<SearchPage />} />
+          <Route path="/image/:id" element={<DetailPage />} />
+          <Route path="/discover" element={<SearchPage />} />
           <Route path="/publish" element={<PublishPage />} />
           <Route path="/profile" element={<ProfilePage />} />
-          <Route path="/users/:id" element={<ProfilePage />} />
+          <Route path="/profile/:id" element={<ProfilePage />} />
           <Route path="*" element={<Navigate to="/home" replace />} />
         </Routes>
       </AppShell>
