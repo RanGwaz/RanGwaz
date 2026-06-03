@@ -36,6 +36,12 @@ export function FeedPage() {
       setTotal(response.total)
       setPage(targetPage + 1)
       setLoadedOnce(true)
+      void api.trackBehaviors(response.records.map((image, index) => ({
+        imageId: image.id,
+        behaviorType: 'impression',
+        scene: 'home',
+        position: (targetPage - 1) * pageSize + index + 1,
+      }))).catch(() => undefined)
       if (response.records.length === 0) setExhausted(true)
       setImages((current) => {
         const base = reset ? [] : current

@@ -57,11 +57,11 @@ function packPosts(posts: ImageView[], columnCount: number, columnWidth: number)
   return { height: Math.max(...heights, 1), items }
 }
 
-function SkeletonGrid() {
+function SkeletonItems() {
   return (
-    <div className="masonry-grid masonry-grid--skeleton">
+    <>
       {Array.from({ length: 18 }, (_, index) => <span key={index} />)}
-    </div>
+    </>
   )
 }
 
@@ -92,15 +92,18 @@ export function MasonryGrid({ posts, loading = false, emptyLabel = '暂无内容
     }
   }, [])
 
-  if (!posts.length && loading) return <SkeletonGrid />
-
-  if (!posts.length) {
-    return <div ref={rootRef} className="masonry-grid masonry-grid--empty">{emptyLabel}</div>
-  }
+  const className = [
+    'masonry-grid',
+    !posts.length && loading ? 'masonry-grid--skeleton' : '',
+    !posts.length && !loading ? 'masonry-grid--empty' : '',
+    posts.length && !metrics.ready ? 'is-measuring' : '',
+  ].filter(Boolean).join(' ')
 
   return (
-    <div ref={rootRef} className={metrics.ready ? 'masonry-grid' : 'masonry-grid is-measuring'}>
-      {metrics.ready ? (
+    <div ref={rootRef} className={className}>
+      {!posts.length && loading ? <SkeletonItems /> : null}
+      {!posts.length && !loading ? emptyLabel : null}
+      {posts.length && metrics.ready ? (
         <div className="masonry-grid__canvas" style={{ height: layout.height } as CSSProperties}>
           {layout.items.map((item) => (
             <div
@@ -112,7 +115,8 @@ export function MasonryGrid({ posts, loading = false, emptyLabel = '暂无内容
             </div>
           ))}
         </div>
-      ) : <div className="masonry-grid__skeleton" />}
+      ) : null}
+      {posts.length && !metrics.ready ? <div className="masonry-grid__skeleton" /> : null}
     </div>
   )
 }

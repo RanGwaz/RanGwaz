@@ -87,4 +87,12 @@ public interface InteractionService {
      * @param request behavior request
      */
     void behavior(Long userId, ApiDtos.BehaviorRequest request);
+
+    /**
+     * Tracks multiple behavior events.
+     *
+     * @param userId optional user id
+     * @param request batch behavior request
+     */
+    void behaviors(Long userId, ApiDtos.BehaviorBatchRequest request);
 }

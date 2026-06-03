@@ -43,4 +43,18 @@ public class BehaviorController {
         interactionService.behavior(authContext.currentUserId(authorization).orElse(null), request);
         return ApiResponse.ok(null);
     }
+
+    /**
+     * Records behavior events in a batch.
+     *
+     * @param authorization authorization header
+     * @param request behavior batch request
+     * @return empty response
+     */
+    @PostMapping("/batch")
+    public ApiResponse<Void> recordBatch(@RequestHeader(value = "Authorization", required = false) String authorization,
+                                         @RequestBody ApiDtos.BehaviorBatchRequest request) {
+        interactionService.behaviors(authContext.currentUserId(authorization).orElse(null), request);
+        return ApiResponse.ok(null);
+    }
 }

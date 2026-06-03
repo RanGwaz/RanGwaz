@@ -60,6 +60,29 @@ public interface ImageContentMapper {
     List<ImageEntity> selectFeed(@Param("offset") int offset, @Param("size") int size);
 
     /**
+     * Finds published images by ids while preserving the input order.
+     *
+     * @param ids ordered image ids
+     * @return image content rows
+     */
+    @Select("""
+            <script>
+            SELECT * FROM images
+            WHERE status='PUBLISHED'
+              AND id IN
+              <foreach collection="ids" item="id" open="(" separator="," close=")">
+                #{id}
+              </foreach>
+            ORDER BY FIELD(id,
+              <foreach collection="ids" item="id" separator=",">
+                #{id}
+              </foreach>
+            )
+            </script>
+            """)
+    List<ImageEntity> findPublishedByIds(@Param("ids") List<Long> ids);
+
+    /**
      * Selects nearby image content for a simple similar baseline.
      *
      * @param postId current image id

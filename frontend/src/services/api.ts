@@ -78,6 +78,10 @@ export const api = {
     if (position) query.set('position', String(position))
     return request<void>(`/images/${imageId}/click?${query.toString()}`, { method: 'POST' })
   },
+  trackBehaviors(events: Array<{ imageId: number; behaviorType: string; scene?: string; position?: number; duration?: number }>) {
+    if (events.length === 0) return Promise.resolve()
+    return request<void>('/behaviors/batch', { method: 'POST', body: JSON.stringify({ events }) })
+  },
   trackImageShare(imageId: number) {
     return request<void>(`/images/${imageId}/share`, { method: 'POST' })
   },

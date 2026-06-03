@@ -4,12 +4,11 @@ import com.rangwaz.imagesite.common.exception.BusinessException;
 import com.rangwaz.imagesite.dto.ApiDtos;
 import com.rangwaz.imagesite.entity.ImageEntity;
 import com.rangwaz.imagesite.entity.TopicEntity;
-import com.rangwaz.imagesite.entity.UserBehaviorEntity;
 import com.rangwaz.imagesite.entity.UserEntity;
-import com.rangwaz.imagesite.mapper.BehaviorMapper;
 import com.rangwaz.imagesite.mapper.ImageContentMapper;
 import com.rangwaz.imagesite.mapper.TopicMapper;
 import com.rangwaz.imagesite.mapper.UserMapper;
+import com.rangwaz.imagesite.messaging.BehaviorEventPublisher;
 import com.rangwaz.imagesite.service.ImageMetadataService;
 import com.rangwaz.imagesite.service.ImageService;
 import org.springframework.stereotype.Service;
@@ -36,7 +35,7 @@ public class ImageServiceImpl implements ImageService {
     private final ImageContentMapper imageContentMapper;
     private final TopicMapper topicMapper;
     private final UserMapper userMapper;
-    private final BehaviorMapper behaviorMapper;
+    private final BehaviorEventPublisher behaviorEventPublisher;
     private final UserServiceImpl userService;
     private final TopicServiceImpl topicService;
     private final ImageMetadataService imageMetadataService;
@@ -47,7 +46,7 @@ public class ImageServiceImpl implements ImageService {
      * @param imageContentMapper image content mapper
      * @param topicMapper topic mapper
      * @param userMapper user mapper
-     * @param behaviorMapper behavior mapper
+     * @param behaviorEventPublisher behavior event publisher
      * @param userService user service
      * @param topicService topic service
      * @param imageMetadataService image metadata service
@@ -55,14 +54,14 @@ public class ImageServiceImpl implements ImageService {
     public ImageServiceImpl(ImageContentMapper imageContentMapper,
                            TopicMapper topicMapper,
                            UserMapper userMapper,
-                           BehaviorMapper behaviorMapper,
+                           BehaviorEventPublisher behaviorEventPublisher,
                            UserServiceImpl userService,
                            TopicServiceImpl topicService,
                            ImageMetadataService imageMetadataService) {
         this.imageContentMapper = imageContentMapper;
         this.topicMapper = topicMapper;
         this.userMapper = userMapper;
-        this.behaviorMapper = behaviorMapper;
+        this.behaviorEventPublisher = behaviorEventPublisher;
         this.userService = userService;
         this.topicService = topicService;
         this.imageMetadataService = imageMetadataService;
@@ -237,14 +236,7 @@ public class ImageServiceImpl implements ImageService {
      * @param duration duration
      */
     public void trackBehavior(Long userId, Long postId, String type, String scene, Integer position, Integer duration) {
-        UserBehaviorEntity behavior = new UserBehaviorEntity();
-        behavior.setUserId(userId);
-        behavior.setImageId(postId);
-        behavior.setBehaviorType(StringUtils.hasText(type) ? type : "unknown");
-        behavior.setScene(StringUtils.hasText(scene) ? scene : "unknown");
-        behavior.setPositionNo(position);
-        behavior.setDurationMs(duration);
-        behaviorMapper.insert(behavior);
+        behaviorEventPublisher.publish(userId, postId, type, scene, position, duration);
     }
 
     private ApiDtos.ImageView toView(ImageEntity image,

@@ -17,6 +17,22 @@ spring:
       port: 6379
       database: 0
       timeout: 800ms
+  kafka:
+    bootstrap-servers: localhost:9092
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: 1
+      properties:
+        linger.ms: 20
+        batch.size: 32768
+    consumer:
+      group-id: vibelo-behavior-writer
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    listener:
+      ack-mode: record
   servlet:
     multipart:
       max-file-size: 20MB
@@ -25,6 +41,10 @@ spring:
     init:
       mode: never
       schema-locations: classpath:db/schema.sql
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    locations: classpath:db/migration
   jackson:
     default-property-inclusion: non_null
     time-zone: Asia/Shanghai
@@ -43,6 +63,11 @@ management:
 app:
   upload-root: storage/uploads
   public-upload-prefix: /uploads
+  recommendation:
+    vector-service-url: http://127.0.0.1:8091
+    vector-enabled: true
+  behavior:
+    kafka-topic: vibelo.user-behaviors
   storage:
     minio:
       endpoint: http://localhost:9000

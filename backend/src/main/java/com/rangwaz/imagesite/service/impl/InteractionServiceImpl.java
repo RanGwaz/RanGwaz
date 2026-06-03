@@ -196,8 +196,24 @@ public class InteractionServiceImpl implements InteractionService {
     @Override
     public void behavior(Long userId, ApiDtos.BehaviorRequest request) {
         if (request.imageId() == null) throw new BusinessException("IMAGE_REQUIRED", "缂哄皯鍥剧墖鍐呭");
-        imageService.requirePost(request.imageId());
-        imageService.trackBehavior(userId, request.imageId(), request.behaviorType(), request.scene(), request.position(), request.duration());
+        String type = StringUtils.hasText(request.behaviorType()) ? request.behaviorType().trim() : "unknown";
+        String scene = StringUtils.hasText(request.scene()) ? request.scene().trim() : "unknown";
+        imageService.trackBehavior(userId, request.imageId(), type, scene, request.position(), request.duration());
+    }
+
+    /**
+     * Tracks multiple behavior events.
+     *
+     * @param userId optional user id
+     * @param request batch behavior request
+     */
+    @Override
+    public void behaviors(Long userId, ApiDtos.BehaviorBatchRequest request) {
+        if (request == null || request.events() == null) return;
+        request.events().stream()
+                .filter(event -> event != null && event.imageId() != null)
+                .limit(100)
+                .forEach(event -> behavior(userId, event));
     }
 
     /**

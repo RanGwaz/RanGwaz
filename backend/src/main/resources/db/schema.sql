@@ -4,6 +4,7 @@ DROP TABLE IF EXISTS feed_impressions;
 DROP TABLE IF EXISTS user_interest_snapshots;
 DROP TABLE IF EXISTS post_recommendation_features;
 DROP TABLE IF EXISTS recommendation_candidates;
+DROP TABLE IF EXISTS image_embeddings;
 DROP TABLE IF EXISTS user_behaviors;
 DROP TABLE IF EXISTS user_interactions;
 DROP TABLE IF EXISTS follows;
@@ -182,6 +183,68 @@ CREATE TABLE user_behaviors (
   duration_ms INT,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   KEY idx_user_behaviors_user_time (user_id, created_at),
+  KEY idx_user_behaviors_user_image_type_time (user_id, image_id, behavior_type, created_at),
   KEY idx_user_behaviors_image_type (image_id, behavior_type),
   CONSTRAINT fk_user_behaviors_image FOREIGN KEY (image_id) REFERENCES images(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE feed_impressions (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  user_id BIGINT,
+  image_id BIGINT NOT NULL,
+  scene VARCHAR(32) NOT NULL DEFAULT 'home',
+  position_no INT,
+  source VARCHAR(32) NOT NULL DEFAULT 'mysql',
+  score DECIMAL(12,6),
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_feed_impressions_user_time (user_id, created_at),
+  KEY idx_feed_impressions_image_time (image_id, created_at),
+  CONSTRAINT fk_feed_impressions_user FOREIGN KEY (user_id) REFERENCES app_users(id) ON DELETE SET NULL,
+  CONSTRAINT fk_feed_impressions_image FOREIGN KEY (image_id) REFERENCES images(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE image_embeddings (
+  image_id BIGINT NOT NULL,
+  model_name VARCHAR(120) NOT NULL,
+  vector_version VARCHAR(40) NOT NULL DEFAULT 'v1',
+  vector_dimension INT NOT NULL DEFAULT 1536,
+  image_hash VARCHAR(128),
+  milvus_collection VARCHAR(80) NOT NULL DEFAULT 'vibelo_image_vectors_siglip2_giant_p384',
+  milvus_pk BIGINT,
+  status VARCHAR(24) NOT NULL DEFAULT 'PENDING',
+  last_error VARCHAR(500),
+  embedded_at DATETIME,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (image_id, model_name, vector_version),
+  KEY idx_image_embeddings_image (image_id),
+  KEY idx_image_embeddings_status (status, updated_at),
+  KEY idx_image_embeddings_model_version (model_name, vector_version),
+  CONSTRAINT fk_image_embeddings_image FOREIGN KEY (image_id) REFERENCES images(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE recommendation_candidates (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  user_id BIGINT,
+  scene VARCHAR(32) NOT NULL DEFAULT 'home',
+  source VARCHAR(32) NOT NULL DEFAULT 'vector',
+  image_id BIGINT NOT NULL,
+  score DECIMAL(14,8) NOT NULL DEFAULT 0,
+  reason VARCHAR(120),
+  expires_at DATETIME,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_recommendation_candidates_user_scene (user_id, scene, score, created_at),
+  KEY idx_recommendation_candidates_image (image_id),
+  CONSTRAINT fk_recommendation_candidates_user FOREIGN KEY (user_id) REFERENCES app_users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_recommendation_candidates_image FOREIGN KEY (image_id) REFERENCES images(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE user_interest_snapshots (
+  user_id BIGINT PRIMARY KEY,
+  model_name VARCHAR(120) NOT NULL,
+  vector_version VARCHAR(40) NOT NULL DEFAULT 'v1',
+  positive_image_count INT NOT NULL DEFAULT 0,
+  interest_json JSON,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_user_interest_snapshots_user FOREIGN KEY (user_id) REFERENCES app_users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

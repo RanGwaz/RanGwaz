@@ -136,6 +136,12 @@ export function DetailPage() {
       setRelated(relatedPageData.records)
       setRelatedTotal(relatedPageData.total)
       setRelatedPage(2)
+      void api.trackBehaviors(relatedPageData.records.map((item, index) => ({
+        imageId: item.id,
+        behaviorType: 'impression',
+        scene: 'similar',
+        position: index + 1,
+      }))).catch(() => undefined)
     }).finally(() => setLoading(false))
   }, [imageId])
 
@@ -206,6 +212,12 @@ export function DetailPage() {
         setRelated((current) => [...current, ...page.records.filter((item) => !current.some((known) => known.id === item.id))])
         setRelatedTotal(page.total)
         setRelatedPage((value) => value + 1)
+        void api.trackBehaviors(page.records.map((item, index) => ({
+          imageId: item.id,
+          behaviorType: 'impression',
+          scene: 'similar',
+          position: (relatedPage - 1) * 36 + index + 1,
+        }))).catch(() => undefined)
       }).catch(() => undefined)
     }, { rootMargin: '1100px 0px' })
     observer.observe(target)
@@ -289,6 +301,15 @@ export function DetailPage() {
         <button className="detail-page__back-btn" type="button" onClick={() => navigate(-1)} aria-label="返回"><ArrowLeft size={24} /></button>
         <section className="detail-page__focus">
           <article className="detail-panel" ref={panelRef}>
+            <div className="detail-panel__toolbar">
+              <div className="detail-panel__tool-group">
+                <button type="button" className={liked ? 'is-active' : ''} onClick={toggleLike} aria-label="点赞"><Heart size={23} /><strong>{countText(image.likeCount)}</strong></button>
+                <button type="button" onClick={() => setCommentsOpen((value) => !value)} aria-label="评论"><MessageCircle size={21} /></button>
+                <button type="button" className={favorited ? 'is-active' : ''} onClick={toggleFavorite} aria-label="收藏"><Star size={21} /></button>
+                <button type="button" onClick={() => api.trackImageShare(image.id)} aria-label="分享"><Send size={21} /></button>
+                <button type="button" aria-label="更多"><MoreHorizontal size={21} /></button>
+              </div>
+            </div>
             <div className="detail-panel__media">
               <button className="detail-panel__image-frame" type="button" onClick={() => setLightbox(true)} aria-label="查看大图">
                 <img src={imageOriginal(image, activeAsset)} alt={image.title} style={{ aspectRatio: aspectRatio(image) }} />
@@ -301,20 +322,6 @@ export function DetailPage() {
               )}
             </div>
             <section className="detail-panel__info">
-              <div className="detail-panel__toolbar">
-                <div className="detail-panel__tool-group">
-                  <button type="button" className={liked ? 'is-active' : ''} onClick={toggleLike} aria-label="点赞"><Heart size={23} /><strong>{countText(image.likeCount)}</strong></button>
-                  <button type="button" onClick={() => setCommentsOpen((value) => !value)} aria-label="评论"><MessageCircle size={21} /></button>
-                  <button type="button" className={favorited ? 'is-active' : ''} onClick={toggleFavorite} aria-label="收藏"><Star size={21} /></button>
-                  <button type="button" onClick={() => api.trackImageShare(image.id)} aria-label="分享"><Send size={21} /></button>
-                  <button type="button" aria-label="更多"><MoreHorizontal size={21} /></button>
-                </div>
-              </div>
-              <div className="detail-panel__copy">
-                <h1>{image.title}</h1>
-                {image.content && <p>{image.content}</p>}
-                {image.tags.length > 0 && <div>{image.tags.map((tag) => <span key={tag}>#{tag}</span>)}</div>}
-              </div>
               <header className="detail-panel__author">
                 <button className="detail-panel__author-card" type="button" onClick={() => navigate(`/profile/${image.author.id}`)}>
                   <img src={avatarUrl(image.author.avatarUrl)} alt="" />
@@ -327,6 +334,11 @@ export function DetailPage() {
                   {canShowFollow ? (following ? '已关注' : '关注') : '个人主页'}
                 </button>
               </header>
+              <div className="detail-panel__copy">
+                <h1>{image.title}</h1>
+                {image.content && <p>{image.content}</p>}
+                {image.tags.length > 0 && <div>{image.tags.map((tag) => <span key={tag}>#{tag}</span>)}</div>}
+              </div>
               <section className="detail-panel__comments">
                 <button className="detail-panel__comments-toggle" type="button" onClick={() => setCommentsOpen((value) => !value)} aria-expanded={commentsOpen}>
                   <strong>评论 ({image.commentCount})</strong>

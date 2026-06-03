@@ -203,6 +203,12 @@ public final class ApiDtos {
     }
 
     /**
+     * Batch behavior tracking request for feed impressions.
+     */
+    public record BehaviorBatchRequest(List<BehaviorRequest> events) {
+    }
+
+    /**
      * Comment creation request.
      */
     public record CreateCommentRequest(@NotBlank @Size(max = 1000) String content, Long parentCommentId) {

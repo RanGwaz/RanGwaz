@@ -1,44 +1,30 @@
-# RanGwaz
+# RanGwaz / Vibelo
 
-RanGwaz 是一个图片类网站。当前目标是先把中小型图片站的主链路做稳：图片入库、MinIO 存储、分类标签、搜索、详情、点赞收藏评论、用户主页。推荐系统和 Milvus 向量库后续单独接入。
+RanGwaz 是一个图片类网站，当前目标是搭建一个类似 Pinterest 的图片内容与推荐系统平台。核心主表是 `images`，图片文件放 MinIO，业务数据放 MySQL，行为事件进入 Kafka，图片向量放 Milvus。
 
 ## 当前架构
 
 - 前端：`frontend`，React + Vite。
-- 后端：`backend`，Spring Boot。
-- 存储：MySQL + MinIO。
-- 数据工具：`tools/import_images.py` 直接导入本地授权图片，`tools/auto_label_images.py` 调用本地视觉模型打标签。
-
-核心内容只存一张主表：`images`。没有 `posts` 内容表，也不再双写图片 URL。
-
-## 数据库说明
-
-当前开发库 schema 在：
-
-```text
-backend/src/main/resources/db/schema.sql
-```
-
-主要表：
-
-- `images`：图片内容核心表，保存作者、标题、描述、URL、缩略图、宽高、hash、互动计数、发布时间等。
-- `categories` / `tags` / `image_tags`：分类、标签、图片标签关联。
-- `image_topics` / `topics`：轻量话题。
-- `comments` / `user_interactions` / `user_behaviors`：评论、点赞收藏、行为事件。
-- `app_users` / `follows`：用户和关注。
-
-后端启动不会自动清空数据库。`spring.sql.init.mode` 已设为 `never`。
+- 后端：`backend`，Spring Boot + MyBatis。
+- 中间件：MySQL、Redis、Kafka、MinIO、Milvus，统一由 `infra/docker-compose.yml` 启动。
+- 数据工具：`tools/import_images.py` 导入授权图片，`tools/auto_label_images.py` 调用本地视觉模型打标签，`tools/vectorize_images.py` 生成图片向量写入 Milvus。
 
 ## 本地启动
+
+所有中间件只使用一个 compose 文件：
 
 ```powershell
 docker compose -f infra/docker-compose.yml up -d
 ```
 
+后端：
+
 ```powershell
 cd backend
 mvn spring-boot:run
 ```
+
+前端：
 
 ```powershell
 cd frontend
@@ -52,9 +38,51 @@ npm run dev
 mira / RanGwaz147..
 ```
 
+## 中间件端口
+
+- MySQL：`localhost:3306`
+- Redis：`localhost:6379`
+- Kafka：`localhost:9092`
+- 业务 MinIO：`localhost:9000`，控制台 `localhost:9001`
+- Milvus：`localhost:19530`
+- Milvus 内部 MinIO：`localhost:19000`，控制台 `localhost:19001`
+
+业务 MinIO 和 Milvus 内部 MinIO 是两个容器，职责不同，但都在同一个 compose 文件里。
+
+## 数据库
+
+开发库 schema：
+
+```text
+backend/src/main/resources/db/schema.sql
+```
+
+字段变更和新增表通过 Flyway SQL migration 管理：
+
+```text
+backend/src/main/resources/db/migration
+```
+
+后端不会自动清空数据库，`spring.sql.init.mode` 已设为 `never`。
+
+## 行为打点
+
+曝光、点击、浏览、点赞、收藏、评论等行为先写入 Kafka topic：
+
+```text
+vibelo.user-behaviors
+```
+
+后端消费者再异步落库到：
+
+- `user_behaviors`
+- `feed_impressions`
+
+点赞、收藏、评论这类强业务状态仍然同步更新计数，行为日志异步写入，避免前端打点拖慢页面。
+
 ## 导入图片
 
-先安装依赖：
+安装依赖：
 
 ```powershell
 python -m pip install pymysql minio pycryptodome pillow
@@ -72,35 +100,44 @@ python tools/import_images.py
 tools/downloaded_dataset/images
 ```
 
-导入逻辑：
-
-- 上传原图和缩略图到 MinIO。
-- 直接写入 MySQL 的 `images` 表。
-- 按 sha256 跳过重复图片。
-- 点赞、收藏、评论、分享、浏览、热度全部从 0 开始。
-- 如果检测到旧版 `posts + images` 表结构，会按新版 `schema.sql` 重建一次开发库。
-- 如果已经是新版结构，不会清空已有数据。
-
 ## 自动打标签
-
-导入后运行：
 
 ```powershell
 python tools/auto_label_images.py
 ```
 
-脚本读取 `tools/import_results.jsonl`，调用本地 Ollama 视觉模型，生成：
-
-- `description`
-- `categoryPath`
-- typed tags
-
-结果直接写入 `categories`、`tags`、`image_tags` 和 `images.main_category_id`。
-
-默认模型是：
+默认调用本地 Ollama 视觉模型：
 
 ```text
 qwen2.5vl:7b
 ```
 
-这类视觉语言模型适合生成描述、主题、风格、颜色、场景、对象等标签。真正用于相似图片检索和推荐召回的高质量向量，后续再接 CLIP、SigLIP、Chinese-CLIP 或同类 embedding 模型写入 Milvus。
+结果写入 `categories`、`tags`、`image_tags` 和 `images.main_category_id`。
+
+## 图片向量与推荐召回
+
+安装推荐依赖：
+
+```powershell
+python -m pip install -r tools/requirements_recommendation.txt
+```
+
+生成图片向量：
+
+```powershell
+python tools/vectorize_images.py
+```
+
+启动向量召回服务：
+
+```powershell
+python tools/vector_recall_service.py
+```
+
+当前向量模型：
+
+```text
+google/siglip2-giant-opt-patch16-384
+```
+
+首页走推荐召回和排序，详情页周围数据走相似图片召回。
