@@ -73,4 +73,23 @@ public interface BehaviorMapper {
             LIMIT #{limit}
             """)
     List<Long> findRecentPositiveImageIds(@Param("userId") Long userId, @Param("limit") int limit);
+
+    /**
+     * Finds recently seen image ids for lightweight feed de-duplication.
+     *
+     * @param userId user id
+     * @param limit maximum rows
+     * @return image ids
+     */
+    @Select("""
+            SELECT image_id
+            FROM user_behaviors
+            WHERE user_id=#{userId}
+              AND behavior_type IN ('impression','click','view')
+              AND created_at >= DATE_SUB(NOW(), INTERVAL 14 DAY)
+            GROUP BY image_id
+            ORDER BY MAX(created_at) DESC
+            LIMIT #{limit}
+            """)
+    List<Long> findRecentSeenImageIds(@Param("userId") Long userId, @Param("limit") int limit);
 }

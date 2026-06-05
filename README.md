@@ -114,6 +114,8 @@ qwen2.5vl:7b
 
 结果写入 `categories`、`tags`、`image_tags` 和 `images.main_category_id`。
 
+本地 Ollama 只适合验证链路。批量生产描述和标签时，优先使用 `tools/fast_label_images_openai_compatible.py` 连接远端 GPU 上的 OpenAI-compatible 视觉模型服务。
+
 ## 图片向量与推荐召回
 
 安装推荐依赖：
@@ -138,6 +140,8 @@ python tools/vector_recall_service.py
 
 ```text
 google/siglip2-giant-opt-patch16-384
+dimension: 1536
+collection: vibelo_image_vectors_siglip2_giant_p384
 ```
 
 首页走推荐召回和排序，详情页周围数据走相似图片召回。

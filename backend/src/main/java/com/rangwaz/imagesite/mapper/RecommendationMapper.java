@@ -13,6 +13,187 @@ import java.util.List;
 @Mapper
 public interface RecommendationMapper {
     /**
+     * Recalls images from tags attached to the user's positive behavior history.
+     *
+     * @param userId user id
+     * @param size maximum rows
+     * @return image rows
+     */
+    @Select("""
+            WITH seed_events AS (
+              SELECT ub.image_id,
+                     MAX(
+                       CASE ub.behavior_type
+                         WHEN 'favorite' THEN 60
+                         WHEN 'like' THEN 45
+                         WHEN 'comment' THEN 40
+                         WHEN 'share' THEN 40
+                         WHEN 'click' THEN 25
+                         WHEN 'view' THEN 15
+                         ELSE 1
+                       END
+                     ) AS behavior_weight,
+                     MAX(ub.created_at) AS latest_at
+              FROM user_behaviors ub
+              WHERE ub.user_id=#{userId}
+                AND ub.behavior_type IN ('favorite','like','comment','share','click','view')
+                AND ub.created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)
+              GROUP BY ub.image_id
+              ORDER BY behavior_weight DESC, latest_at DESC
+              LIMIT 80
+            ),
+            seed_tags AS (
+              SELECT it.tag_id,
+                     SUM(seed_events.behavior_weight * COALESCE(it.confidence,1)) AS affinity
+              FROM seed_events
+              JOIN image_tags it ON it.image_id=seed_events.image_id
+              GROUP BY it.tag_id
+              ORDER BY affinity DESC
+              LIMIT 80
+            )
+            SELECT i.*
+            FROM seed_tags
+            JOIN image_tags it ON it.tag_id=seed_tags.tag_id
+            JOIN images i ON i.id=it.image_id AND i.status='PUBLISHED'
+            LEFT JOIN seed_events ON seed_events.image_id=i.id
+            WHERE seed_events.image_id IS NULL
+            GROUP BY i.id
+            ORDER BY
+              SUM(seed_tags.affinity * COALESCE(it.confidence,1)) DESC,
+              i.hot_score DESC,
+              i.published_at DESC,
+              i.id DESC
+            LIMIT #{size}
+            """)
+    List<ImageEntity> selectUserTagRecall(@Param("userId") Long userId, @Param("size") int size);
+
+    /**
+     * Recalls images from categories in the user's positive behavior history.
+     *
+     * @param userId user id
+     * @param size maximum rows
+     * @return image rows
+     */
+    @Select("""
+            WITH seed_events AS (
+              SELECT ub.image_id,
+                     MAX(
+                       CASE ub.behavior_type
+                         WHEN 'favorite' THEN 60
+                         WHEN 'like' THEN 45
+                         WHEN 'comment' THEN 40
+                         WHEN 'share' THEN 40
+                         WHEN 'click' THEN 25
+                         WHEN 'view' THEN 15
+                         ELSE 1
+                       END
+                     ) AS behavior_weight,
+                     MAX(ub.created_at) AS latest_at
+              FROM user_behaviors ub
+              WHERE ub.user_id=#{userId}
+                AND ub.behavior_type IN ('favorite','like','comment','share','click','view')
+                AND ub.created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)
+              GROUP BY ub.image_id
+              ORDER BY behavior_weight DESC, latest_at DESC
+              LIMIT 80
+            ),
+            seed_categories AS (
+              SELECT i.main_category_id,
+                     SUM(seed_events.behavior_weight) AS affinity
+              FROM seed_events
+              JOIN images i ON i.id=seed_events.image_id
+              WHERE i.main_category_id IS NOT NULL
+              GROUP BY i.main_category_id
+              ORDER BY affinity DESC
+              LIMIT 20
+            )
+            SELECT i.*
+            FROM seed_categories
+            JOIN images i ON i.main_category_id=seed_categories.main_category_id AND i.status='PUBLISHED'
+            LEFT JOIN seed_events ON seed_events.image_id=i.id
+            WHERE seed_events.image_id IS NULL
+            ORDER BY
+              seed_categories.affinity DESC,
+              i.hot_score DESC,
+              i.published_at DESC,
+              i.id DESC
+            LIMIT #{size}
+            """)
+    List<ImageEntity> selectUserCategoryRecall(@Param("userId") Long userId, @Param("size") int size);
+
+    /**
+     * Recalls images from lightweight topics attached to the user's positive behavior history.
+     *
+     * @param userId user id
+     * @param size maximum rows
+     * @return image rows
+     */
+    @Select("""
+            WITH seed_events AS (
+              SELECT ub.image_id,
+                     MAX(
+                       CASE ub.behavior_type
+                         WHEN 'favorite' THEN 60
+                         WHEN 'like' THEN 45
+                         WHEN 'comment' THEN 40
+                         WHEN 'share' THEN 40
+                         WHEN 'click' THEN 25
+                         WHEN 'view' THEN 15
+                         ELSE 1
+                       END
+                     ) AS behavior_weight,
+                     MAX(ub.created_at) AS latest_at
+              FROM user_behaviors ub
+              WHERE ub.user_id=#{userId}
+                AND ub.behavior_type IN ('favorite','like','comment','share','click','view')
+                AND ub.created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)
+              GROUP BY ub.image_id
+              ORDER BY behavior_weight DESC, latest_at DESC
+              LIMIT 80
+            ),
+            seed_topics AS (
+              SELECT it.topic_id,
+                     SUM(seed_events.behavior_weight) AS affinity
+              FROM seed_events
+              JOIN image_topics it ON it.image_id=seed_events.image_id
+              GROUP BY it.topic_id
+              ORDER BY affinity DESC
+              LIMIT 50
+            )
+            SELECT i.*
+            FROM seed_topics
+            JOIN image_topics it ON it.topic_id=seed_topics.topic_id
+            JOIN images i ON i.id=it.image_id AND i.status='PUBLISHED'
+            LEFT JOIN seed_events ON seed_events.image_id=i.id
+            WHERE seed_events.image_id IS NULL
+            GROUP BY i.id
+            ORDER BY
+              SUM(seed_topics.affinity) DESC,
+              i.hot_score DESC,
+              i.published_at DESC,
+              i.id DESC
+            LIMIT #{size}
+            """)
+    List<ImageEntity> selectUserTopicRecall(@Param("userId") Long userId, @Param("size") int size);
+
+    /**
+     * Recalls fresh images from followed authors.
+     *
+     * @param userId user id
+     * @param size maximum rows
+     * @return image rows
+     */
+    @Select("""
+            SELECT i.*
+            FROM follows f
+            JOIN images i ON i.author_id=f.followee_id AND i.status='PUBLISHED'
+            WHERE f.follower_id=#{userId}
+            ORDER BY i.published_at DESC,i.hot_score DESC,i.id DESC
+            LIMIT #{size}
+            """)
+    List<ImageEntity> selectFollowedAuthorRecall(@Param("userId") Long userId, @Param("size") int size);
+
+    /**
      * Selects a cold-start feed ranked by quality, freshness, and engagement.
      *
      * @param offset row offset

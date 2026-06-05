@@ -10,7 +10,7 @@ import org.apache.ibatis.annotations.Select;
 import java.util.List;
 
 /**
- * Mapper for hierarchical image categories.
+ * Mapper for globally unique image categories.
  */
 @Mapper
 public interface CategoryMapper {
@@ -27,19 +27,13 @@ public interface CategoryMapper {
     void insert(CategoryEntity category);
 
     /**
-     * Finds a category under a parent by name.
+     * Finds a category by globally unique name.
      *
      * @param name category name
-     * @param parentId parent id
      * @return category entity
      */
-    @Select("""
-            SELECT * FROM categories
-            WHERE name=#{name}
-              AND ((#{parentId} IS NULL AND parent_id IS NULL) OR parent_id=#{parentId})
-            LIMIT 1
-            """)
-    CategoryEntity findByNameAndParent(@Param("name") String name, @Param("parentId") Long parentId);
+    @Select("SELECT * FROM categories WHERE name=#{name} LIMIT 1")
+    CategoryEntity findByName(@Param("name") String name);
 
     /**
      * Finds a category by id.

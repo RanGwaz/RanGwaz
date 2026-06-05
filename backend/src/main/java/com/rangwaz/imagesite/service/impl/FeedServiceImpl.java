@@ -14,11 +14,14 @@ import org.springframework.stereotype.Service;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Feed service that separates personalized home ranking from detail-page similarity.
@@ -26,8 +29,14 @@ import java.util.Objects;
 @Service
 public class FeedServiceImpl implements FeedService {
     private static final int MAX_RECALL_CANDIDATES = 240;
-    private static final int HOME_RECALL_MULTIPLIER = 4;
+    private static final int HOME_RECALL_MULTIPLIER = 5;
     private static final int SIMILAR_RECALL_MULTIPLIER = 4;
+    private static final double ROUTE_VECTOR_WEIGHT = 0.38;
+    private static final double ROUTE_TAG_WEIGHT = 0.2;
+    private static final double ROUTE_TOPIC_WEIGHT = 0.14;
+    private static final double ROUTE_CATEGORY_WEIGHT = 0.12;
+    private static final double ROUTE_FOLLOW_WEIGHT = 0.08;
+    private static final double ROUTE_GLOBAL_WEIGHT = 0.08;
 
     private final ImageContentMapper imageContentMapper;
     private final RecommendationMapper recommendationMapper;
@@ -69,22 +78,33 @@ public class FeedServiceImpl implements FeedService {
         int safePage = Math.max(1, page);
         int safeSize = Math.max(1, Math.min(size, 60));
         int offset = (safePage - 1) * safeSize;
-        List<ImageEntity> images = List.of();
-        String reason = "cold-start";
+        int recallLimit = candidateLimit(offset, safeSize, HOME_RECALL_MULTIPLIER);
+        Map<Long, RecallScore> recallScores = new LinkedHashMap<>();
+        Set<Long> recentSeenIds = Set.of();
         if (userId != null) {
             List<Long> seedImageIds = behaviorMapper.findRecentPositiveImageIds(userId, 40);
             List<VectorHit> vectorHits = vectorRecallClient.feed(
                     userId,
                     seedImageIds,
                     0,
-                    candidateLimit(offset, safeSize, HOME_RECALL_MULTIPLIER)
+                    recallLimit
             );
-            if (!vectorHits.isEmpty()) {
-                images = imageContentMapper.findPublishedByIds(hitIds(vectorHits));
-                images = rankHome(images, scoreMap(vectorHits), offset, safeSize);
-                reason = "vector-ranked-home";
-            }
+            addVectorRecall(recallScores, vectorHits, ROUTE_VECTOR_WEIGHT, "vector");
+            addRankedRecall(recallScores, recommendationMapper.selectUserTagRecall(userId, recallLimit), ROUTE_TAG_WEIGHT, "tag");
+            addRankedRecall(recallScores, recommendationMapper.selectUserTopicRecall(userId, recallLimit), ROUTE_TOPIC_WEIGHT, "topic");
+            addRankedRecall(recallScores, recommendationMapper.selectUserCategoryRecall(userId, recallLimit), ROUTE_CATEGORY_WEIGHT, "category");
+            addRankedRecall(recallScores, recommendationMapper.selectFollowedAuthorRecall(userId, recallLimit), ROUTE_FOLLOW_WEIGHT, "follow");
+            recentSeenIds = new HashSet<>(behaviorMapper.findRecentSeenImageIds(userId, 1200));
         }
+        addRankedRecall(recallScores, recommendationMapper.selectColdStart(0, recallLimit), ROUTE_GLOBAL_WEIGHT, "global");
+        List<ImageEntity> images = recallScores.isEmpty()
+                ? recommendationMapper.selectColdStart(offset, safeSize)
+                : rankHome(imageContentMapper.findPublishedByIds(new ArrayList<>(recallScores.keySet())),
+                recallScores,
+                recentSeenIds,
+                offset,
+                safeSize);
+        String reason = userId == null || recallScores.isEmpty() ? "cold-start" : "multi-recall-home";
         if (images.isEmpty()) {
             images = recommendationMapper.selectColdStart(offset, safeSize);
             reason = "cold-start";
@@ -137,14 +157,43 @@ public class FeedServiceImpl implements FeedService {
         return scores;
     }
 
+    private void addVectorRecall(Map<Long, RecallScore> scores,
+                                 List<VectorHit> hits,
+                                 double routeWeight,
+                                 String route) {
+        int rank = 0;
+        for (VectorHit hit : hits) {
+            if (hit.imageId() != null && hit.imageId() > 0) {
+                double contribution = routeWeight * (cleanScore(hit.score()) * 0.85 + rankDecay(rank) * 0.15);
+                scores.computeIfAbsent(hit.imageId(), RecallScore::new).add(route, contribution);
+                rank++;
+            }
+        }
+    }
+
+    private void addRankedRecall(Map<Long, RecallScore> scores,
+                                 List<ImageEntity> images,
+                                 double routeWeight,
+                                 String route) {
+        int rank = 0;
+        for (ImageEntity image : images) {
+            if (image.getId() != null) {
+                double contribution = routeWeight * rankDecay(rank);
+                scores.computeIfAbsent(image.getId(), RecallScore::new).add(route, contribution);
+                rank++;
+            }
+        }
+    }
+
     private List<ImageEntity> rankHome(List<ImageEntity> candidates,
-                                       Map<Long, Double> vectorScores,
+                                       Map<Long, RecallScore> recallScores,
+                                       Set<Long> recentSeenIds,
                                        int offset,
                                        int size) {
         return candidates.stream()
                 .filter(image -> image.getId() != null)
                 .sorted(Comparator
-                        .comparingDouble((ImageEntity image) -> homeScore(image, vectorScores)).reversed()
+                        .comparingDouble((ImageEntity image) -> homeScore(image, recallScores, recentSeenIds)).reversed()
                         .thenComparing(ImageEntity::getPublishedAt, Comparator.nullsLast(Comparator.reverseOrder()))
                         .thenComparing(ImageEntity::getId, Comparator.nullsLast(Comparator.reverseOrder())))
                 .skip(offset)
@@ -152,12 +201,17 @@ public class FeedServiceImpl implements FeedService {
                 .toList();
     }
 
-    private double homeScore(ImageEntity image, Map<Long, Double> vectorScores) {
-        double vector = vectorScores.getOrDefault(image.getId(), 0D);
-        return vector * 0.78
+    private double homeScore(ImageEntity image, Map<Long, RecallScore> recallScores, Set<Long> recentSeenIds) {
+        RecallScore recall = recallScores.get(image.getId());
+        double recallScore = recall == null ? 0 : recall.score();
+        double routeBonus = recall == null ? 0 : Math.min(0.08, recall.routeCount() * 0.02);
+        double seenPenalty = recentSeenIds.contains(image.getId()) ? 0.28 : 0;
+        return recallScore
+                + routeBonus
                 + engagementScore(image) * 0.12
                 + freshnessScore(image) * 0.08
-                + metadataQualityScore(image) * 0.02;
+                + metadataQualityScore(image) * 0.02
+                - seenPenalty;
     }
 
     private List<ImageEntity> rankSimilar(List<VectorHit> vectorHits,
@@ -250,5 +304,44 @@ public class FeedServiceImpl implements FeedService {
 
     private double decimal(BigDecimal value) {
         return value == null ? 0 : value.doubleValue();
+    }
+
+    private static final class RecallScore {
+        private final Long imageId;
+        private double score;
+        private int routeCount;
+        private String primaryRoute;
+        private double primaryContribution;
+
+        private RecallScore(Long imageId) {
+            this.imageId = imageId;
+        }
+
+        private void add(String route, double contribution) {
+            score += contribution;
+            routeCount++;
+            if (contribution > primaryContribution) {
+                primaryContribution = contribution;
+                primaryRoute = route;
+            }
+        }
+
+        private double score() {
+            return score;
+        }
+
+        private int routeCount() {
+            return routeCount;
+        }
+
+        @SuppressWarnings("unused")
+        private String primaryRoute() {
+            return primaryRoute;
+        }
+
+        @SuppressWarnings("unused")
+        private Long imageId() {
+            return imageId;
+        }
     }
 }

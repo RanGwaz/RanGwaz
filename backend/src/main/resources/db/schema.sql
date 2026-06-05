@@ -43,7 +43,7 @@ CREATE TABLE categories (
   sort_no INT NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  UNIQUE KEY uk_categories_parent_name (parent_id, name),
+  UNIQUE KEY uk_categories_name (name),
   KEY idx_categories_parent (parent_id, sort_no),
   CONSTRAINT fk_categories_parent FOREIGN KEY (parent_id) REFERENCES categories(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

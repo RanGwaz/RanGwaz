@@ -37,6 +37,7 @@ MYSQL_PASSWORD = "rangwaz123"
 
 OLLAMA_URL = "http://localhost:11434"
 OLLAMA_MODEL = "qwen2.5vl:7b"
+OLLAMA_MODELS_PATH = "H:\\ollama\\models"
 OLLAMA_EXE = ""
 AUTO_START_OLLAMA = True
 AUTO_PULL_OLLAMA_MODEL = True
@@ -56,6 +57,9 @@ MODEL_IMAGE_MAX_SIDE = 1280
 MODEL_IMAGE_JPEG_QUALITY = 88
 
 # Ollama is local. Keep localhost traffic away from any system proxy.
+os.environ["OLLAMA_MODELS"] = OLLAMA_MODELS_PATH
+os.environ["OLLAMA_MAX_LOADED_MODELS"] = "1"
+os.environ["OLLAMA_NUM_PARALLEL"] = "1"
 for proxy_key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
     os.environ.pop(proxy_key, None)
 os.environ["NO_PROXY"] = "localhost,127.0.0.1,::1"
@@ -80,6 +84,13 @@ class ResumeState:
 
 
 _PYMYSQL = None
+
+
+class OllamaHttpError(RuntimeError):
+    def __init__(self, status_code: int, body: str):
+        super().__init__("Ollama HTTP {}: {}".format(status_code, body.strip()))
+        self.status_code = status_code
+        self.body = body
 
 
 def require_pillow():
@@ -131,7 +142,7 @@ Use {label_language} for category and tag names.
 Schema:
 {{
   "description": "one concise visible-content description",
-  "categoryPath": ["top category", "optional child", "optional child"],
+  "categoryPath": ["one stable broad category"],
   "tags": [
     {{"type": "short namespace", "name": "visible label", "confidence": 0.0}}
   ]
@@ -140,7 +151,8 @@ Schema:
 Rules:
 - Infer labels from visible content only.
 - Do not use a fixed taxonomy; create concise labels that fit this specific image.
-- categoryPath should contain 1 to 4 levels.
+- categoryPath must contain exactly one stable broad category name.
+- Put fine-grained subjects, styles, colors, scenes, devices, quality, and moods into tags, not categoryPath.
 - tags should cover useful independent facets for retrieval when they are visible.
 - confidence must be between 0 and 1.
 - Do not use broad fallback categories such as "wallpaper", "image", "picture", "material", or "unknown".
@@ -170,6 +182,11 @@ def encode_model_image(image_path: Path) -> str:
 
 
 def is_retryable_error(exc: BaseException) -> bool:
+    if isinstance(exc, OllamaHttpError):
+        body = exc.body.lower()
+        if "requires more system memory" in body or "out of memory" in body or "not enough memory" in body:
+            return False
+        return exc.status_code in {408, 409, 425, 429, 500, 502, 503, 504}
     if isinstance(exc, HTTPError):
         return exc.code in {408, 409, 425, 429, 500, 502, 503, 504}
     if isinstance(exc, (URLError, TimeoutError, ConnectionResetError)):
@@ -199,8 +216,12 @@ def call_ollama_once(image_path: Path) -> Dict[str, object]:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with _OLLAMA_OPENER.open(request, timeout=OLLAMA_TIMEOUT_SECONDS) as response:
-        result = json.loads(response.read().decode("utf-8"))
+    try:
+        with _OLLAMA_OPENER.open(request, timeout=OLLAMA_TIMEOUT_SECONDS) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise OllamaHttpError(exc.code, body) from exc
     return parse_model_json(str(result.get("response") or ""))
 
 
@@ -272,7 +293,7 @@ def normalize_annotation(raw: Dict[str, object]) -> Dict[str, object]:
 
     return {
         "description": str(raw.get("description") or "").strip(),
-        "categoryPath": category_path[:4],
+        "categoryPath": category_path[:1],
         "tags": tags,
         "source": SOURCE,
     }
@@ -340,31 +361,17 @@ def ensure_category_path(conn, raw_path: Iterable[str]) -> Optional[int]:
     if not names:
         return None
 
-    parent_id = None
-    slug_parts: List[str] = []
-    current_id = None
+    name = names[0]
     with conn.cursor() as cursor:
-        for index, name in enumerate(names):
-            slug_parts.append(slug(name))
-            cursor.execute(
-                """
-                SELECT id FROM categories
-                WHERE name=%s AND ((%s IS NULL AND parent_id IS NULL) OR parent_id=%s)
-                LIMIT 1
-                """,
-                (name, parent_id, parent_id),
-            )
-            row = cursor.fetchone()
-            if row:
-                current_id = int(row["id"])
-            else:
-                cursor.execute(
-                    "INSERT INTO categories(name,parent_id,slug,sort_no) VALUES(%s,%s,%s,%s)",
-                    (name, parent_id, "-".join(slug_parts), index * 10),
-                )
-                current_id = int(cursor.lastrowid)
-            parent_id = current_id
-    return current_id
+        cursor.execute("SELECT id FROM categories WHERE name=%s LIMIT 1", (name,))
+        row = cursor.fetchone()
+        if row:
+            return int(row["id"])
+        cursor.execute(
+            "INSERT INTO categories(name,parent_id,slug,sort_no) VALUES(%s,NULL,%s,0)",
+            (name, slug(name)),
+        )
+        return int(cursor.lastrowid)
 
 
 def ensure_tag(conn, tag_type: str, name: str) -> Optional[int]:
@@ -490,6 +497,7 @@ def start_ollama_server(ollama_exe: str) -> None:
             return
         except Exception:
             time.sleep(1)
+    raise RuntimeError("Ollama 启动超时：{}".format(OLLAMA_URL))
 
 
 def pull_ollama_model(ollama_exe: str) -> None:

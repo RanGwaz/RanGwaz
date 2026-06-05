@@ -47,12 +47,12 @@ class VectorRecallResponse(BaseModel):
     hits: List[VectorHit]
 
 
-def collection() -> Collection:
+def collection() -> Optional[Collection]:
     global _COLLECTION
     if _COLLECTION is None:
         connections.connect(alias="default", host=MILVUS_HOST, port=MILVUS_PORT)
         if not utility.has_collection(MILVUS_COLLECTION):
-            raise RuntimeError("Milvus collection does not exist: {}".format(MILVUS_COLLECTION))
+            return None
         _COLLECTION = Collection(MILVUS_COLLECTION)
         _COLLECTION.load()
     return _COLLECTION
@@ -87,8 +87,11 @@ def query_vectors(image_ids: Sequence[int]) -> List[np.ndarray]:
     ids = clean_ids(image_ids)
     if not ids:
         return []
+    coll = collection()
+    if coll is None:
+        return []
     expr = "image_id in [{}]".format(",".join(str(item) for item in ids))
-    rows = collection().query(expr=expr, output_fields=["image_id", VECTOR_FIELD])
+    rows = coll.query(expr=expr, output_fields=["image_id", VECTOR_FIELD])
     vectors = []
     for row in rows:
         vector = row.get(VECTOR_FIELD)
@@ -112,11 +115,14 @@ def search_vector(vector: np.ndarray, exclude_ids: Sequence[int], offset: int, l
     safe_offset = normalize_offset(offset)
     safe_limit = normalize_limit(limit)
     search_limit = safe_offset + safe_limit
+    coll = collection()
+    if coll is None:
+        return []
     expr = ""
     excluded = clean_ids(exclude_ids, limit=500)
     if excluded:
         expr = "image_id not in [{}]".format(",".join(str(item) for item in excluded))
-    results = collection().search(
+    results = coll.search(
         data=[vector.tolist()],
         anns_field=VECTOR_FIELD,
         param=SEARCH_PARAMS,
@@ -134,7 +140,7 @@ def search_vector(vector: np.ndarray, exclude_ids: Sequence[int], offset: int, l
 @app.get("/health")
 def health():
     coll = collection()
-    return {"ok": True, "collection": MILVUS_COLLECTION, "entities": coll.num_entities}
+    return {"ok": coll is not None, "collection": MILVUS_COLLECTION, "entities": 0 if coll is None else coll.num_entities}
 
 
 @app.post("/recall/feed", response_model=VectorRecallResponse)

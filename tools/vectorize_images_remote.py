@@ -1,19 +1,21 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""Development vector worker: images -> visual embeddings -> Milvus + MySQL status."""
+"""Local vector worker: local images -> remote GPU embeddings -> local Milvus/MySQL."""
 
 from __future__ import annotations
 
+import base64
 import io
 import json
-import os
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Sequence
+from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin
-from urllib.request import urlopen
+from urllib.request import ProxyHandler, Request, build_opener, urlopen
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -34,34 +36,27 @@ VECTOR_FIELD = "embedding"
 MODEL_NAME = "google/siglip2-giant-opt-patch16-384"
 VECTOR_VERSION = "siglip2-giant-p384-v1"
 VECTOR_DIMENSION = 1536
-DEVICE = "auto"
-MODEL_TORCH_DTYPE = "auto"
-HF_CACHE_DIR = "H:\\huggingface"
+
+REMOTE_EMBEDDING_URL = "https://uu1040521-ba3c-2fe32904.westb.seetacloud.com:8443"
+REMOTE_EMBEDDING_API_KEY = "VibeloGPU_20260606_SigLIP2"
+USE_REMOTE_API_PROXY = True
+REMOTE_API_PROXY_URL = "http://127.0.0.1:12000"
 
 BATCH_SIZE = 8
 LIMIT = 0
 IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 30
+REMOTE_TIMEOUT_SECONDS = 240
 MAX_CONSECUTIVE_FAILURES = 20
-
-USE_HUGGINGFACE_PROXY = True
-HUGGINGFACE_PROXY_URL = "http://127.0.0.1:12000"
-
-if USE_HUGGINGFACE_PROXY:
-    os.environ["HTTP_PROXY"] = HUGGINGFACE_PROXY_URL
-    os.environ["HTTPS_PROXY"] = HUGGINGFACE_PROXY_URL
-    os.environ["http_proxy"] = HUGGINGFACE_PROXY_URL
-    os.environ["https_proxy"] = HUGGINGFACE_PROXY_URL
-os.environ["NO_PROXY"] = "localhost,127.0.0.1,::1"
-os.environ["no_proxy"] = "localhost,127.0.0.1,::1"
-os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
-os.environ.setdefault("HF_HOME", HF_CACHE_DIR)
-os.environ.setdefault("TRANSFORMERS_CACHE", str(Path(HF_CACHE_DIR) / "transformers"))
-os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+MODEL_IMAGE_MAX_SIDE = 1024
+MODEL_IMAGE_JPEG_QUALITY = 90
 
 _PYMYSQL = None
 _MILVUS = None
 _PIL = None
-_MODEL = None
+_OPENER = build_opener(ProxyHandler({
+    "http": REMOTE_API_PROXY_URL,
+    "https": REMOTE_API_PROXY_URL,
+}) if USE_REMOTE_API_PROXY else ProxyHandler({}))
 
 
 @dataclass(frozen=True)
@@ -107,33 +102,6 @@ def require_pillow():
             raise SystemExit("Missing Pillow. Install tools/requirements_recommendation.txt first.") from exc
         _PIL = (Image, ImageOps)
     return _PIL
-
-
-def require_model():
-    global _MODEL
-    if _MODEL is not None:
-        return _MODEL
-    try:
-        import torch
-        from transformers import AutoModel, AutoProcessor
-    except ImportError as exc:
-        raise SystemExit("Missing torch/transformers. Install tools/requirements_recommendation.txt first.") from exc
-
-    if DEVICE == "auto":
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    else:
-        device = DEVICE
-    model_kwargs = {}
-    if device.startswith("cuda") and MODEL_TORCH_DTYPE == "auto":
-        model_kwargs["torch_dtype"] = torch.float16
-    elif MODEL_TORCH_DTYPE and MODEL_TORCH_DTYPE != "auto":
-        model_kwargs["torch_dtype"] = getattr(torch, MODEL_TORCH_DTYPE)
-    processor = AutoProcessor.from_pretrained(MODEL_NAME)
-    model = AutoModel.from_pretrained(MODEL_NAME, **model_kwargs)
-    model.to(device)
-    model.eval()
-    _MODEL = (torch, processor, model, device)
-    return _MODEL
 
 
 def connect_mysql():
@@ -323,38 +291,76 @@ def open_image(row: ImageRow, local_paths: Dict[int, Path]):
     return ImageOps.exif_transpose(image).convert("RGB")
 
 
-def encode_images(images):
-    torch, processor, model, device = require_model()
+def encode_image(image) -> str:
+    Image, _ = require_pillow()
+    copy = image.copy()
+    resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+    copy.thumbnail((MODEL_IMAGE_MAX_SIDE, MODEL_IMAGE_MAX_SIDE), resampling)
+    if copy.mode != "RGB":
+        copy = copy.convert("RGB")
+    output = io.BytesIO()
+    copy.save(output, format="JPEG", quality=MODEL_IMAGE_JPEG_QUALITY, optimize=True)
+    return base64.b64encode(output.getvalue()).decode("ascii")
+
+
+def remote_post(path: str, payload: Dict[str, object]) -> Dict[str, object]:
+    request = Request(
+        urljoin(REMOTE_EMBEDDING_URL.rstrip("/") + "/", path.lstrip("/")),
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": "Bearer {}".format(REMOTE_EMBEDDING_API_KEY),
+        },
+        method="POST",
+    )
     try:
-        inputs = processor(images=images, return_tensors="pt", padding=True)
-    except TypeError:
-        inputs = processor(images=images, return_tensors="pt")
-    model_dtype = next(model.parameters()).dtype
-    inputs = {
-        key: value.to(device, dtype=model_dtype) if torch.is_floating_point(value) else value.to(device)
-        for key, value in inputs.items()
-    }
-    with torch.no_grad():
-        if hasattr(model, "get_image_features"):
-            features = model.get_image_features(**inputs)
-        else:
-            outputs = model.vision_model(pixel_values=inputs["pixel_values"])
-            features = outputs.pooler_output
-            projection = getattr(model, "visual_projection", None) or getattr(model, "vision_projection", None)
-            if projection is not None:
-                features = projection(features)
-        features = features / features.norm(dim=-1, keepdim=True)
-    vectors = features.detach().float().cpu().numpy().astype("float32")
-    if vectors.shape[1] != VECTOR_DIMENSION:
-        raise RuntimeError("Model vector dimension {} does not match configured {}".format(vectors.shape[1], VECTOR_DIMENSION))
+        with _OPENER.open(request, timeout=REMOTE_TIMEOUT_SECONDS) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError("remote HTTP {}: {}".format(exc.code, body[:1000])) from exc
+
+
+def remote_get(path: str) -> Dict[str, object]:
+    request = Request(
+        urljoin(REMOTE_EMBEDDING_URL.rstrip("/") + "/", path.lstrip("/")),
+        headers={"Authorization": "Bearer {}".format(REMOTE_EMBEDDING_API_KEY)},
+        method="GET",
+    )
+    try:
+        with _OPENER.open(request, timeout=REMOTE_TIMEOUT_SECONDS) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError("remote HTTP {}: {}".format(exc.code, body[:1000])) from exc
+
+
+def check_remote_service() -> None:
+    health = remote_get("/health")
+    dimension = int(health.get("dimension") or 0)
+    if dimension != VECTOR_DIMENSION:
+        raise RuntimeError("remote dimension {} does not match {}".format(dimension, VECTOR_DIMENSION))
+    print("Remote embedding service OK: {}".format(json.dumps(health, ensure_ascii=False)))
+
+
+def encode_images_remote(images) -> List[List[float]]:
+    payload = {"images": [encode_image(image) for image in images]}
+    result = remote_post("/embed", payload)
+    vectors = result.get("vectors")
+    if not isinstance(vectors, list):
+        raise RuntimeError("remote response missing vectors")
+    if len(vectors) != len(images):
+        raise RuntimeError("remote returned {} vectors for {} images".format(len(vectors), len(images)))
+    for vector in vectors:
+        if not isinstance(vector, list) or len(vector) != VECTOR_DIMENSION:
+            raise RuntimeError("bad vector dimension from remote")
     return vectors
 
 
-def upsert_vectors(collection, rows: Sequence[ImageRow], vectors) -> None:
-    vector_list = [vector.tolist() for vector in vectors]
+def upsert_vectors(collection, rows: Sequence[ImageRow], vectors: Sequence[Sequence[float]]) -> None:
     payload = [
         [row.image_id for row in rows],
-        vector_list,
+        [list(vector) for vector in vectors],
         [row.image_hash for row in rows],
         [row.width for row in rows],
         [row.height for row in rows],
@@ -371,11 +377,7 @@ def upsert_vectors(collection, rows: Sequence[ImageRow], vectors) -> None:
 
 
 def run() -> None:
-    print("Loading embedding model {} with proxy {}.".format(
-        MODEL_NAME,
-        HUGGINGFACE_PROXY_URL if USE_HUGGINGFACE_PROXY else "disabled",
-    ))
-    require_model()
+    check_remote_service()
     local_paths = import_path_map()
     collection = ensure_collection()
     ok = 0
@@ -403,7 +405,7 @@ def run() -> None:
                 continue
             try:
                 mark_processing(conn, valid_rows)
-                vectors = encode_images(images)
+                vectors = encode_images_remote(images)
                 upsert_vectors(collection, valid_rows, vectors)
                 mark_ready(conn, valid_rows)
                 ok += len(valid_rows)
