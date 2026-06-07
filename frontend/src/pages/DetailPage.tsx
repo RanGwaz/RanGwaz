@@ -61,6 +61,14 @@ function cssImageUrl(url: string) {
   return `url("${url.replace(/"/g, '%22')}")`
 }
 
+function cleanImportedText(value?: string | null) {
+  const text = (value ?? '').trim()
+  if (!text) return ''
+  if (text.toLowerCase() === 'imported image') return ''
+  if (/^[0-9a-f]{16,64}$/i.test(text)) return ''
+  return text
+}
+
 function DetailSkeleton() {
   return (
     <div className="detail-page">
@@ -346,6 +354,11 @@ export function DetailPage() {
 
   if (!image || image.id !== imageId) return <DetailSkeleton />
 
+  const detailTitle = cleanImportedText(image.title)
+  const detailContent = cleanImportedText(image.content)
+  const hasCopy = Boolean(detailTitle || detailContent || image.tags.length)
+  const imageAlt = detailTitle || image.tags[0] || '图片'
+
   return (
     <div className="detail-page">
       <main
@@ -357,18 +370,30 @@ export function DetailPage() {
           '--detail-column-width': `${columnWidth}px`,
         } as CSSProperties}
       >
-        <button className="detail-page__back-btn" type="button" onClick={() => navigate(-1)} aria-label="返回"><ArrowLeft size={24} /></button>
+        <button className="detail-page__back-btn" type="button" onClick={() => navigate(-1)} aria-label="返回">
+          <ArrowLeft size={24} />
+        </button>
         <section className="detail-page__focus">
           <article className={detailLoading ? 'detail-panel is-refreshing' : 'detail-panel'} ref={panelRef}>
             <div className="detail-panel__toolbar">
               <div className="detail-panel__tool-group">
-                <button type="button" className={liked ? 'is-active' : ''} onClick={toggleLike} aria-label="点赞"><Heart size={23} /><strong>{countText(image.likeCount)}</strong></button>
-                <button type="button" onClick={() => setCommentsOpen((value) => !value)} aria-label="评论"><MessageCircle size={21} /></button>
-                <button type="button" className={favorited ? 'is-active' : ''} onClick={toggleFavorite} aria-label="收藏"><Star size={21} /></button>
-                <button type="button" onClick={() => api.trackImageShare(image.id)} aria-label="分享"><Send size={21} /></button>
-                <button type="button" aria-label="更多"><MoreHorizontal size={21} /></button>
+                <button type="button" className={liked ? 'is-active' : ''} onClick={toggleLike} aria-label="点赞">
+                  <Heart size={23} /><strong>{countText(image.likeCount)}</strong>
+                </button>
+                <button type="button" onClick={() => setCommentsOpen((value) => !value)} aria-label="评论">
+                  <MessageCircle size={21} />
+                </button>
+                <button type="button" className={favorited ? 'is-active' : ''} onClick={toggleFavorite} aria-label="收藏">
+                  <Star size={21} />
+                </button>
+                <button type="button" onClick={() => { void api.trackImageShare(image.id).catch(() => undefined) }} aria-label="分享">
+                  <Send size={21} />
+                </button>
+                <button type="button" aria-label="更多">
+                  <MoreHorizontal size={21} />
+                </button>
               </div>
-              {detailLoading && <span className="detail-panel__status">更新中</span>}
+              {detailLoading && <span className="detail-panel__status">正在更新</span>}
             </div>
             <div className="detail-panel__media">
               <button
@@ -381,7 +406,7 @@ export function DetailPage() {
                 <span className="detail-panel__image-placeholder" />
                 <img
                   src={activeOriginalUrl}
-                  alt={image.title}
+                  alt={imageAlt}
                   style={{ aspectRatio: aspectRatio(image) }}
                   loading="eager"
                   decoding="async"
@@ -391,8 +416,12 @@ export function DetailPage() {
               </button>
               {image.assets.length > 1 && (
                 <>
-                  <button className="detail-panel__arrow is-left" type="button" onClick={() => nextAsset(-1)} aria-label="上一张"><ChevronLeft size={22} /></button>
-                  <button className="detail-panel__arrow is-right" type="button" onClick={() => nextAsset(1)} aria-label="下一张"><ChevronRight size={22} /></button>
+                  <button className="detail-panel__arrow is-left" type="button" onClick={() => nextAsset(-1)} aria-label="上一张">
+                    <ChevronLeft size={22} />
+                  </button>
+                  <button className="detail-panel__arrow is-right" type="button" onClick={() => nextAsset(1)} aria-label="下一张">
+                    <ChevronRight size={22} />
+                  </button>
                 </>
               )}
             </div>
@@ -409,11 +438,13 @@ export function DetailPage() {
                   {canShowFollow ? (following ? '已关注' : '关注') : '个人主页'}
                 </button>
               </header>
-              <div className="detail-panel__copy">
-                <h1>{image.title}</h1>
-                {image.content && <p>{image.content}</p>}
-                {image.tags.length > 0 && <div>{image.tags.map((tag) => <span key={tag}>#{tag}</span>)}</div>}
-              </div>
+              {hasCopy && (
+                <div className="detail-panel__copy">
+                  {detailTitle && <h1>{detailTitle}</h1>}
+                  {detailContent && <p>{detailContent}</p>}
+                  {image.tags.length > 0 && <div>{image.tags.map((tag) => <span key={tag}>#{tag}</span>)}</div>}
+                </div>
+              )}
               <section className="detail-panel__comments">
                 <button className="detail-panel__comments-toggle" type="button" onClick={() => setCommentsOpen((value) => !value)} aria-expanded={commentsOpen}>
                   <strong>评论 ({image.commentCount})</strong>
@@ -422,7 +453,9 @@ export function DetailPage() {
                   <div className="detail-panel__comments-body">
                     <form className="detail-panel__comment-editor" onSubmit={submitComment}>
                       <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="添加评论" />
-                      <button type="submit" aria-label="发送评论"><Send size={18} /></button>
+                      <button type="submit" aria-label="发送评论">
+                        <Send size={18} />
+                      </button>
                     </form>
                     {commentsLoading && <p className="detail-panel__comments-state">正在加载评论...</p>}
                     {!commentsLoading && commentsLoaded && comments.length === 0 && <p className="detail-panel__comments-state">还没有评论</p>}
@@ -430,7 +463,11 @@ export function DetailPage() {
                       {comments.map((comment) => (
                         <article key={comment.id}>
                           <img src={avatarUrl(comment.author.avatarUrl)} alt="" />
-                          <span><b>{comment.author.nickname}</b><small>{relativeTime(comment.createdAt)}</small><p>{comment.content}</p></span>
+                          <span>
+                            <b>{comment.author.nickname}</b>
+                            <small>{relativeTime(comment.createdAt)}</small>
+                            <p>{comment.content}</p>
+                          </span>
                         </article>
                       ))}
                     </div>
@@ -462,7 +499,11 @@ export function DetailPage() {
         <div ref={sentinelRef} className="detail-related__sentinel" />
       </main>
       {relatedLoading && related.length > 0 && <div className="detail-page__loading-more"><span /><span /><span /></div>}
-      {lightbox && <button type="button" className="lightbox" onClick={() => setLightbox(false)} aria-label="关闭大图"><img src={activeOriginalUrl} alt={image.title} /></button>}
+      {lightbox && (
+        <button type="button" className="lightbox" onClick={() => setLightbox(false)} aria-label="关闭大图">
+          <img src={activeOriginalUrl} alt={imageAlt} />
+        </button>
+      )}
     </div>
   )
 }

@@ -46,8 +46,8 @@ export interface ImageSourceView {
 export interface ImageView {
   id: number
   author: UserSummary
-  title: string
-  content?: string
+  title?: string | null
+  content?: string | null
   tags: string[]
   channel?: string
   channelCode?: string

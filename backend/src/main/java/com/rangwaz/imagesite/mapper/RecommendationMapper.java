@@ -264,4 +264,36 @@ public interface RecommendationMapper {
     List<ImageEntity> selectSimilarByMetadata(@Param("imageId") Long imageId,
                                               @Param("offset") int offset,
                                               @Param("size") int size);
+
+    /**
+     * Stable fallback for detail-page related feed when vector or rich metadata recall is not enough.
+     *
+     * @param imageId source image id
+     * @param offset row offset
+     * @param size page size
+     * @return image rows
+     */
+    @Select("""
+            WITH source_image AS (
+              SELECT id,main_category_id,ratio
+              FROM images
+              WHERE id=#{imageId}
+            )
+            SELECT i.*
+            FROM source_image src
+            JOIN images i ON i.status='PUBLISHED' AND i.id<>src.id
+            ORDER BY
+              (
+                CASE WHEN i.main_category_id IS NOT NULL AND i.main_category_id=src.main_category_id THEN 2.0 ELSE 0 END
+                + CASE WHEN i.ratio IS NOT NULL AND i.ratio=src.ratio THEN 0.7 ELSE 0 END
+                + COALESCE(i.hot_score,0) * 0.22
+                + 24 / (TIMESTAMPDIFF(HOUR,i.published_at,NOW()) + 24)
+              ) DESC,
+              i.published_at DESC,
+              i.id DESC
+            LIMIT #{size} OFFSET #{offset}
+            """)
+    List<ImageEntity> selectSimilarFallback(@Param("imageId") Long imageId,
+                                            @Param("offset") int offset,
+                                            @Param("size") int size);
 }

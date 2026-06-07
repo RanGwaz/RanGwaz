@@ -72,6 +72,7 @@ class ImageCandidate:
 @dataclass
 class CollectorConfig:
     output_dir: Path = DEFAULT_OUTPUT_DIR
+    dedupe_reference_dirs: List[Path] = field(default_factory=lambda: [DEFAULT_OUTPUT_DIR])
     start_urls: List[str] = field(default_factory=list)
     max_images: int = 2000
     max_scrolls: int = 20
@@ -106,6 +107,12 @@ class DownloadResult:
     content_type: str = ""
     error: str = ""
     downloaded_at: str = ""
+
+
+@dataclass
+class DownloadIndex:
+    candidate_keys: Set[str] = field(default_factory=set)
+    sha256_paths: Dict[str, str] = field(default_factory=dict)
 
 
 def parse_int(value: object) -> Optional[int]:
@@ -587,9 +594,8 @@ def collect_from_browser(
     detail_queue: List[str] = []
     queued_detail_urls: Set[str] = set()
     visited_detail_urls: Set[str] = set()
-    incremental_downloaded_keys: Set[str] = load_completed_candidate_keys(
-        config.output_dir / "manifest.jsonl"
-    )
+    download_index = load_download_index(collector_reference_dirs(config))
+    incremental_downloaded_keys: Set[str] = set(download_index.candidate_keys)
 
     def download_page_candidates(items: Iterable[ImageCandidate], page_label: str) -> None:
         """Download this page's images immediately, then allow the crawler to continue."""
@@ -613,6 +619,7 @@ def collect_from_browser(
             log=log,
             stop_event=stop_event,
             reset_manifest=False,
+            known_sha256_paths=download_index.sha256_paths,
         )
 
     def add_candidates(items: Iterable[ImageCandidate]) -> int:
@@ -903,27 +910,56 @@ def append_jsonl(path: Path, row: object) -> None:
         output.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
+def unique_paths(values: Iterable[Path]) -> List[Path]:
+    result: List[Path] = []
+    seen: Set[str] = set()
+    for value in values:
+        try:
+            normalized = str(Path(value).resolve()).lower()
+        except OSError:
+            normalized = str(Path(value).absolute()).lower()
+        if normalized in seen:
+            continue
+        result.append(Path(value))
+        seen.add(normalized)
+    return result
+
+
+def collector_reference_dirs(config: CollectorConfig) -> List[Path]:
+    return unique_paths([config.output_dir] + list(config.dedupe_reference_dirs or []))
+
+
+def load_download_index(reference_dirs: Iterable[Path]) -> DownloadIndex:
+    """Load successful downloads from one or more manifests for cross-run dedupe."""
+    index = DownloadIndex()
+    for reference_dir in unique_paths(Path(path) for path in reference_dirs):
+        manifest_path = reference_dir / "manifest.jsonl"
+        if not manifest_path.exists():
+            continue
+        try:
+            with manifest_path.open("r", encoding="utf-8") as input_file:
+                for line in input_file:
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not row.get("ok"):
+                        continue
+                    image_url = str(row.get("image_url") or "")
+                    if image_url:
+                        index.candidate_keys.add(canonical_image_key(ImageCandidate(image_url=image_url)))
+                    digest = str(row.get("sha256") or "")
+                    if digest:
+                        local_path = str(row.get("local_path") or "")
+                        index.sha256_paths.setdefault(digest, local_path)
+        except OSError:
+            continue
+    return index
+
+
 def load_completed_candidate_keys(manifest_path: Path) -> Set[str]:
     """Load successful downloads from an existing manifest for resume support."""
-    completed: Set[str] = set()
-    if not manifest_path.exists():
-        return completed
-    try:
-        with manifest_path.open("r", encoding="utf-8") as input_file:
-            for line in input_file:
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not row.get("ok"):
-                    continue
-                image_url = str(row.get("image_url") or "")
-                if not image_url:
-                    continue
-                completed.add(canonical_image_key(ImageCandidate(image_url=image_url)))
-    except OSError:
-        return completed
-    return completed
+    return load_download_index([manifest_path.parent]).candidate_keys
 
 
 def extension_from_url(url: str) -> str:
@@ -951,6 +987,7 @@ def download_candidates(
     log: LogFn,
     stop_event: Optional[threading.Event] = None,
     reset_manifest: bool = False,
+    known_sha256_paths: Optional[Dict[str, str]] = None,
 ) -> List[DownloadResult]:
     images_dir = config.output_dir / "images"
     manifest_path = config.output_dir / "manifest.jsonl"
@@ -964,10 +1001,12 @@ def download_candidates(
 
     log("Downloading {} images with {} worker(s).".format(len(candidates), config.workers))
     results: List[DownloadResult] = []
+    sha256_paths = known_sha256_paths if known_sha256_paths is not None else {}
+    sha256_snapshot = dict(sha256_paths)
     workers = max(1, min(16, int(config.workers or 1)))
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
-            executor.submit(download_one, index, candidate, images_dir, config): (index, candidate)
+            executor.submit(download_one, index, candidate, images_dir, config, sha256_snapshot): (index, candidate)
             for index, candidate in enumerate(candidates, start=1)
         }
         completed = 0
@@ -993,6 +1032,8 @@ def download_candidates(
                 )
             results.append(result)
             append_jsonl(manifest_path, result)
+            if result.ok and result.sha256:
+                sha256_paths.setdefault(result.sha256, result.local_path)
             if result.ok:
                 log("  [{}/{}] saved {}".format(completed, len(candidates), result.local_path))
             else:
@@ -1005,6 +1046,7 @@ def download_one(
     candidate: ImageCandidate,
     images_dir: Path,
     config: CollectorConfig,
+    known_sha256_paths: Dict[str, str],
 ) -> DownloadResult:
     if config.request_delay > 0:
         time.sleep(config.request_delay * ((index - 1) % max(1, config.workers)))
@@ -1028,6 +1070,23 @@ def download_one(
             ext = extension_from_content_type(content_type, extension_from_url(url))
             local_path = images_dir / "{}{}".format(digest[:20], ext)
             already_exists = local_path.exists()
+            reference_path = known_sha256_paths.get(digest, "")
+            if not already_exists and reference_path:
+                return DownloadResult(
+                    ok=True,
+                    status="duplicate-content",
+                    image_url=url,
+                    local_path=reference_path,
+                    source_page=candidate.source_page,
+                    detail_url=candidate.detail_url,
+                    alt=candidate.alt,
+                    width=candidate.width,
+                    height=candidate.height,
+                    bytes=len(data),
+                    sha256=digest,
+                    content_type=content_type,
+                    downloaded_at=dt.datetime.now(dt.timezone.utc).isoformat(),
+                )
             if not local_path.exists():
                 with local_path.open("wb") as output:
                     output.write(data)
@@ -1072,6 +1131,8 @@ def run_collection(
     started_at = time.time()
     config.output_dir.mkdir(parents=True, exist_ok=True)
     log("Output: {}".format(config.output_dir))
+    reference_dirs = collector_reference_dirs(config)
+    log("Dedupe references: {}".format(", ".join(str(path) for path in reference_dirs)))
 
     all_candidates, detail_urls = collect_from_browser(
         config,
@@ -1086,7 +1147,8 @@ def run_collection(
     log("Collected {} unique image candidates.".format(len(deduped)))
     log("Collected {} unique detail URLs.".format(len(unique_list(detail_urls))))
 
-    completed_keys = load_completed_candidate_keys(config.output_dir / "manifest.jsonl")
+    download_index = load_download_index(reference_dirs)
+    completed_keys = download_index.candidate_keys
     remaining = [
         candidate for candidate in deduped
         if canonical_image_key(candidate) not in completed_keys
@@ -1099,12 +1161,14 @@ def run_collection(
         log=log,
         stop_event=stop_event,
         reset_manifest=False,
+        known_sha256_paths=download_index.sha256_paths,
     )
-    completed_keys = load_completed_candidate_keys(config.output_dir / "manifest.jsonl")
-    ok_count = len(completed_keys)
+    current_keys = load_download_index([config.output_dir]).candidate_keys
+    known_keys = load_download_index(reference_dirs).candidate_keys
+    ok_count = len(current_keys)
     failed_count = sum(1 for result in results if not result.ok)
     elapsed = int(time.time() - started_at)
-    log("Done in {}s. saved={}, failed={}.".format(elapsed, ok_count, failed_count))
+    log("Done in {}s. saved={}, known_dedupe={}, failed={}.".format(elapsed, ok_count, len(known_keys), failed_count))
     return {
         "candidates": len(deduped),
         "details": len(unique_list(detail_urls)),

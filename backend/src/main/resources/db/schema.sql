@@ -63,7 +63,7 @@ CREATE TABLE tags (
 CREATE TABLE images (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   author_id BIGINT NOT NULL,
-  title VARCHAR(160) NOT NULL,
+  title VARCHAR(160),
   content TEXT,
   post_type VARCHAR(32) NOT NULL DEFAULT 'image',
   description TEXT,
@@ -93,6 +93,8 @@ CREATE TABLE images (
   KEY idx_images_ratio (ratio),
   KEY idx_images_feed (status, hot_score, published_at),
   KEY idx_images_status_time (status, created_at),
+  KEY idx_images_status_published_id (status, published_at, id),
+  KEY idx_images_status_category_ratio_hot (status, main_category_id, ratio, hot_score, published_at, id),
   CONSTRAINT fk_images_author FOREIGN KEY (author_id) REFERENCES app_users(id),
   CONSTRAINT fk_images_category FOREIGN KEY (main_category_id) REFERENCES categories(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
@@ -105,6 +107,8 @@ CREATE TABLE image_tags (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (image_id, tag_id),
   KEY idx_image_tags_tag (tag_id, confidence),
+  KEY idx_image_tags_image_confidence (image_id, confidence, tag_id),
+  KEY idx_image_tags_tag_image_confidence (tag_id, image_id, confidence),
   KEY idx_image_tags_source (source),
   CONSTRAINT fk_image_tags_image FOREIGN KEY (image_id) REFERENCES images(id) ON DELETE CASCADE,
   CONSTRAINT fk_image_tags_tag FOREIGN KEY (tag_id) REFERENCES tags(id)
@@ -155,6 +159,7 @@ CREATE TABLE follows (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (follower_id, followee_id),
   KEY idx_follows_followee (followee_id),
+  KEY idx_follows_follower_followee_time (follower_id, followee_id, created_at),
   CONSTRAINT fk_follows_follower FOREIGN KEY (follower_id) REFERENCES app_users(id) ON DELETE CASCADE,
   CONSTRAINT fk_follows_followee FOREIGN KEY (followee_id) REFERENCES app_users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
@@ -185,6 +190,7 @@ CREATE TABLE user_behaviors (
   KEY idx_user_behaviors_user_time (user_id, created_at),
   KEY idx_user_behaviors_user_image_type_time (user_id, image_id, behavior_type, created_at),
   KEY idx_user_behaviors_image_type (image_id, behavior_type),
+  KEY idx_user_behaviors_user_type_time_image (user_id, behavior_type, created_at, image_id),
   CONSTRAINT fk_user_behaviors_image FOREIGN KEY (image_id) REFERENCES images(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 

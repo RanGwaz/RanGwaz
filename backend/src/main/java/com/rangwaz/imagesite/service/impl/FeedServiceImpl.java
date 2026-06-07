@@ -130,31 +130,16 @@ public class FeedServiceImpl implements FeedService {
         int candidateLimit = candidateLimit(offset, safeSize, SIMILAR_RECALL_MULTIPLIER);
         List<VectorHit> vectorHits = vectorRecallClient.similar(postId, 0, candidateLimit);
         List<ImageEntity> metadataSimilar = recommendationMapper.selectSimilarByMetadata(postId, 0, candidateLimit);
-        List<ImageEntity> images = rankSimilar(vectorHits, metadataSimilar, offset, safeSize);
-        var records = imageService.toViews(images, similarReason(vectorHits, metadataSimilar));
+        List<ImageEntity> images = new ArrayList<>(rankSimilar(vectorHits, metadataSimilar, offset, safeSize));
+        if (images.size() < safeSize) {
+            fillSimilarFallback(postId, images, offset, safeSize);
+        }
+        var records = imageService.toViews(images, similarReason(vectorHits, metadataSimilar, images));
         return new PageResponse<>(records, imageContentMapper.countSimilar(postId), safePage, safeSize);
     }
 
     private int candidateLimit(int offset, int size, int multiplier) {
         return Math.min(MAX_RECALL_CANDIDATES, Math.max(size, offset + size * multiplier));
-    }
-
-    private List<Long> hitIds(List<VectorHit> hits) {
-        return hits.stream()
-                .map(VectorHit::imageId)
-                .filter(id -> id != null && id > 0)
-                .distinct()
-                .toList();
-    }
-
-    private Map<Long, Double> scoreMap(List<VectorHit> hits) {
-        Map<Long, Double> scores = new LinkedHashMap<>();
-        for (VectorHit hit : hits) {
-            if (hit.imageId() != null && hit.imageId() > 0) {
-                scores.putIfAbsent(hit.imageId(), cleanScore(hit.score()));
-            }
-        }
-        return scores;
     }
 
     private void addVectorRecall(Map<Long, RecallScore> scores,
@@ -248,18 +233,35 @@ public class FeedServiceImpl implements FeedService {
                 .toList();
     }
 
+    private void fillSimilarFallback(Long postId, List<ImageEntity> images, int offset, int size) {
+        Set<Long> seen = new HashSet<>();
+        for (ImageEntity image : images) {
+            if (image.getId() != null) seen.add(image.getId());
+        }
+        seen.add(postId);
+        int fallbackLimit = Math.max(size * 3, size + 12);
+        for (ImageEntity image : recommendationMapper.selectSimilarFallback(postId, offset, fallbackLimit)) {
+            if (image.getId() == null || seen.contains(image.getId())) continue;
+            images.add(image);
+            seen.add(image.getId());
+            if (images.size() >= size) break;
+        }
+    }
+
     private double similarScore(ImageEntity image, Map<Long, Double> recallScores) {
         return recallScores.getOrDefault(image.getId(), 0D)
                 + engagementScore(image) * 0.025
                 + freshnessScore(image) * 0.015;
     }
 
-    private String similarReason(List<VectorHit> vectorHits, List<ImageEntity> metadataSimilar) {
+    private String similarReason(List<VectorHit> vectorHits, List<ImageEntity> metadataSimilar, List<ImageEntity> rankedImages) {
         boolean hasVector = vectorHits.stream().map(VectorHit::imageId).anyMatch(Objects::nonNull);
         boolean hasMetadata = metadataSimilar.stream().map(ImageEntity::getId).anyMatch(Objects::nonNull);
+        boolean hasFallback = !rankedImages.isEmpty() && !hasVector && !hasMetadata;
         if (hasVector && hasMetadata) return "similar-vector-tags";
         if (hasVector) return "similar-vector";
         if (hasMetadata) return "similar-tags";
+        if (hasFallback) return "similar-fallback";
         return "similar-empty";
     }
 

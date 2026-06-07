@@ -24,6 +24,7 @@ SCHEMA_PATH = ROOT / "backend" / "src" / "main" / "resources" / "db" / "schema.s
 RECURSIVE = False
 LIMIT = 0
 AUTO_REBUILD_OLD_SCHEMA = True
+RESUME_IMPORT_RESULTS = True
 
 IMPORT_USERNAME = "mira"
 IMPORT_PASSWORD = "RanGwaz147.."
@@ -349,6 +350,48 @@ def write_result(payload: Dict[str, object]) -> None:
         output.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
+def normalized_path_key(path: Path) -> str:
+    try:
+        return str(path.resolve()).lower()
+    except OSError:
+        return str(path.absolute()).lower()
+
+
+def load_import_result_index() -> Dict[str, Dict[str, object]]:
+    results: Dict[str, Dict[str, object]] = {}
+    if not RESUME_IMPORT_RESULTS or not RESULT_PATH.exists():
+        return results
+    with RESULT_PATH.open("r", encoding="utf-8") as input_file:
+        for line in input_file:
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not row.get("ok") or not row.get("path"):
+                continue
+            results[normalized_path_key(Path(str(row["path"])))] = row
+    return results
+
+
+def already_imported_from_result(conn, file_path: Path, result_index: Dict[str, Dict[str, object]]) -> Optional[Dict[str, object]]:
+    row = result_index.get(normalized_path_key(file_path))
+    if not row:
+        return None
+    digest = str(row.get("hash") or "")
+    if not digest:
+        return None
+    existing = find_existing_image(conn, digest)
+    if not existing:
+        return None
+    return {
+        "ok": True,
+        "status": "already-recorded",
+        "path": str(file_path),
+        "imageId": existing["image_id"],
+        "hash": digest,
+    }
+
+
 def import_one(conn, client, author_id: int, file_path: Path) -> Dict[str, object]:
     data = file_path.read_bytes()
     digest = sha256(data)
@@ -391,14 +434,16 @@ def run() -> None:
     if not files:
         raise SystemExit("没有找到图片：{}".format(IMAGE_DIR))
 
-    if RESULT_PATH.exists():
+    if RESULT_PATH.exists() and not RESUME_IMPORT_RESULTS:
         RESULT_PATH.unlink()
 
     client = minio_client()
     ensure_bucket(client)
     imported = 0
     duplicates = 0
+    skipped = 0
     failed = 0
+    result_index = load_import_result_index()
 
     with connect_mysql() as conn:
         ensure_database_schema(conn)
@@ -407,9 +452,14 @@ def run() -> None:
         for index, file_path in enumerate(files, start=1):
             print("[{}/{}] {}".format(index, len(files), file_path))
             try:
+                result = already_imported_from_result(conn, file_path, result_index)
+                if result:
+                    skipped += 1
+                    continue
                 result = import_one(conn, client, author_id, file_path)
                 conn.commit()
                 write_result(result)
+                result_index[normalized_path_key(file_path)] = result
                 if result["status"] == "duplicate":
                     duplicates += 1
                 else:
