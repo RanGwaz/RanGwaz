@@ -1,17 +1,17 @@
 # RanGwaz / Vibelo
 
-RanGwaz 是一个图片类网站，当前目标是搭建一个类似 Pinterest 的图片内容与推荐系统平台。核心主表是 `images`，图片文件放 MinIO，业务数据放 MySQL，行为事件进入 Kafka，图片向量放 Milvus。
+RanGwaz 当前产品名是 Vibelo，目标是搭建一个类似 Pinterest 的图片内容与推荐系统平台。核心内容主表是 `images`，图片文件放 MinIO，业务数据放 MySQL，行为事件进入 Kafka，图片向量放 Milvus。
 
 ## 当前架构
 
 - 前端：`frontend`，React + Vite。
 - 后端：`backend`，Spring Boot + MyBatis。
 - 中间件：MySQL、Redis、Kafka、MinIO、Milvus，统一由 `infra/docker-compose.yml` 启动。
-- 数据工具：`tools/import_images.py` 导入授权图片，`tools/auto_label_images.py` 调用本地视觉模型打标签，`tools/vectorize_images.py` 生成图片向量写入 Milvus。
+- 数据工具：`tools/import_images.py` 导入授权图片，`tools/fast_label_images_openai_compatible.py` 远端 GPU 打标签，`tools/vectorize_images_remote.py` 远端 GPU 生成图片向量。
 
 ## 本地启动
 
-所有中间件只使用一个 compose 文件：
+所有中间件使用一个 compose 文件：
 
 ```powershell
 docker compose -f infra/docker-compose.yml up -d
@@ -65,22 +65,7 @@ backend/src/main/resources/db/migration
 
 后端不会自动清空数据库，`spring.sql.init.mode` 已设为 `never`。
 
-## 行为打点
-
-曝光、点击、浏览、点赞、收藏、评论等行为先写入 Kafka topic：
-
-```text
-vibelo.user-behaviors
-```
-
-后端消费者再异步落库到：
-
-- `user_behaviors`
-- `feed_impressions`
-
-点赞、收藏、评论这类强业务状态仍然同步更新计数，行为日志异步写入，避免前端打点拖慢页面。
-
-## 导入图片
+## 图片导入
 
 安装依赖：
 
@@ -102,19 +87,13 @@ tools/downloaded_dataset/images
 
 ## 自动打标签
 
+批量生产优先使用远端 GPU：
+
 ```powershell
-python tools/auto_label_images.py
+python tools/fast_label_images_openai_compatible.py
 ```
 
-默认调用本地 Ollama 视觉模型：
-
-```text
-qwen2.5vl:7b
-```
-
-结果写入 `categories`、`tags`、`image_tags` 和 `images.main_category_id`。
-
-本地 Ollama 只适合验证链路。批量生产描述和标签时，优先使用 `tools/fast_label_images_openai_compatible.py` 连接远端 GPU 上的 OpenAI-compatible 视觉模型服务。
+结果写入 `images.description`、`images.main_category_id`、`categories`、`tags` 和 `image_tags`。
 
 ## 图片向量与推荐召回
 
@@ -124,10 +103,10 @@ qwen2.5vl:7b
 python -m pip install -r tools/requirements_recommendation.txt
 ```
 
-生成图片向量：
+远端 GPU 生成图片向量：
 
 ```powershell
-python tools/vectorize_images.py
+python tools/vectorize_images_remote.py
 ```
 
 启动向量召回服务：
@@ -136,12 +115,19 @@ python tools/vectorize_images.py
 python tools/vector_recall_service.py
 ```
 
-当前向量模型：
+当前向量配置：
 
 ```text
-google/siglip2-giant-opt-patch16-384
-dimension: 1536
-collection: vibelo_image_vectors_siglip2_giant_p384
+model: google/siglip2-giant-opt-patch16-384
+version: siglip2-giant-p384-d512-v1
+dimension: 512
+collection: vibelo_image_vectors_siglip2_giant_p384_d512
 ```
 
-首页走推荐召回和排序，详情页周围数据走相似图片召回。
+首页走推荐召回和排序，详情页周围数据优先走当前图片的向量相似召回，再用标签、分类、比例和热度做辅助排序。
+
+更多数据处理和推荐链路说明见：
+
+```text
+docs/data-labeling-and-vectorization.md
+```

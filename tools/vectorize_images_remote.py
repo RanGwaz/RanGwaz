@@ -9,6 +9,7 @@ import io
 import json
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence
@@ -30,25 +31,29 @@ MYSQL_PASSWORD = "rangwaz123"
 
 MILVUS_HOST = "127.0.0.1"
 MILVUS_PORT = "19530"
-MILVUS_COLLECTION = "vibelo_image_vectors_siglip2_giant_p384"
+MILVUS_COLLECTION = "vibelo_image_vectors_siglip2_giant_p384_d512"
 VECTOR_FIELD = "embedding"
 
 MODEL_NAME = "google/siglip2-giant-opt-patch16-384"
-VECTOR_VERSION = "siglip2-giant-p384-v1"
-VECTOR_DIMENSION = 1536
+VECTOR_VERSION = "siglip2-giant-p384-d512-v1"
+VECTOR_DIMENSION = 512
 
 REMOTE_EMBEDDING_URL = "https://uu1040521-ba3c-2fe32904.westb.seetacloud.com:8443"
 REMOTE_EMBEDDING_API_KEY = "VibeloGPU_20260606_SigLIP2"
 USE_REMOTE_API_PROXY = True
 REMOTE_API_PROXY_URL = "http://127.0.0.1:12000"
 
-BATCH_SIZE = 8
+BATCH_SIZE = 16
 LIMIT = 0
 IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 30
 REMOTE_TIMEOUT_SECONDS = 240
 MAX_CONSECUTIVE_FAILURES = 20
-MODEL_IMAGE_MAX_SIDE = 1024
-MODEL_IMAGE_JPEG_QUALITY = 90
+MODEL_IMAGE_MAX_SIDE = 384
+MODEL_IMAGE_JPEG_QUALITY = 85
+LOCAL_IMAGE_WORKERS = 8
+MILVUS_FLUSH_EVERY_BATCHES = 10
+MAX_REMOTE_RETRIES = 3
+REMOTE_RETRY_BASE_SECONDS = 3
 
 _PYMYSQL = None
 _MILVUS = None
@@ -69,6 +74,12 @@ class ImageRow:
     image_hash: str
     main_category_id: int
     published_at_epoch: int
+
+
+@dataclass(frozen=True)
+class PreparedImage:
+    row: ImageRow
+    encoded_image: str
 
 
 def require_pymysql():
@@ -303,6 +314,34 @@ def encode_image(image) -> str:
     return base64.b64encode(output.getvalue()).decode("ascii")
 
 
+def prepare_image(row: ImageRow, local_paths: Dict[int, Path]) -> PreparedImage:
+    image = open_image(row, local_paths)
+    try:
+        encoded = encode_image(image)
+        return PreparedImage(row=row, encoded_image=encoded)
+    finally:
+        try:
+            image.close()
+        except Exception:
+            pass
+
+
+def prepare_batch(rows: Sequence[ImageRow], local_paths: Dict[int, Path], conn) -> List[PreparedImage]:
+    prepared: List[PreparedImage] = []
+    worker_count = min(LOCAL_IMAGE_WORKERS, max(1, len(rows)))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        future_map = {executor.submit(prepare_image, row, local_paths): row for row in rows}
+        for future in as_completed(future_map):
+            row = future_map[future]
+            try:
+                prepared.append(future.result())
+            except Exception as exc:
+                mark_failed(conn, row, exc)
+                print("  failed prepare image {}: {}".format(row.image_id, exc), file=sys.stderr)
+    prepared.sort(key=lambda item: item.row.image_id)
+    return prepared
+
+
 def remote_post(path: str, payload: Dict[str, object]) -> Dict[str, object]:
     request = Request(
         urljoin(REMOTE_EMBEDDING_URL.rstrip("/") + "/", path.lstrip("/")),
@@ -319,6 +358,8 @@ def remote_post(path: str, payload: Dict[str, object]) -> Dict[str, object]:
     except HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError("remote HTTP {}: {}".format(exc.code, body[:1000])) from exc
+    except URLError as exc:
+        raise RuntimeError("remote URL error: {}".format(exc.reason)) from exc
 
 
 def remote_get(path: str) -> Dict[str, object]:
@@ -343,18 +384,44 @@ def check_remote_service() -> None:
     print("Remote embedding service OK: {}".format(json.dumps(health, ensure_ascii=False)))
 
 
-def encode_images_remote(images) -> List[List[float]]:
-    payload = {"images": [encode_image(image) for image in images]}
-    result = remote_post("/embed", payload)
+def encode_prepared_remote(prepared: Sequence[PreparedImage]) -> tuple[List[List[float]], Dict[str, float]]:
+    payload = {"images": [item.encoded_image for item in prepared]}
+    payload_size_mb = len(json.dumps(payload).encode("utf-8")) / 1024 / 1024
+    result = None
+    last_error: BaseException | None = None
+    for attempt in range(1, MAX_REMOTE_RETRIES + 1):
+        try:
+            started_at = time.perf_counter()
+            result = remote_post("/embed", payload)
+            elapsed = time.perf_counter() - started_at
+            timings = result.get("timings") if isinstance(result.get("timings"), dict) else {}
+            timings = {str(key): float(value) for key, value in timings.items() if isinstance(value, (int, float))}
+            timings["request"] = round(elapsed, 4)
+            timings["payloadMb"] = round(payload_size_mb, 3)
+            break
+        except Exception as exc:
+            last_error = exc
+            if attempt >= MAX_REMOTE_RETRIES:
+                raise
+            wait_seconds = REMOTE_RETRY_BASE_SECONDS * attempt
+            print("  remote call failed, retry {}/{} after {}s: {}".format(
+                attempt,
+                MAX_REMOTE_RETRIES,
+                wait_seconds,
+                exc,
+            ), file=sys.stderr)
+            time.sleep(wait_seconds)
+    if result is None:
+        raise RuntimeError("remote request failed: {}".format(last_error))
     vectors = result.get("vectors")
     if not isinstance(vectors, list):
         raise RuntimeError("remote response missing vectors")
-    if len(vectors) != len(images):
-        raise RuntimeError("remote returned {} vectors for {} images".format(len(vectors), len(images)))
+    if len(vectors) != len(prepared):
+        raise RuntimeError("remote returned {} vectors for {} images".format(len(vectors), len(prepared)))
     for vector in vectors:
         if not isinstance(vector, list) or len(vector) != VECTOR_DIMENSION:
             raise RuntimeError("bad vector dimension from remote")
-    return vectors
+    return vectors, timings
 
 
 def upsert_vectors(collection, rows: Sequence[ImageRow], vectors: Sequence[Sequence[float]]) -> None:
@@ -383,33 +450,54 @@ def run() -> None:
     ok = 0
     failed = 0
     consecutive_failed = 0
+    total_started_at = time.perf_counter()
     with connect_mysql() as conn:
         rows = pending_images(conn)
         print("Vectorizing {} images into Milvus collection {}.".format(len(rows), MILVUS_COLLECTION))
         for batch_index, batch in enumerate(chunks(rows, BATCH_SIZE), start=1):
+            batch_started_at = time.perf_counter()
             print("[batch {}] image {}..{}".format(batch_index, batch[0].image_id, batch[-1].image_id))
-            valid_rows: List[ImageRow] = []
-            images = []
-            for row in batch:
-                try:
-                    images.append(open_image(row, local_paths))
-                    valid_rows.append(row)
-                except Exception as exc:
-                    failed += 1
-                    consecutive_failed += 1
-                    mark_failed(conn, row, exc)
-                    print("  failed load image {}: {}".format(row.image_id, exc), file=sys.stderr)
+            prepare_started_at = time.perf_counter()
+            prepared = prepare_batch(batch, local_paths, conn)
+            prepare_elapsed = time.perf_counter() - prepare_started_at
+            failed_prepare_count = len(batch) - len(prepared)
+            if failed_prepare_count:
+                failed += failed_prepare_count
+                consecutive_failed += failed_prepare_count
+            valid_rows = [item.row for item in prepared]
             if not valid_rows:
                 if consecutive_failed >= MAX_CONSECUTIVE_FAILURES:
                     raise SystemExit("Too many consecutive failures; stop vector worker.")
                 continue
             try:
+                db_started_at = time.perf_counter()
                 mark_processing(conn, valid_rows)
-                vectors = encode_images_remote(images)
+                processing_db_elapsed = time.perf_counter() - db_started_at
+                remote_started_at = time.perf_counter()
+                vectors, remote_timings = encode_prepared_remote(prepared)
+                remote_elapsed = time.perf_counter() - remote_started_at
+                milvus_started_at = time.perf_counter()
                 upsert_vectors(collection, valid_rows, vectors)
+                milvus_elapsed = time.perf_counter() - milvus_started_at
+                ready_db_started_at = time.perf_counter()
                 mark_ready(conn, valid_rows)
+                ready_db_elapsed = time.perf_counter() - ready_db_started_at
                 ok += len(valid_rows)
                 consecutive_failed = 0
+                batch_elapsed = time.perf_counter() - batch_started_at
+                speed = len(valid_rows) / batch_elapsed if batch_elapsed > 0 else 0
+                print(
+                    "  ok={} prepare={:.1f}s remote={:.1f}s milvus={:.1f}s db={:.1f}s total={:.1f}s speed={:.2f}/s remoteParts={}".format(
+                        len(valid_rows),
+                        prepare_elapsed,
+                        remote_elapsed,
+                        milvus_elapsed,
+                        processing_db_elapsed + ready_db_elapsed,
+                        batch_elapsed,
+                        speed,
+                        json.dumps(remote_timings, ensure_ascii=False),
+                    )
+                )
             except Exception as exc:
                 failed += len(valid_rows)
                 consecutive_failed += len(valid_rows)
@@ -418,13 +506,13 @@ def run() -> None:
                 print("  failed vector batch: {}".format(exc), file=sys.stderr)
                 if consecutive_failed >= MAX_CONSECUTIVE_FAILURES:
                     raise SystemExit("Too many consecutive failures; stop vector worker.") from exc
-            finally:
-                for image in images:
-                    try:
-                        image.close()
-                    except Exception:
-                        pass
-    print("Done. embedded={}, failed={}".format(ok, failed))
+    elapsed = time.perf_counter() - total_started_at
+    print("Done. embedded={}, failed={}, elapsed={:.0f}s, speed={:.2f}/s".format(
+        ok,
+        failed,
+        elapsed,
+        ok / elapsed if elapsed > 0 else 0,
+    ))
 
 
 if __name__ == "__main__":

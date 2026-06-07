@@ -28,12 +28,13 @@ MYSQL_PASSWORD = "rangwaz123"
 
 MILVUS_HOST = "127.0.0.1"
 MILVUS_PORT = "19530"
-MILVUS_COLLECTION = "vibelo_image_vectors_siglip2_giant_p384"
+MILVUS_COLLECTION = "vibelo_image_vectors_siglip2_giant_p384_d512"
 VECTOR_FIELD = "embedding"
 
 MODEL_NAME = "google/siglip2-giant-opt-patch16-384"
-VECTOR_VERSION = "siglip2-giant-p384-v1"
-VECTOR_DIMENSION = 1536
+VECTOR_VERSION = "siglip2-giant-p384-d512-v1"
+VECTOR_DIMENSION = 512
+PROJECTION_SEED = 20260606
 DEVICE = "auto"
 MODEL_TORCH_DTYPE = "auto"
 HF_CACHE_DIR = "H:\\huggingface"
@@ -62,6 +63,8 @@ _PYMYSQL = None
 _MILVUS = None
 _PIL = None
 _MODEL = None
+_PROJECTION_MATRIX = None
+_PROJECTION_INPUT_DIMENSION = None
 
 
 @dataclass(frozen=True)
@@ -134,6 +137,60 @@ def require_model():
     model.eval()
     _MODEL = (torch, processor, model, device)
     return _MODEL
+
+
+def as_feature_tensor(torch, value):
+    if torch.is_tensor(value):
+        return value
+    for attr in ("image_embeds", "pooler_output"):
+        tensor = getattr(value, attr, None)
+        if torch.is_tensor(tensor):
+            return tensor
+    last_hidden_state = getattr(value, "last_hidden_state", None)
+    if torch.is_tensor(last_hidden_state):
+        return last_hidden_state.mean(dim=1)
+    if isinstance(value, (tuple, list)):
+        for item in value:
+            if torch.is_tensor(item):
+                return item
+            tensor = as_feature_tensor(torch, item)
+            if torch.is_tensor(tensor):
+                return tensor
+    raise RuntimeError("model did not return an image feature tensor: {}".format(type(value).__name__))
+
+
+def l2_normalize(features):
+    return features / features.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+
+
+def projection_matrix(torch, input_dimension: int, device: str):
+    global _PROJECTION_MATRIX, _PROJECTION_INPUT_DIMENSION
+    if input_dimension == VECTOR_DIMENSION:
+        return None
+    if input_dimension < VECTOR_DIMENSION:
+        raise RuntimeError("Model vector dimension {} is smaller than configured {}".format(
+            input_dimension,
+            VECTOR_DIMENSION,
+        ))
+    if _PROJECTION_MATRIX is None or _PROJECTION_INPUT_DIMENSION != input_dimension:
+        generator = torch.Generator()
+        generator.manual_seed(PROJECTION_SEED)
+        matrix = torch.randn(
+            (input_dimension, VECTOR_DIMENSION),
+            generator=generator,
+            dtype=torch.float32,
+        ) / (VECTOR_DIMENSION ** 0.5)
+        _PROJECTION_MATRIX = matrix.to(device)
+        _PROJECTION_INPUT_DIMENSION = input_dimension
+    return _PROJECTION_MATRIX
+
+
+def project_features(torch, features, device: str):
+    features = l2_normalize(features.float())
+    matrix = projection_matrix(torch, int(features.shape[-1]), device)
+    if matrix is None:
+        return l2_normalize(features)
+    return l2_normalize(features @ matrix)
 
 
 def connect_mysql():
@@ -336,14 +393,14 @@ def encode_images(images):
     }
     with torch.no_grad():
         if hasattr(model, "get_image_features"):
-            features = model.get_image_features(**inputs)
+            features = as_feature_tensor(torch, model.get_image_features(**inputs))
         else:
             outputs = model.vision_model(pixel_values=inputs["pixel_values"])
-            features = outputs.pooler_output
+            features = as_feature_tensor(torch, outputs)
             projection = getattr(model, "visual_projection", None) or getattr(model, "vision_projection", None)
             if projection is not None:
                 features = projection(features)
-        features = features / features.norm(dim=-1, keepdim=True)
+        features = project_features(torch, features, device)
     vectors = features.detach().float().cpu().numpy().astype("float32")
     if vectors.shape[1] != VECTOR_DIMENSION:
         raise RuntimeError("Model vector dimension {} does not match configured {}".format(vectors.shape[1], VECTOR_DIMENSION))

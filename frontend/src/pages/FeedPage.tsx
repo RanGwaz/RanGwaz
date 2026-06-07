@@ -72,9 +72,10 @@ export function FeedPage() {
     return () => observer.disconnect()
   }, [hasMore, loadPage, page])
 
-  async function openImage(image: ImageView) {
-    await api.trackImageClick(image.id, 'home', images.findIndex((item) => item.id === image.id) + 1).catch(() => undefined)
-    navigate(`/image/${image.id}`)
+  function openImage(image: ImageView) {
+    const position = images.findIndex((item) => item.id === image.id) + 1
+    navigate(`/image/${image.id}`, { state: { previewImage: image } })
+    void api.trackImageClick(image.id, 'home', position).catch(() => undefined)
   }
 
   function reloadFeed() {

@@ -19,6 +19,17 @@ export function imageCover(image: ImageView, index = 0) {
   return imageOriginal(image, index)
 }
 
+export function preloadImageUrl(url?: string | null) {
+  const source = imageUrl(url)
+  const image = new Image()
+  image.decoding = 'async'
+  image.src = source
+}
+
+export function preloadImageOriginal(image: ImageView, index = 0) {
+  preloadImageUrl(imageOriginal(image, index))
+}
+
 export function avatarUrl(url?: string | null) {
   return imageUrl(url || 'https://api.dicebear.com/9.x/adventurer/svg?seed=user')
 }

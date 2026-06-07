@@ -1,12 +1,12 @@
-/** Image detail page with Pinterest-like panel and related masonry feed. */
+/** Image detail page with a fast Pinterest-like pin view and related masonry feed. */
 import { ArrowLeft, ChevronLeft, ChevronRight, Heart, MessageCircle, MoreHorizontal, Send, Star } from 'lucide-react'
-import { CSSProperties, FormEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { CSSProperties, FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '../AuthContext'
 import { PostCard } from '../components/PostCard'
 import { api } from '../services/api'
 import type { CommentView, ImageView } from '../types'
-import { aspectRatio, avatarUrl, countText, imageOriginal, relativeTime } from '../utils/format'
+import { aspectRatio, avatarUrl, countText, imageOriginal, imageThumbnail, preloadImageUrl, relativeTime } from '../utils/format'
 
 const DETAIL_BACK_COLUMN_WIDTH = 52
 const DETAIL_GRID_GAP = 10
@@ -14,6 +14,10 @@ const DETAIL_TARGET_COLUMN_WIDTH = 236
 const DETAIL_MAX_COLUMNS = 24
 const DETAIL_MAX_PANEL_COLUMNS = 5
 const DETAIL_CARD_CHROME_HEIGHT = 0
+
+interface DetailRouteState {
+  previewImage?: ImageView
+}
 
 function clampNumber(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
@@ -53,6 +57,10 @@ function layoutRelatedImages(images: ImageView[], count: number, reservedColumns
   return { height: Math.max(...heights, 1), items }
 }
 
+function cssImageUrl(url: string) {
+  return `url("${url.replace(/"/g, '%22')}")`
+}
+
 function DetailSkeleton() {
   return (
     <div className="detail-page">
@@ -79,8 +87,12 @@ function DetailSkeleton() {
 export function DetailPage() {
   const { id } = useParams()
   const imageId = Number(id)
-  const [image, setImage] = useState<ImageView | null>(null)
+  const routeState = useLocation().state as DetailRouteState | null
+  const routePreview = routeState?.previewImage?.id === imageId ? routeState.previewImage : null
+  const [image, setImage] = useState<ImageView | null>(routePreview)
   const [comments, setComments] = useState<CommentView[]>([])
+  const [commentsLoaded, setCommentsLoaded] = useState(false)
+  const [commentsLoading, setCommentsLoading] = useState(false)
   const [related, setRelated] = useState<ImageView[]>([])
   const [liked, setLiked] = useState(false)
   const [favorited, setFavorited] = useState(false)
@@ -88,7 +100,9 @@ export function DetailPage() {
   const [draft, setDraft] = useState('')
   const [activeAsset, setActiveAsset] = useState(0)
   const [commentsOpen, setCommentsOpen] = useState(false)
-  const [loading, setLoading] = useState(false)
+  const [detailLoading, setDetailLoading] = useState(!routePreview)
+  const [relatedLoading, setRelatedLoading] = useState(false)
+  const [relatedLoadedOnce, setRelatedLoadedOnce] = useState(false)
   const [relatedPage, setRelatedPage] = useState(1)
   const [relatedTotal, setRelatedTotal] = useState(0)
   const [relatedColumns, setRelatedColumns] = useState(6)
@@ -97,9 +111,12 @@ export function DetailPage() {
   const [gridReady, setGridReady] = useState(false)
   const [panelHeight, setPanelHeight] = useState(0)
   const [lightbox, setLightbox] = useState(false)
+  const [mediaLoaded, setMediaLoaded] = useState(false)
   const mainRef = useRef<HTMLElement | null>(null)
   const panelRef = useRef<HTMLElement | null>(null)
   const sentinelRef = useRef<HTMLDivElement | null>(null)
+  const relatedLoadingRef = useRef(false)
+  const activeImageIdRef = useRef(0)
   const navigate = useNavigate()
   const auth = useAuth()
 
@@ -107,9 +124,43 @@ export function DetailPage() {
     () => layoutRelatedImages(related, relatedColumns, reservedColumns, panelHeight, columnWidth),
     [related, relatedColumns, reservedColumns, panelHeight, columnWidth],
   )
-  const hasMoreRelated = related.length < relatedTotal || relatedTotal === 0
   const relatedReady = gridReady && panelHeight > 0 && related.length > 0
+  const hasMoreRelated = relatedLoadedOnce && !relatedLoading && related.length < relatedTotal
   const canShowFollow = !auth.user || auth.user.id !== image?.author.id
+  const activeOriginalUrl = image ? imageOriginal(image, activeAsset) : ''
+  const activeThumbUrl = image ? imageThumbnail(image, activeAsset) : ''
+
+  const loadRelatedPage = useCallback(async (targetPage: number, reset = false) => {
+    if (!Number.isFinite(imageId) || imageId <= 0) return
+    if (relatedLoadingRef.current) return
+    relatedLoadingRef.current = true
+    setRelatedLoading(true)
+    try {
+      const page = await api.similarImages(imageId, targetPage, 36)
+      if (activeImageIdRef.current !== imageId) return
+      setRelated((current) => {
+        const base = reset ? [] : current
+        const seen = new Set(base.map((item) => item.id))
+        return [...base, ...page.records.filter((item) => item.id !== imageId && !seen.has(item.id))]
+      })
+      setRelatedTotal(page.total)
+      setRelatedPage(targetPage + 1)
+      setRelatedLoadedOnce(true)
+      void api.trackBehaviors(page.records.map((item, index) => ({
+        imageId: item.id,
+        behaviorType: 'impression',
+        scene: 'similar',
+        position: (targetPage - 1) * 36 + index + 1,
+      }))).catch(() => undefined)
+    } catch {
+      if (activeImageIdRef.current === imageId) setRelatedLoadedOnce(true)
+    } finally {
+      if (activeImageIdRef.current === imageId) {
+        relatedLoadingRef.current = false
+        setRelatedLoading(false)
+      }
+    }
+  }, [imageId])
 
   useLayoutEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: 'auto' })
@@ -117,33 +168,40 @@ export function DetailPage() {
 
   useEffect(() => {
     if (!Number.isFinite(imageId) || imageId <= 0) return
-    setLoading(true)
-    setImage(null)
+    let cancelled = false
+    activeImageIdRef.current = imageId
+    relatedLoadingRef.current = false
+    setImage(routePreview ?? null)
     setComments([])
+    setCommentsLoaded(false)
+    setCommentsLoading(false)
     setRelated([])
     setRelatedPage(1)
+    setRelatedTotal(0)
+    setRelatedLoadedOnce(false)
+    setRelatedLoading(false)
     setActiveAsset(0)
     setCommentsOpen(false)
     setGridReady(false)
     setPanelHeight(0)
-    Promise.all([
-      api.imageDetail(imageId),
-      api.commentsPage(imageId, 1, 12),
-      api.similarImages(imageId, 1, 36),
-    ]).then(([detail, commentPage, relatedPageData]) => {
+    setMediaLoaded(false)
+    setDetailLoading(!routePreview)
+    if (routePreview) preloadImageUrl(imageOriginal(routePreview))
+
+    api.imageDetail(imageId).then((detail) => {
+      if (cancelled) return
       setImage(detail)
-      setComments(commentPage.records)
-      setRelated(relatedPageData.records)
-      setRelatedTotal(relatedPageData.total)
-      setRelatedPage(2)
-      void api.trackBehaviors(relatedPageData.records.map((item, index) => ({
-        imageId: item.id,
-        behaviorType: 'impression',
-        scene: 'similar',
-        position: index + 1,
-      }))).catch(() => undefined)
-    }).finally(() => setLoading(false))
-  }, [imageId])
+      preloadImageUrl(imageOriginal(detail))
+    }).catch(() => undefined).finally(() => {
+      if (!cancelled) setDetailLoading(false)
+    })
+
+    void loadRelatedPage(1, true)
+
+    return () => {
+      cancelled = true
+    }
+  }, [imageId, routePreview, loadRelatedPage])
 
   useEffect(() => {
     if (!auth.user || !image) {
@@ -162,6 +220,20 @@ export function DetailPage() {
       setFollowing(false)
     }
   }, [auth.user, image])
+
+  useEffect(() => {
+    if (!commentsOpen || commentsLoaded || commentsLoading || !image) return
+    setCommentsLoading(true)
+    api.commentsPage(image.id, 1, 12).then((page) => {
+      setComments(page.records)
+      setCommentsLoaded(true)
+    }).catch(() => undefined).finally(() => setCommentsLoading(false))
+  }, [commentsLoaded, commentsLoading, commentsOpen, image])
+
+  useEffect(() => {
+    setMediaLoaded(false)
+    if (activeOriginalUrl) preloadImageUrl(activeOriginalUrl)
+  }, [activeOriginalUrl])
 
   useLayoutEffect(() => {
     const target = mainRef.current
@@ -197,32 +269,18 @@ export function DetailPage() {
     const observer = new ResizeObserver(update)
     observer.observe(target)
     return () => observer.disconnect()
-  }, [image, commentsOpen])
-
-  useLayoutEffect(() => {
-    setPanelHeight(0)
-  }, [imageId])
+  }, [image, commentsOpen, mediaLoaded])
 
   useEffect(() => {
     const target = sentinelRef.current
     if (!target || !image || !hasMoreRelated) return
     const observer = new IntersectionObserver((entries) => {
       if (!entries.some((entry) => entry.isIntersecting)) return
-      api.similarImages(image.id, relatedPage, 36).then((page) => {
-        setRelated((current) => [...current, ...page.records.filter((item) => !current.some((known) => known.id === item.id))])
-        setRelatedTotal(page.total)
-        setRelatedPage((value) => value + 1)
-        void api.trackBehaviors(page.records.map((item, index) => ({
-          imageId: item.id,
-          behaviorType: 'impression',
-          scene: 'similar',
-          position: (relatedPage - 1) * 36 + index + 1,
-        }))).catch(() => undefined)
-      }).catch(() => undefined)
+      void loadRelatedPage(relatedPage)
     }, { rootMargin: '1100px 0px' })
     observer.observe(target)
     return () => observer.disconnect()
-  }, [hasMoreRelated, image, relatedPage])
+  }, [hasMoreRelated, image, loadRelatedPage, relatedPage])
 
   async function toggleLike() {
     if (!image) return
@@ -271,6 +329,7 @@ export function DetailPage() {
     const created = await api.comment(image.id, draft.trim())
     setDraft('')
     setCommentsOpen(true)
+    setCommentsLoaded(true)
     setComments((current) => [created, ...current])
     setImage({ ...image, commentCount: image.commentCount + 1 })
   }
@@ -281,11 +340,11 @@ export function DetailPage() {
   }
 
   function openRelated(target: ImageView) {
+    navigate(`/image/${target.id}`, { state: { previewImage: target } })
     void api.trackImageClick(target.id, 'similar').catch(() => undefined)
-    navigate(`/image/${target.id}`)
   }
 
-  if (loading || !image || image.id !== imageId) return <DetailSkeleton />
+  if (!image || image.id !== imageId) return <DetailSkeleton />
 
   return (
     <div className="detail-page">
@@ -300,7 +359,7 @@ export function DetailPage() {
       >
         <button className="detail-page__back-btn" type="button" onClick={() => navigate(-1)} aria-label="返回"><ArrowLeft size={24} /></button>
         <section className="detail-page__focus">
-          <article className="detail-panel" ref={panelRef}>
+          <article className={detailLoading ? 'detail-panel is-refreshing' : 'detail-panel'} ref={panelRef}>
             <div className="detail-panel__toolbar">
               <div className="detail-panel__tool-group">
                 <button type="button" className={liked ? 'is-active' : ''} onClick={toggleLike} aria-label="点赞"><Heart size={23} /><strong>{countText(image.likeCount)}</strong></button>
@@ -309,10 +368,26 @@ export function DetailPage() {
                 <button type="button" onClick={() => api.trackImageShare(image.id)} aria-label="分享"><Send size={21} /></button>
                 <button type="button" aria-label="更多"><MoreHorizontal size={21} /></button>
               </div>
+              {detailLoading && <span className="detail-panel__status">更新中</span>}
             </div>
             <div className="detail-panel__media">
-              <button className="detail-panel__image-frame" type="button" onClick={() => setLightbox(true)} aria-label="查看大图">
-                <img src={imageOriginal(image, activeAsset)} alt={image.title} style={{ aspectRatio: aspectRatio(image) }} />
+              <button
+                className={mediaLoaded ? 'detail-panel__image-frame is-loaded' : 'detail-panel__image-frame'}
+                type="button"
+                onClick={() => setLightbox(true)}
+                aria-label="查看大图"
+                style={{ backgroundImage: cssImageUrl(activeThumbUrl) } as CSSProperties}
+              >
+                <span className="detail-panel__image-placeholder" />
+                <img
+                  src={activeOriginalUrl}
+                  alt={image.title}
+                  style={{ aspectRatio: aspectRatio(image) }}
+                  loading="eager"
+                  decoding="async"
+                  fetchPriority="high"
+                  onLoad={() => setMediaLoaded(true)}
+                />
               </button>
               {image.assets.length > 1 && (
                 <>
@@ -346,9 +421,11 @@ export function DetailPage() {
                 {commentsOpen && (
                   <div className="detail-panel__comments-body">
                     <form className="detail-panel__comment-editor" onSubmit={submitComment}>
-                      <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="添加评论或展开对话讨论" />
+                      <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="添加评论" />
                       <button type="submit" aria-label="发送评论"><Send size={18} /></button>
                     </form>
+                    {commentsLoading && <p className="detail-panel__comments-state">正在加载评论...</p>}
+                    {!commentsLoading && commentsLoaded && comments.length === 0 && <p className="detail-panel__comments-state">还没有评论</p>}
                     <div className="detail-panel__comments-list">
                       {comments.map((comment) => (
                         <article key={comment.id}>
@@ -363,7 +440,7 @@ export function DetailPage() {
             </section>
           </article>
         </section>
-        <section className={relatedReady ? 'detail-related' : 'detail-related is-loading'}>
+        <section className={relatedReady ? 'detail-related' : 'detail-related is-loading'} aria-label="相似图片">
           {relatedReady ? (
             <div className="detail-related__waterfall" style={{ height: relatedLayout.height } as CSSProperties}>
               {relatedLayout.items.map((item) => (
@@ -376,11 +453,16 @@ export function DetailPage() {
                 </div>
               ))}
             </div>
-          ) : <div className="detail-related__skeleton">{Array.from({ length: 12 }, (_, index) => <span key={index} />)}</div>}
+          ) : relatedLoadedOnce && !relatedLoading ? (
+            <div className="detail-related__empty">暂无相似图片</div>
+          ) : (
+            <div className="detail-related__skeleton">{Array.from({ length: 12 }, (_, index) => <span key={index} />)}</div>
+          )}
         </section>
         <div ref={sentinelRef} className="detail-related__sentinel" />
       </main>
-      {lightbox && <button type="button" className="lightbox" onClick={() => setLightbox(false)} aria-label="关闭大图"><img src={imageOriginal(image, activeAsset)} alt={image.title} /></button>}
+      {relatedLoading && related.length > 0 && <div className="detail-page__loading-more"><span /><span /><span /></div>}
+      {lightbox && <button type="button" className="lightbox" onClick={() => setLightbox(false)} aria-label="关闭大图"><img src={activeOriginalUrl} alt={image.title} /></button>}
     </div>
   )
 }

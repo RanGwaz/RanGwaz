@@ -16,8 +16,10 @@ MYSQL_PASSWORD = "rangwaz123"
 MILVUS_HOST = "127.0.0.1"
 MILVUS_PORT = "19530"
 MILVUS_COLLECTIONS_TO_DROP: List[str] = [
+    "vibelo_image_vectors",
     "vibelo_image_vectors_clip_b32",
     "vibelo_image_vectors_siglip2_giant_p384",
+    "vibelo_image_vectors_siglip2_giant_p384_d512",
     "vibelo_image_vectors_siglip2_giant_p384_old",
     "vibelo_image_vectors_siglip2_giant_p384_tmp",
     "vibelo_image_vectors_siglip2_giant_p384_v1",
@@ -61,11 +63,13 @@ def clear_mysql_vector_state() -> None:
             cursor.execute("DELETE FROM image_embeddings")
             embeddings = cursor.rowcount
         conn.commit()
-    print("MySQL 已清理：image_embeddings={}，recommendation_candidates={}，user_interest_snapshots={}。".format(
-        embeddings,
-        candidates,
-        snapshots,
-    ))
+    print(
+        "MySQL 已清理：image_embeddings={}，recommendation_candidates={}，user_interest_snapshots={}。".format(
+            embeddings,
+            candidates,
+            snapshots,
+        )
+    )
 
 
 def clear_milvus_collections() -> None:
@@ -86,7 +90,7 @@ def clear_milvus_collections() -> None:
 def run() -> None:
     clear_mysql_vector_state()
     clear_milvus_collections()
-    print("向量数据已清空。下一步运行 tools/vectorize_images.py 生成新模型向量。")
+    print("向量数据已清空。下一步运行 tools/vectorize_images_remote.py 生成 512 维 SigLIP2 向量。")
 
 
 if __name__ == "__main__":

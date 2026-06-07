@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { MasonryGrid } from '../components/MasonryGrid'
 import { api } from '../services/api'
-import type { SearchResult } from '../types'
+import type { ImageView, SearchResult } from '../types'
 import { avatarUrl, countText } from '../utils/format'
 
 export function SearchPage() {
@@ -28,6 +28,11 @@ export function SearchPage() {
   function submit(event: FormEvent) {
     event.preventDefault()
     if (keyword.trim()) navigate(`/discover?q=${encodeURIComponent(keyword.trim())}`)
+  }
+
+  function openImage(target: ImageView) {
+    navigate(`/image/${target.id}`, { state: { previewImage: target } })
+    void api.trackImageClick(target.id, 'search').catch(() => undefined)
   }
 
   return (
@@ -72,7 +77,7 @@ export function SearchPage() {
         {!loading && result.images.length > 0 && (
           <section className="search-page__section search-page__section--plain">
             <h2>图片</h2>
-            <MasonryGrid posts={result.images} onOpen={(target) => navigate(`/image/${target.id}`)} />
+            <MasonryGrid posts={result.images} onOpen={openImage} />
           </section>
         )}
       </main>

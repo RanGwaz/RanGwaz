@@ -98,6 +98,11 @@ export function ProfilePage() {
     }
   }
 
+  function openImage(target: ImageView) {
+    navigate(`/image/${target.id}`, { state: { previewImage: target } })
+    void api.trackImageClick(target.id, isOwnProfile ? 'profile-own' : 'profile').catch(() => undefined)
+  }
+
   if (loading) {
     return (
       <div className="profile-page">
@@ -168,7 +173,7 @@ export function ProfilePage() {
           <button type="button">收藏</button>
           <button type="button">喜欢</button>
         </div>
-        <MasonryGrid posts={images} emptyLabel={isOwnProfile ? '发布第一张图片，开始你的主页' : '这个用户还没有发布内容'} onOpen={(target) => navigate(`/image/${target.id}`)} />
+        <MasonryGrid posts={images} emptyLabel={isOwnProfile ? '发布第一张图片，开始你的主页' : '这个用户还没有发布内容'} onOpen={openImage} />
       </main>
     </div>
   )
