@@ -3,8 +3,9 @@
 """Collect authorized image datasets with a visible browser session.
 
 The tool intentionally does not bypass CAPTCHA, paywalls, or platform limits.
-For pages that require a login, use the visible browser session and sign in
-manually; the browser profile is kept under tools/.collector_browser.
+For pages that require a login, it can fill the configured account in the
+visible browser; CAPTCHA or second-factor checks still require user action.
+The browser profile is kept under tools/.collector_browser.
 """
 
 from __future__ import annotations
@@ -27,13 +28,24 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from urllib.error import HTTPError, URLError
-from urllib.parse import unquote, urljoin, urlparse, urlunparse
+from urllib.parse import quote, unquote, urljoin, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = ROOT / "tools" / "downloaded_dataset"
 DEFAULT_BROWSER_PROFILE = ROOT / "tools" / ".collector_browser"
+DEFAULT_LOGIN_EMAIL = "RanGwaz@protonmail.com"
+DEFAULT_LOGIN_PASSWORD = "RanGwaz147.."
+DEFAULT_TARGET_IMAGES = 80_000
+DEFAULT_START_SCROLLS = 12
+DEFAULT_DETAIL_PAGES = 320
+DEFAULT_DETAIL_SCROLLS = 26
+DEFAULT_DETAIL_TARGET_IMAGES = 260
+DEFAULT_LOGIN_WAIT_SECONDS = 240
+DEFAULT_DOWNLOAD_WORKERS = 10
+DEFAULT_SCROLL_PAUSE = 0.9
+DEFAULT_REQUEST_DELAY = 0.12
 
 PINIMG_HOST_RE = re.compile(r"(^|\.)pinimg\.com$", re.IGNORECASE)
 PIN_DETAIL_RE = re.compile(
@@ -74,17 +86,17 @@ class CollectorConfig:
     output_dir: Path = DEFAULT_OUTPUT_DIR
     dedupe_reference_dirs: List[Path] = field(default_factory=lambda: [DEFAULT_OUTPUT_DIR])
     start_urls: List[str] = field(default_factory=list)
-    max_images: int = 2000
-    max_scrolls: int = 20
-    detail_pages: int = 20
-    detail_scrolls: int = 40
-    detail_target_images: int = 500
-    login_wait_seconds: int = 180
-    login_email: str = ""
-    login_password: str = ""
-    scroll_pause: float = 1.2
-    workers: int = 4
-    request_delay: float = 0.2
+    max_images: int = DEFAULT_TARGET_IMAGES
+    max_scrolls: int = DEFAULT_START_SCROLLS
+    detail_pages: int = DEFAULT_DETAIL_PAGES
+    detail_scrolls: int = DEFAULT_DETAIL_SCROLLS
+    detail_target_images: int = DEFAULT_DETAIL_TARGET_IMAGES
+    login_wait_seconds: int = DEFAULT_LOGIN_WAIT_SECONDS
+    login_email: str = DEFAULT_LOGIN_EMAIL
+    login_password: str = DEFAULT_LOGIN_PASSWORD
+    scroll_pause: float = DEFAULT_SCROLL_PAUSE
+    workers: int = DEFAULT_DOWNLOAD_WORKERS
+    request_delay: float = DEFAULT_REQUEST_DELAY
     upgrade_original: bool = True
     pinimg_only: bool = True
     download_images: bool = True
@@ -314,6 +326,15 @@ def normalize_start_url(value: str) -> str:
         return ""
     path = parsed.path or "/"
     return urlunparse((parsed.scheme, parsed.netloc, path, "", parsed.query, ""))
+
+
+def pinterest_search_url(keyword: str) -> str:
+    text = clean_text(keyword, 120).strip().strip("#")
+    if not text:
+        return ""
+    return normalize_start_url(
+        "https://www.pinterest.com/search/pins/?q={}".format(quote(text, safe=""))
+    )
 
 
 def min_nonzero(first: int, second: int) -> int:
@@ -1195,17 +1216,17 @@ class DatasetCollectorApp:
         self.worker: Optional[threading.Thread] = None
 
         self.output_dir_var = tk.StringVar(value=str(DEFAULT_OUTPUT_DIR))
-        self.max_images_var = tk.StringVar(value="2000")
-        self.max_scrolls_var = tk.StringVar(value="20")
-        self.detail_pages_var = tk.StringVar(value="20")
-        self.detail_scrolls_var = tk.StringVar(value="40")
-        self.detail_target_var = tk.StringVar(value="500")
-        self.login_wait_var = tk.StringVar(value="180")
-        self.login_email_var = tk.StringVar(value=os.environ.get("RANGWAZ_LOGIN_EMAIL", ""))
-        self.login_password_var = tk.StringVar(value=os.environ.get("RANGWAZ_LOGIN_PASSWORD", ""))
-        self.workers_var = tk.StringVar(value="4")
-        self.pause_var = tk.StringVar(value="1.2")
-        self.delay_var = tk.StringVar(value="0.2")
+        self.max_images_var = tk.StringVar(value=str(DEFAULT_TARGET_IMAGES))
+        self.max_scrolls_var = tk.StringVar(value=str(DEFAULT_START_SCROLLS))
+        self.detail_pages_var = tk.StringVar(value=str(DEFAULT_DETAIL_PAGES))
+        self.detail_scrolls_var = tk.StringVar(value=str(DEFAULT_DETAIL_SCROLLS))
+        self.detail_target_var = tk.StringVar(value=str(DEFAULT_DETAIL_TARGET_IMAGES))
+        self.login_wait_var = tk.StringVar(value=str(DEFAULT_LOGIN_WAIT_SECONDS))
+        self.login_email_var = tk.StringVar(value=os.environ.get("RANGWAZ_LOGIN_EMAIL", DEFAULT_LOGIN_EMAIL))
+        self.login_password_var = tk.StringVar(value=os.environ.get("RANGWAZ_LOGIN_PASSWORD", DEFAULT_LOGIN_PASSWORD))
+        self.workers_var = tk.StringVar(value=str(DEFAULT_DOWNLOAD_WORKERS))
+        self.pause_var = tk.StringVar(value=str(DEFAULT_SCROLL_PAUSE))
+        self.delay_var = tk.StringVar(value=str(DEFAULT_REQUEST_DELAY))
         self.download_var = tk.BooleanVar(value=True)
         self.upgrade_var = tk.BooleanVar(value=True)
         self.pinimg_only_var = tk.BooleanVar(value=True)
@@ -1366,6 +1387,311 @@ class DatasetCollectorApp:
         self.root.after(100, self._drain_logs)
 
 
+class DatasetCollectorApp:
+    def __init__(self) -> None:
+        import tkinter as tk
+        from tkinter import filedialog, messagebox, ttk
+
+        self.tk = tk
+        self.ttk = ttk
+        self.filedialog = filedialog
+        self.messagebox = messagebox
+        self.root = tk.Tk()
+        self.root.title("RanGwaz唯一QQ: 1309388631")
+        self.root.geometry("1040x780")
+        self.root.minsize(960, 700)
+        self.log_queue: "queue.Queue[str]" = queue.Queue()
+        self.stop_event = threading.Event()
+        self.worker: Optional[threading.Thread] = None
+        self.title_color_index = 0
+        self.title_colors = ["#ff604b", "#42c7b7", "#7c5cff", "#ffcf5a", "#38bdf8", "#fb7185"]
+
+        self.output_dir_var = tk.StringVar(value=str(DEFAULT_OUTPUT_DIR))
+        self.max_images_var = tk.StringVar(value=str(DEFAULT_TARGET_IMAGES))
+        self.max_scrolls_var = tk.StringVar(value=str(DEFAULT_START_SCROLLS))
+        self.detail_pages_var = tk.StringVar(value=str(DEFAULT_DETAIL_PAGES))
+        self.detail_scrolls_var = tk.StringVar(value=str(DEFAULT_DETAIL_SCROLLS))
+        self.detail_target_var = tk.StringVar(value=str(DEFAULT_DETAIL_TARGET_IMAGES))
+        self.login_wait_var = tk.StringVar(value=str(DEFAULT_LOGIN_WAIT_SECONDS))
+        self.login_email_var = tk.StringVar(value=os.environ.get("RANGWAZ_LOGIN_EMAIL", DEFAULT_LOGIN_EMAIL))
+        self.login_password_var = tk.StringVar(value=os.environ.get("RANGWAZ_LOGIN_PASSWORD", DEFAULT_LOGIN_PASSWORD))
+        self.workers_var = tk.StringVar(value=str(DEFAULT_DOWNLOAD_WORKERS))
+        self.pause_var = tk.StringVar(value=str(DEFAULT_SCROLL_PAUSE))
+        self.delay_var = tk.StringVar(value=str(DEFAULT_REQUEST_DELAY))
+        self.download_var = tk.BooleanVar(value=True)
+        self.upgrade_var = tk.BooleanVar(value=True)
+        self.pinimg_only_var = tk.BooleanVar(value=True)
+
+        self._configure_style()
+        self._set_window_icon()
+        self._build()
+        self.root.after(100, self._drain_logs)
+        self.root.after(300, self._animate_title)
+
+    def run(self) -> None:
+        self.root.mainloop()
+
+    def _configure_style(self) -> None:
+        style = self.ttk.Style(self.root)
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+        style.configure("App.TFrame", background="#0f1220")
+        style.configure("Panel.TFrame", background="#171b2c")
+        style.configure("Card.TFrame", background="#171b2c")
+        style.configure("Card.TLabel", background="#171b2c", foreground="#f8fafc", font=("Microsoft YaHei UI", 10))
+        style.configure("CardTitle.TLabel", background="#171b2c", foreground="#f8fafc", font=("Microsoft YaHei UI", 12, "bold"))
+        style.configure("TNotebook", background="#0f1220", borderwidth=0)
+        style.configure("TNotebook.Tab", padding=(18, 9), font=("Microsoft YaHei UI", 10, "bold"))
+        style.map("TNotebook.Tab", background=[("selected", "#ff604b")], foreground=[("selected", "#ffffff")])
+        style.configure("Accent.TButton", font=("Microsoft YaHei UI", 11, "bold"), padding=(16, 9))
+        style.configure("Ghost.TButton", font=("Microsoft YaHei UI", 10), padding=(12, 8))
+        style.configure("TCheckbutton", background="#171b2c", foreground="#e5e7eb", font=("Microsoft YaHei UI", 10))
+        style.map("TCheckbutton", background=[("active", "#171b2c")], foreground=[("active", "#ffffff")])
+
+    def _set_window_icon(self) -> None:
+        icon = self.tk.PhotoImage(width=64, height=64)
+        icon.put("#0f1220", to=(0, 0, 64, 64))
+        icon.put("#ff604b", to=(14, 10, 24, 54))
+        icon.put("#ff604b", to=(24, 10, 42, 19))
+        icon.put("#ff604b", to=(24, 29, 43, 38))
+        icon.put("#ff604b", to=(42, 18, 50, 31))
+        icon.put("#ff604b", to=(38, 38, 49, 54))
+        icon.put("#42c7b7", to=(24, 19, 39, 29))
+        self.window_icon = icon
+        self.root.iconphoto(True, icon)
+
+    def _build(self) -> None:
+        tk = self.tk
+        ttk = self.ttk
+        shell = ttk.Frame(self.root, style="App.TFrame")
+        shell.pack(fill="both", expand=True)
+
+        header = tk.Frame(shell, bg="#0f1220")
+        header.pack(fill="x", padx=18, pady=(16, 10))
+        self.logo_canvas = tk.Canvas(header, width=58, height=58, bg="#0f1220", highlightthickness=0)
+        self.logo_canvas.pack(side="left")
+        self.logo_canvas.create_rectangle(5, 5, 53, 53, fill="#151a2d", outline="#2b3248", width=2)
+        self.logo_canvas.create_text(29, 29, text="R", font=("Segoe UI Black", 30, "bold"), fill="#ff604b", tags=("logo_r",))
+
+        title_box = tk.Frame(header, bg="#0f1220")
+        title_box.pack(side="left", fill="x", expand=True, padx=16)
+        self.title_label = tk.Label(
+            title_box,
+            text="RanGwaz唯一QQ: 1309388631",
+            bg="#0f1220",
+            fg="#ff604b",
+            font=("Microsoft YaHei UI", 22, "bold"),
+        )
+        self.title_label.pack(anchor="w")
+        tk.Label(
+            title_box,
+            text="Pinterest 入口 URL / 搜索关键词采集 · 自动进入详情页 · 跨批次去重",
+            bg="#0f1220",
+            fg="#aab3c5",
+            font=("Microsoft YaHei UI", 10),
+        ).pack(anchor="w", pady=(4, 0))
+
+        actions = tk.Frame(header, bg="#0f1220")
+        actions.pack(side="right")
+        self.start_button = ttk.Button(actions, text="开始采集", style="Accent.TButton", command=self._start)
+        self.start_button.pack(side="left", padx=(0, 8))
+        self.stop_button = ttk.Button(actions, text="停止", style="Ghost.TButton", command=self._stop, state="disabled")
+        self.stop_button.pack(side="left")
+
+        notebook = ttk.Notebook(shell)
+        notebook.pack(fill="both", expand=True, padx=18, pady=(0, 16))
+        entry_tab = ttk.Frame(notebook, style="Panel.TFrame")
+        option_tab = ttk.Frame(notebook, style="Panel.TFrame")
+        log_tab = ttk.Frame(notebook, style="Panel.TFrame")
+        notebook.add(entry_tab, text="入口与关键词")
+        notebook.add(option_tab, text="采集参数")
+        notebook.add(log_tab, text="运行日志")
+        self._build_entry_tab(entry_tab)
+        self._build_option_tab(option_tab)
+        self._build_log_tab(log_tab)
+
+    def _build_entry_tab(self, parent: object) -> None:
+        tk = self.tk
+        ttk = self.ttk
+        parent.columnconfigure(0, weight=1)
+        self._section_title(parent, "输出目录", 0)
+        row = self.tk.Frame(parent, bg="#171b2c")
+        row.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 12))
+        row.columnconfigure(0, weight=1)
+        ttk.Entry(row, textvariable=self.output_dir_var).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        ttk.Button(row, text="选择目录", style="Ghost.TButton", command=self._choose_output).grid(row=0, column=1)
+
+        self._section_title(parent, "入口 URL，每行一个", 2)
+        self.urls_text = tk.Text(parent, height=5, wrap="word", bg="#0b1020", fg="#f8fafc", insertbackground="#ff604b", relief="flat", padx=12, pady=10)
+        self.urls_text.grid(row=3, column=0, sticky="nsew", padx=18, pady=(0, 14))
+
+        self._section_title(parent, "搜索关键词 / 热门标签，每行一个", 4)
+        self.keywords_text = tk.Text(parent, height=5, wrap="word", bg="#0b1020", fg="#f8fafc", insertbackground="#42c7b7", relief="flat", padx=12, pady=10)
+        self.keywords_text.grid(row=5, column=0, sticky="nsew", padx=18, pady=(0, 10))
+
+        hint = (
+            "关键词会自动变成：https://www.pinterest.com/search/pins/?q=关键词。"
+            " 可以只填关键词，也可以同时填入口 URL；例如 anime wallpaper、cyberpunk girl、minimal iphone wallpaper。"
+            " 原有自动滚动、进入详情页、下载和去重逻辑全部复用。"
+        )
+        tk.Label(parent, text=hint, bg="#171b2c", fg="#aab3c5", wraplength=920, justify="left", font=("Microsoft YaHei UI", 10)).grid(
+            row=6, column=0, sticky="ew", padx=18, pady=(0, 16)
+        )
+        parent.rowconfigure(3, weight=1)
+        parent.rowconfigure(5, weight=1)
+
+    def _build_option_tab(self, parent: object) -> None:
+        ttk = self.ttk
+        for col in range(6):
+            parent.columnconfigure(col, weight=1)
+
+        login = ttk.Frame(parent, style="Card.TFrame")
+        login.grid(row=0, column=0, columnspan=6, sticky="ew", padx=18, pady=(18, 10))
+        for col in range(6):
+            login.columnconfigure(col, weight=1)
+        ttk.Label(login, text="登录信息", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", padx=14, pady=(12, 8))
+        self._field(login, "登录邮箱", self.login_email_var, 1, 0)
+        self._field(login, "登录密码", self.login_password_var, 1, 2, show="*")
+        self._field(login, "登录等待秒", self.login_wait_var, 1, 4)
+
+        crawl = ttk.Frame(parent, style="Card.TFrame")
+        crawl.grid(row=1, column=0, columnspan=6, sticky="ew", padx=18, pady=10)
+        for col in range(6):
+            crawl.columnconfigure(col, weight=1)
+        ttk.Label(crawl, text="采集强度", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", padx=14, pady=(12, 8))
+        self._field(crawl, "最大图片", self.max_images_var, 1, 0)
+        self._field(crawl, "首页滚动", self.max_scrolls_var, 1, 2)
+        self._field(crawl, "详情页数", self.detail_pages_var, 1, 4)
+        self._field(crawl, "详情滚动", self.detail_scrolls_var, 2, 0)
+        self._field(crawl, "每详情目标", self.detail_target_var, 2, 2)
+        self._field(crawl, "滚动等待秒", self.pause_var, 2, 4)
+        self._field(crawl, "下载线程", self.workers_var, 3, 0)
+        self._field(crawl, "请求错峰秒", self.delay_var, 3, 2)
+
+        switches = ttk.Frame(parent, style="Card.TFrame")
+        switches.grid(row=2, column=0, columnspan=6, sticky="ew", padx=18, pady=10)
+        ttk.Label(switches, text="下载与过滤", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", padx=14, pady=(12, 8))
+        ttk.Checkbutton(switches, text="下载图片", variable=self.download_var).grid(row=1, column=0, sticky="w", padx=14, pady=(0, 14))
+        ttk.Checkbutton(switches, text="优先原图", variable=self.upgrade_var).grid(row=1, column=1, sticky="w", padx=14, pady=(0, 14))
+        ttk.Checkbutton(switches, text="仅 i.pinimg.com 图片", variable=self.pinimg_only_var).grid(row=1, column=2, sticky="w", padx=14, pady=(0, 14))
+
+    def _build_log_tab(self, parent: object) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=1)
+        self.tk.Label(parent, text="运行日志", bg="#171b2c", fg="#f8fafc", font=("Microsoft YaHei UI", 13, "bold")).grid(
+            row=0, column=0, sticky="w", padx=18, pady=(18, 8)
+        )
+        self.log_text = self.tk.Text(parent, wrap="word", bg="#090d18", fg="#dbe4f0", insertbackground="#ff604b", relief="flat", padx=12, pady=12)
+        self.log_text.grid(row=1, column=0, sticky="nsew", padx=18, pady=(0, 18))
+
+    def _section_title(self, parent: object, text: str, row: int) -> None:
+        self.tk.Label(parent, text=text, bg="#171b2c", fg="#f8fafc", font=("Microsoft YaHei UI", 12, "bold")).grid(
+            row=row, column=0, sticky="w", padx=18, pady=(18, 8)
+        )
+
+    def _field(self, parent: object, label: str, variable: object, row: int, col: int, show: str = "") -> None:
+        self.ttk.Label(parent, text=label, style="Card.TLabel").grid(row=row, column=col, sticky="w", padx=(14, 8), pady=8)
+        self.ttk.Entry(parent, textvariable=variable, show=show, width=18).grid(row=row, column=col + 1, sticky="ew", padx=(0, 14), pady=8)
+
+    def _choose_output(self) -> None:
+        path = self.filedialog.askdirectory(initialdir=str(ROOT / "tools"))
+        if path:
+            self.output_dir_var.set(path)
+
+    def _start(self) -> None:
+        if self.worker and self.worker.is_alive():
+            return
+        try:
+            config = self._read_config()
+        except ValueError as exc:
+            self.messagebox.showerror("配置错误", str(exc))
+            return
+
+        self.stop_event.clear()
+        self.start_button.configure(state="disabled")
+        self.stop_button.configure(state="normal")
+        self._log("Starting...")
+        self._log("Start URLs:")
+        for url in config.start_urls:
+            self._log("  " + url)
+
+        def target() -> None:
+            try:
+                run_collection(config, log=self._log, stop_event=self.stop_event)
+            except Exception:
+                self._log(traceback.format_exc())
+            finally:
+                self.log_queue.put("__DONE__")
+
+        self.worker = threading.Thread(target=target, daemon=True)
+        self.worker.start()
+
+    def _stop(self) -> None:
+        self.stop_event.set()
+        self._log("Stop requested; waiting for current work to finish.")
+
+    def _read_config(self) -> CollectorConfig:
+        urls: List[str] = []
+        for line in self.urls_text.get("1.0", "end").splitlines():
+            normalized = normalize_start_url(line)
+            if normalized:
+                urls.append(normalized)
+        for line in self.keywords_text.get("1.0", "end").splitlines():
+            search_url = pinterest_search_url(line)
+            if search_url:
+                urls.append(search_url)
+        urls = unique_list(urls)
+        if not urls:
+            raise ValueError("请至少填写一个入口 URL 或搜索关键词")
+        return CollectorConfig(
+            output_dir=Path(self.output_dir_var.get().strip() or DEFAULT_OUTPUT_DIR),
+            start_urls=urls,
+            max_images=parse_positive_int(self.max_images_var.get(), "最大图片"),
+            max_scrolls=parse_positive_int(self.max_scrolls_var.get(), "首页滚动"),
+            detail_pages=parse_positive_int(self.detail_pages_var.get(), "详情页数"),
+            detail_scrolls=parse_positive_int(self.detail_scrolls_var.get(), "详情滚动"),
+            detail_target_images=parse_positive_int(self.detail_target_var.get(), "每详情目标"),
+            login_wait_seconds=parse_positive_int(self.login_wait_var.get(), "登录等待秒"),
+            login_email=self.login_email_var.get().strip(),
+            login_password=self.login_password_var.get(),
+            workers=parse_positive_int(self.workers_var.get(), "下载线程"),
+            request_delay=parse_float(self.delay_var.get(), "请求错峰秒"),
+            scroll_pause=parse_float(self.pause_var.get(), "滚动等待秒"),
+            upgrade_original=bool(self.upgrade_var.get()),
+            pinimg_only=bool(self.pinimg_only_var.get()),
+            download_images=bool(self.download_var.get()),
+        )
+
+    def _animate_title(self) -> None:
+        color = self.title_colors[self.title_color_index % len(self.title_colors)]
+        self.title_color_index += 1
+        try:
+            self.title_label.configure(fg=color)
+            self.logo_canvas.itemconfigure("logo_r", fill=color)
+        except Exception:
+            pass
+        self.root.after(700, self._animate_title)
+
+    def _log(self, message: str) -> None:
+        self.log_queue.put(message)
+
+    def _drain_logs(self) -> None:
+        while True:
+            try:
+                message = self.log_queue.get_nowait()
+            except queue.Empty:
+                break
+            if message == "__DONE__":
+                self.start_button.configure(state="normal")
+                self.stop_button.configure(state="disabled")
+                continue
+            self.log_text.insert("end", message + "\n")
+            self.log_text.see("end")
+        self.root.after(100, self._drain_logs)
+
+
 def parse_positive_int(value: str, label: str) -> int:
     try:
         number = int(str(value).strip())
@@ -1391,18 +1717,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gui", action="store_true", help="open the Tkinter window")
     parser.add_argument("--url", action="append", default=[], help="live start URL; can be passed more than once")
     parser.add_argument("--url-file", help="text file containing live URLs")
+    parser.add_argument("--keyword", action="append", default=[], help="Pinterest search keyword; can be passed more than once")
+    parser.add_argument("--keyword-file", help="text file containing Pinterest search keywords")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT_DIR), help="output directory")
-    parser.add_argument("--max-images", type=int, default=2000)
-    parser.add_argument("--max-scrolls", type=int, default=20)
-    parser.add_argument("--detail-pages", type=int, default=20)
-    parser.add_argument("--detail-scrolls", type=int, default=40)
-    parser.add_argument("--detail-target-images", type=int, default=500)
-    parser.add_argument("--login-wait-seconds", type=int, default=180)
-    parser.add_argument("--login-email", default=os.environ.get("RANGWAZ_LOGIN_EMAIL", ""))
-    parser.add_argument("--login-password", default=os.environ.get("RANGWAZ_LOGIN_PASSWORD", ""))
-    parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--scroll-pause", type=float, default=1.2)
-    parser.add_argument("--request-delay", type=float, default=0.2)
+    parser.add_argument("--max-images", type=int, default=DEFAULT_TARGET_IMAGES)
+    parser.add_argument("--max-scrolls", type=int, default=DEFAULT_START_SCROLLS)
+    parser.add_argument("--detail-pages", type=int, default=DEFAULT_DETAIL_PAGES)
+    parser.add_argument("--detail-scrolls", type=int, default=DEFAULT_DETAIL_SCROLLS)
+    parser.add_argument("--detail-target-images", type=int, default=DEFAULT_DETAIL_TARGET_IMAGES)
+    parser.add_argument("--login-wait-seconds", type=int, default=DEFAULT_LOGIN_WAIT_SECONDS)
+    parser.add_argument("--login-email", default=os.environ.get("RANGWAZ_LOGIN_EMAIL", DEFAULT_LOGIN_EMAIL))
+    parser.add_argument("--login-password", default=os.environ.get("RANGWAZ_LOGIN_PASSWORD", DEFAULT_LOGIN_PASSWORD))
+    parser.add_argument("--workers", type=int, default=DEFAULT_DOWNLOAD_WORKERS)
+    parser.add_argument("--scroll-pause", type=float, default=DEFAULT_SCROLL_PAUSE)
+    parser.add_argument("--request-delay", type=float, default=DEFAULT_REQUEST_DELAY)
     parser.add_argument("--no-download", action="store_true")
     parser.add_argument("--no-upgrade-original", action="store_true")
     parser.add_argument("--allow-any-image-domain", action="store_true")
@@ -1415,6 +1743,10 @@ def load_urls(args: argparse.Namespace) -> List[str]:
     if args.url_file:
         path = Path(args.url_file)
         urls.extend(normalize_start_url(line) for line in path.read_text(encoding="utf-8").splitlines())
+    urls.extend(pinterest_search_url(keyword) for keyword in (args.keyword or []))
+    if args.keyword_file:
+        path = Path(args.keyword_file)
+        urls.extend(pinterest_search_url(line) for line in path.read_text(encoding="utf-8").splitlines())
     return unique_list(urls)
 
 
@@ -1427,7 +1759,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     urls = load_urls(args)
     if not urls:
-        parser.error("at least one --url or --url-file entry is required")
+        parser.error("at least one --url, --url-file, --keyword, or --keyword-file entry is required")
 
     config = CollectorConfig(
         output_dir=Path(args.output),
