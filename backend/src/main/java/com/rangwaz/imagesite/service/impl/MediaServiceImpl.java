@@ -11,8 +11,8 @@ import io.minio.MakeBucketArgs;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
 import org.springframework.stereotype.Service;
-import org.springframework.web.multipart.MultipartFile;
 import org.springframework.util.StringUtils;
+import org.springframework.web.multipart.MultipartFile;
 
 import javax.imageio.ImageIO;
 import java.awt.Graphics2D;
@@ -214,7 +214,7 @@ public class MediaServiceImpl implements MediaService {
     }
 
     /**
-            throw new BusinessException("BAD_OBJECT_KEY", "图片路径不合法");
+     * Normalizes a media object key before loading it from storage.
      *
      * @param objectKey object key
      * @return safe key
@@ -223,7 +223,7 @@ public class MediaServiceImpl implements MediaService {
         String key = objectKey == null ? "" : objectKey.replace("\\", "/");
         while (key.startsWith("/")) key = key.substring(1);
         if (!StringUtils.hasText(key) || key.contains("..")) {
-            throw new BusinessException("BAD_OBJECT_KEY", "鍥剧墖鍦板潃闈炴硶");
+            throw new BusinessException("BAD_OBJECT_KEY", "图片路径不合法");
         }
         return key;
     }

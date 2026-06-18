@@ -56,13 +56,22 @@ public interface UserMapper {
     UserEntity findByUsername(@Param("username") String username);
 
     /**
+     * Finds a user by phone number.
+     *
+     * @param phone normalized phone number
+     * @return user entity
+     */
+    @Select("SELECT * FROM app_users WHERE phone = #{phone}")
+    UserEntity findByPhone(@Param("phone") String phone);
+
+    /**
      * Inserts a user.
      *
      * @param user user entity
      */
     @Insert("""
-            INSERT INTO app_users(username,password_hash,nickname,avatar_url,bio,status)
-            VALUES(#{username},#{passwordHash},#{nickname},#{avatarUrl},#{bio},#{status})
+            INSERT INTO app_users(username,phone,password_hash,nickname,avatar_url,bio,status)
+            VALUES(#{username},#{phone},#{passwordHash},#{nickname},#{avatarUrl},#{bio},#{status})
             """)
     @Options(useGeneratedKeys = true, keyProperty = "id")
     void insert(UserEntity user);

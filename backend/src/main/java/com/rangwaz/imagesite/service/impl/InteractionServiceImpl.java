@@ -195,7 +195,7 @@ public class InteractionServiceImpl implements InteractionService {
      */
     @Override
     public void behavior(Long userId, ApiDtos.BehaviorRequest request) {
-        if (request.imageId() == null) throw new BusinessException("IMAGE_REQUIRED", "缂哄皯鍥剧墖鍐呭");
+        if (request.imageId() == null) throw new BusinessException("IMAGE_REQUIRED", "缺少图片内容");
         String type = StringUtils.hasText(request.behaviorType()) ? request.behaviorType().trim() : "unknown";
         String scene = StringUtils.hasText(request.scene()) ? request.scene().trim() : "unknown";
         imageService.trackBehavior(userId, request.imageId(), type, scene, request.position(), request.duration());
@@ -216,12 +216,6 @@ public class InteractionServiceImpl implements InteractionService {
                 .forEach(event -> behavior(userId, event));
     }
 
-    /**
-     * Converts a comment entity into a view.
-     *
-     * @param comment comment entity
-     * @return comment view
-     */
     private ApiDtos.CommentView toView(CommentEntity comment) {
         UserEntity author = userMapper.findById(comment.getAuthorId());
         ApiDtos.UserSummary replyTo = null;

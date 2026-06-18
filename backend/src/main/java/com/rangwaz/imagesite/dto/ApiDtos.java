@@ -39,6 +39,24 @@ public final class ApiDtos {
     }
 
     /**
+     * Sends an SMS verification code for phone sign-in.
+     */
+    public record SendSmsCodeRequest(@NotBlank String phone, String scene) {
+    }
+
+    /**
+     * SMS code request result. mockCode is only present in local mock mode.
+     */
+    public record SmsCodeResponse(boolean sent, String mockCode, long expiresInSeconds) {
+    }
+
+    /**
+     * Phone verification-code login request.
+     */
+    public record PhoneLoginRequest(@NotBlank String phone, @NotBlank String code) {
+    }
+
+    /**
      * Media upload response.
      */
     public record UploadResponse(String objectKey,

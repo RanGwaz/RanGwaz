@@ -25,6 +25,22 @@ public interface AuthService {
     ApiDtos.AuthTokenResponse login(ApiDtos.LoginRequest request);
 
     /**
+     * Sends a phone verification code.
+     *
+     * @param request SMS code request
+     * @return send result
+     */
+    ApiDtos.SmsCodeResponse sendSmsCode(ApiDtos.SendSmsCodeRequest request);
+
+    /**
+     * Logs in or creates a user with a verified phone number.
+     *
+     * @param request phone login request
+     * @return token response
+     */
+    ApiDtos.AuthTokenResponse loginWithPhone(ApiDtos.PhoneLoginRequest request);
+
+    /**
      * Resolves the current user from a bearer token.
      *
      * @param authorization authorization header

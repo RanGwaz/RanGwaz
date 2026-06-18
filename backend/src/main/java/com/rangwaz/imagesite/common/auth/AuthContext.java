@@ -23,22 +23,22 @@ public class AuthContext {
     }
 
     /**
-     * Resolves an optional user id.
+     * Gets the current optional user id.
      *
      * @param authorization authorization header
-     * @return optional user id
+     * @return user id if the token is valid
      */
     public Optional<Long> currentUserId(String authorization) {
         return authService.resolveUserId(authorization);
     }
 
     /**
-     * Resolves a required user id.
+     * Requires the current user id.
      *
      * @param authorization authorization header
      * @return user id
      */
     public Long requireUserId(String authorization) {
-        return currentUserId(authorization).orElseThrow(() -> new BusinessException("AUTH_REQUIRED", "璇峰厛鐧诲綍"));
+        return currentUserId(authorization).orElseThrow(() -> new BusinessException("AUTH_REQUIRED", "请先登录"));
     }
 }

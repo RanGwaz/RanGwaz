@@ -38,14 +38,18 @@ public class FeedController {
      * @param authorization authorization header
      * @param page page number
      * @param pageSize page size
+     * @param feedSessionId stable frontend feed session id
+     * @param refreshSeed seed used to keep one refresh's pagination stable
      * @return feed page
      */
     @GetMapping
     public ApiResponse<PageResponse<ApiDtos.ImageView>> home(@RequestHeader(value = "Authorization", required = false) String authorization,
                                                             @RequestParam(defaultValue = "1") int page,
-                                                            @RequestParam(defaultValue = "30") int pageSize) {
+                                                            @RequestParam(defaultValue = "30") int pageSize,
+                                                            @RequestParam(required = false) String feedSessionId,
+                                                            @RequestParam(required = false) String refreshSeed) {
         Long userId = authContext.currentUserId(authorization).orElse(null);
-        return ApiResponse.ok(feedService.home(userId, page, pageSize));
+        return ApiResponse.ok(feedService.home(userId, page, pageSize, feedSessionId, refreshSeed));
     }
 
     /**

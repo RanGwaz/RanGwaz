@@ -66,8 +66,24 @@ app:
   recommendation:
     vector-service-url: http://127.0.0.1:8091
     vector-enabled: true
+    model-service-url: http://127.0.0.1:8092
+    model-recall-enabled: false
+    model-ranking-enabled: false
+    model-connect-timeout-ms: 800
+    model-read-timeout-ms: 1500
   behavior:
     kafka-topic: vibelo.user-behaviors
+  sms:
+    mock: true
+    dev-code: ""
+    code-ttl-seconds: 300
+    cooldown-seconds: 60
+    provider: aliyun
+    aliyun:
+      access-key-id: ${ALIYUN_SMS_ACCESS_KEY_ID:}
+      access-key-secret: ${ALIYUN_SMS_ACCESS_KEY_SECRET:}
+      sign-name: ${ALIYUN_SMS_SIGN_NAME:}
+      template-code: ${ALIYUN_SMS_TEMPLATE_CODE:}
   storage:
     minio:
       endpoint: http://localhost:9000

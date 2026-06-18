@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""Development-only vector reset: clear MySQL vector state and Milvus collections."""
+"""Local vector reset: clear MySQL vector state and Milvus collections."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ MILVUS_COLLECTIONS_TO_DROP: List[str] = [
     "vibelo_image_vectors_clip_b32",
     "vibelo_image_vectors_siglip2_giant_p384",
     "vibelo_image_vectors_siglip2_giant_p384_d512",
+    "vibelo_image_vectors_siglip2_base_p224_d512",
     "vibelo_image_vectors_siglip2_giant_p384_old",
     "vibelo_image_vectors_siglip2_giant_p384_tmp",
     "vibelo_image_vectors_siglip2_giant_p384_v1",
@@ -90,7 +91,7 @@ def clear_milvus_collections() -> None:
 def run() -> None:
     clear_mysql_vector_state()
     clear_milvus_collections()
-    print("向量数据已清空。下一步运行 tools/vectorize_images_remote.py 生成 512 维 SigLIP2 向量。")
+    print("向量数据已清空。下一步运行 tools/vectorize_images.py 生成 512 维 SigLIP2 向量。")
 
 
 if __name__ == "__main__":

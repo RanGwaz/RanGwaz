@@ -7,7 +7,11 @@ import com.rangwaz.imagesite.mapper.BehaviorMapper;
 import com.rangwaz.imagesite.mapper.ImageContentMapper;
 import com.rangwaz.imagesite.mapper.RecommendationMapper;
 import com.rangwaz.imagesite.service.FeedService;
+import com.rangwaz.imagesite.service.RankingModelClient;
+import com.rangwaz.imagesite.service.RankingModelClient.HomeRankCandidate;
+import com.rangwaz.imagesite.service.RankingModelClient.RankedHit;
 import com.rangwaz.imagesite.service.VectorRecallClient;
+import com.rangwaz.imagesite.service.VectorRecallClient.UserEvent;
 import com.rangwaz.imagesite.service.VectorRecallClient.VectorHit;
 import org.springframework.stereotype.Service;
 
@@ -42,6 +46,7 @@ public class FeedServiceImpl implements FeedService {
     private final RecommendationMapper recommendationMapper;
     private final BehaviorMapper behaviorMapper;
     private final VectorRecallClient vectorRecallClient;
+    private final RankingModelClient rankingModelClient;
     private final ImageServiceImpl imageService;
 
     /**
@@ -51,17 +56,20 @@ public class FeedServiceImpl implements FeedService {
      * @param recommendationMapper recommendation mapper
      * @param behaviorMapper behavior mapper
      * @param vectorRecallClient vector recall client
+     * @param rankingModelClient external ranking model client
      * @param imageService post service
      */
     public FeedServiceImpl(ImageContentMapper imageContentMapper,
                            RecommendationMapper recommendationMapper,
                            BehaviorMapper behaviorMapper,
                            VectorRecallClient vectorRecallClient,
+                           RankingModelClient rankingModelClient,
                            ImageServiceImpl imageService) {
         this.imageContentMapper = imageContentMapper;
         this.recommendationMapper = recommendationMapper;
         this.behaviorMapper = behaviorMapper;
         this.vectorRecallClient = vectorRecallClient;
+        this.rankingModelClient = rankingModelClient;
         this.imageService = imageService;
     }
 
@@ -71,10 +79,12 @@ public class FeedServiceImpl implements FeedService {
      * @param userId optional user id
      * @param page page number
      * @param size page size
+     * @param feedSessionId stable frontend feed session id
+     * @param refreshSeed seed used to keep one refresh's pagination stable
      * @return page response
      */
     @Override
-    public PageResponse<ApiDtos.ImageView> home(Long userId, int page, int size) {
+    public PageResponse<ApiDtos.ImageView> home(Long userId, int page, int size, String feedSessionId, String refreshSeed) {
         int safePage = Math.max(1, page);
         int safeSize = Math.max(1, Math.min(size, 60));
         int offset = (safePage - 1) * safeSize;
@@ -82,9 +92,14 @@ public class FeedServiceImpl implements FeedService {
         Map<Long, RecallScore> recallScores = new LinkedHashMap<>();
         Set<Long> recentSeenIds = Set.of();
         if (userId != null) {
+            List<UserEvent> recentEvents = behaviorMapper.findRecentBehaviorSequence(userId, 120).stream()
+                    .filter(row -> row.getImageId() != null)
+                    .map(row -> new UserEvent(row.getImageId(), row.getBehaviorType(), row.getDurationMs(), row.getAgeHours()))
+                    .toList();
             List<Long> seedImageIds = behaviorMapper.findRecentPositiveImageIds(userId, 40);
             List<VectorHit> vectorHits = vectorRecallClient.feed(
                     userId,
+                    recentEvents,
                     seedImageIds,
                     0,
                     recallLimit
@@ -97,14 +112,20 @@ public class FeedServiceImpl implements FeedService {
             recentSeenIds = new HashSet<>(behaviorMapper.findRecentSeenImageIds(userId, 1200));
         }
         addRankedRecall(recallScores, recommendationMapper.selectColdStart(0, recallLimit), ROUTE_GLOBAL_WEIGHT, "global");
-        List<ImageEntity> images = recallScores.isEmpty()
-                ? recommendationMapper.selectColdStart(offset, safeSize)
+        HomeRankResult ranked = recallScores.isEmpty()
+                ? new HomeRankResult(recommendationMapper.selectColdStart(offset, safeSize), false)
                 : rankHome(imageContentMapper.findPublishedByIds(new ArrayList<>(recallScores.keySet())),
                 recallScores,
                 recentSeenIds,
                 offset,
-                safeSize);
-        String reason = userId == null || recallScores.isEmpty() ? "cold-start" : "multi-recall-home";
+                safeSize,
+                userId,
+                requestId(feedSessionId, userId, safePage),
+                cleanText(refreshSeed));
+        List<ImageEntity> images = ranked.images();
+        String reason = ranked.modelUsed()
+                ? "model-home"
+                : (userId == null || recallScores.isEmpty() ? "cold-start" : "multi-recall-home");
         if (images.isEmpty()) {
             images = recommendationMapper.selectColdStart(offset, safeSize);
             reason = "cold-start";
@@ -170,20 +191,82 @@ public class FeedServiceImpl implements FeedService {
         }
     }
 
-    private List<ImageEntity> rankHome(List<ImageEntity> candidates,
-                                       Map<Long, RecallScore> recallScores,
-                                       Set<Long> recentSeenIds,
-                                       int offset,
-                                       int size) {
-        return candidates.stream()
+    private HomeRankResult rankHome(List<ImageEntity> candidates,
+                                    Map<Long, RecallScore> recallScores,
+                                    Set<Long> recentSeenIds,
+                                    int offset,
+                                    int size,
+                                    Long userId,
+                                    String requestId,
+                                    String refreshSeed) {
+        List<ImageEntity> fallbackOrder = candidates.stream()
                 .filter(image -> image.getId() != null)
                 .sorted(Comparator
                         .comparingDouble((ImageEntity image) -> homeScore(image, recallScores, recentSeenIds)).reversed()
                         .thenComparing(ImageEntity::getPublishedAt, Comparator.nullsLast(Comparator.reverseOrder()))
                         .thenComparing(ImageEntity::getId, Comparator.nullsLast(Comparator.reverseOrder())))
-                .skip(offset)
-                .limit(size)
                 .toList();
+        List<RankedHit> modelHits = rankingModelClient.rankHome(
+                userId,
+                requestId,
+                refreshSeed,
+                modelCandidates(fallbackOrder, recallScores, recentSeenIds),
+                fallbackOrder.size()
+        );
+        if (!modelHits.isEmpty()) {
+            return new HomeRankResult(pageSlice(mergeModelOrder(modelHits, fallbackOrder), offset, size), true);
+        }
+        return new HomeRankResult(pageSlice(fallbackOrder, offset, size), false);
+    }
+
+    private List<HomeRankCandidate> modelCandidates(List<ImageEntity> orderedCandidates,
+                                                    Map<Long, RecallScore> recallScores,
+                                                    Set<Long> recentSeenIds) {
+        List<HomeRankCandidate> candidates = new ArrayList<>();
+        int position = 0;
+        for (ImageEntity image : orderedCandidates) {
+            RecallScore recall = recallScores.get(image.getId());
+            candidates.add(new HomeRankCandidate(
+                    image.getId(),
+                    recall == null ? 0 : recall.score(),
+                    recall == null ? 0 : recall.routeCount(),
+                    recall == null ? null : recall.primaryRoute(),
+                    engagementScore(image),
+                    freshnessScore(image),
+                    metadataQualityScore(image),
+                    recentSeenIds.contains(image.getId()),
+                    image.getAuthorId(),
+                    image.getMainCategoryId(),
+                    image.getRatio(),
+                    position
+            ));
+            position++;
+        }
+        return candidates;
+    }
+
+    private List<ImageEntity> mergeModelOrder(List<RankedHit> modelHits, List<ImageEntity> fallbackOrder) {
+        Map<Long, ImageEntity> byId = new LinkedHashMap<>();
+        for (ImageEntity image : fallbackOrder) {
+            byId.put(image.getId(), image);
+        }
+        List<ImageEntity> ordered = new ArrayList<>();
+        Set<Long> added = new HashSet<>();
+        for (RankedHit hit : modelHits) {
+            ImageEntity image = byId.get(hit.imageId());
+            if (image == null || added.contains(image.getId())) continue;
+            ordered.add(image);
+            added.add(image.getId());
+        }
+        for (ImageEntity image : fallbackOrder) {
+            if (added.add(image.getId())) ordered.add(image);
+        }
+        return ordered;
+    }
+
+    private List<ImageEntity> pageSlice(List<ImageEntity> ordered, int offset, int size) {
+        if (offset >= ordered.size()) return List.of();
+        return ordered.stream().skip(offset).limit(size).toList();
     }
 
     private double homeScore(ImageEntity image, Map<Long, RecallScore> recallScores, Set<Long> recentSeenIds) {
@@ -306,6 +389,20 @@ public class FeedServiceImpl implements FeedService {
 
     private double decimal(BigDecimal value) {
         return value == null ? 0 : value.doubleValue();
+    }
+
+    private String requestId(String feedSessionId, Long userId, int page) {
+        String cleaned = cleanText(feedSessionId);
+        if (cleaned != null) return cleaned;
+        return "home-" + (userId == null ? "anon" : userId) + "-" + page;
+    }
+
+    private String cleanText(String value) {
+        if (value == null || value.isBlank()) return null;
+        return value.trim();
+    }
+
+    private record HomeRankResult(List<ImageEntity> images, boolean modelUsed) {
     }
 
     private static final class RecallScore {

@@ -17,6 +17,7 @@ const DETAIL_CARD_CHROME_HEIGHT = 0
 
 interface DetailRouteState {
   previewImage?: ImageView
+  from?: 'home' | 'search' | 'similar'
 }
 
 function clampNumber(value: number, min: number, max: number) {
@@ -348,8 +349,16 @@ export function DetailPage() {
   }
 
   function openRelated(target: ImageView) {
-    navigate(`/image/${target.id}`, { state: { previewImage: target } })
+    navigate(`/image/${target.id}`, { state: { previewImage: target, from: routeState?.from ?? 'similar' } })
     void api.trackImageClick(target.id, 'similar').catch(() => undefined)
+  }
+
+  function backToPrevious() {
+    if (routeState?.from === 'home') {
+      navigate('/home')
+      return
+    }
+    navigate(-1)
   }
 
   if (!image || image.id !== imageId) return <DetailSkeleton />
@@ -370,7 +379,7 @@ export function DetailPage() {
           '--detail-column-width': `${columnWidth}px`,
         } as CSSProperties}
       >
-        <button className="detail-page__back-btn" type="button" onClick={() => navigate(-1)} aria-label="返回">
+        <button className="detail-page__back-btn" type="button" onClick={backToPrevious} aria-label="返回">
           <ArrowLeft size={24} />
         </button>
         <section className="detail-page__focus">

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""Development vector worker: images -> visual embeddings -> Milvus + MySQL status."""
+"""Local GPU vector worker: images -> visual embeddings -> Milvus + MySQL status."""
 
 from __future__ import annotations
 
@@ -16,36 +16,44 @@ from urllib.parse import urljoin
 from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
+MODELS_DIR = ROOT / "tools" / "models"
 
 IMPORT_RESULTS_PATH = ROOT / "tools" / "import_results.jsonl"
+IMAGE_DIR = ROOT / "tools" / "downloaded_dataset" / "images"
 BACKEND_BASE_URL = "http://127.0.0.1:8080"
 
-MYSQL_HOST = "127.0.0.1"
-MYSQL_PORT = 3306
-MYSQL_DATABASE = "rangwaz_image_dev"
-MYSQL_USER = "rangwaz"
-MYSQL_PASSWORD = "rangwaz123"
+MYSQL_HOST = os.environ.get("VIBELO_MYSQL_HOST", "127.0.0.1")
+MYSQL_PORT = int(os.environ.get("VIBELO_MYSQL_PORT", "3306") or "3306")
+MYSQL_DATABASE = os.environ.get("VIBELO_MYSQL_DATABASE", "rangwaz_image_dev")
+MYSQL_USER = os.environ.get("VIBELO_MYSQL_USER", "rangwaz")
+MYSQL_PASSWORD = os.environ.get("VIBELO_MYSQL_PASSWORD", "rangwaz123")
 
-MILVUS_HOST = "127.0.0.1"
-MILVUS_PORT = "19530"
-MILVUS_COLLECTION = "vibelo_image_vectors_siglip2_giant_p384_d512"
+MILVUS_HOST = os.environ.get("VIBELO_MILVUS_HOST", "127.0.0.1")
+MILVUS_PORT = os.environ.get("VIBELO_MILVUS_PORT", "19530")
+MILVUS_COLLECTION = os.environ.get("VIBELO_MILVUS_COLLECTION", "vibelo_image_vectors_siglip2_base_p224_d512")
 VECTOR_FIELD = "embedding"
 
-MODEL_NAME = "google/siglip2-giant-opt-patch16-384"
-VECTOR_VERSION = "siglip2-giant-p384-d512-v1"
+MODEL_NAME = os.environ.get("VIBELO_EMBED_MODEL", "google/siglip2-base-patch16-224")
+VECTOR_VERSION = os.environ.get("VIBELO_EMBED_VECTOR_VERSION", "siglip2-base-p224-d512-v1")
 VECTOR_DIMENSION = 512
 PROJECTION_SEED = 20260606
-DEVICE = "auto"
-MODEL_TORCH_DTYPE = "auto"
-HF_CACHE_DIR = "H:\\huggingface"
+DEVICE = os.environ.get("VIBELO_EMBED_DEVICE", "auto")
+MODEL_TORCH_DTYPE = os.environ.get("VIBELO_EMBED_TORCH_DTYPE", "auto")
+HF_CACHE_DIR = Path(os.environ.get("VIBELO_HF_HOME", str(MODELS_DIR / "huggingface")))
+TORCH_CACHE_DIR = Path(os.environ.get("VIBELO_TORCH_HOME", str(MODELS_DIR / "torch")))
+MODEL_LOCAL_DIR = HF_CACHE_DIR / MODEL_NAME.replace("/", "__")
+MODEL_LOAD_PATH = os.environ.get(
+    "VIBELO_EMBED_MODEL_PATH",
+    str(MODEL_LOCAL_DIR) if MODEL_LOCAL_DIR.exists() else MODEL_NAME,
+)
 
-BATCH_SIZE = 8
-LIMIT = 0
+BATCH_SIZE = int(os.environ.get("VIBELO_EMBED_BATCH_SIZE", "4") or "4")
+LIMIT = int(os.environ.get("VIBELO_EMBED_LIMIT", "0") or "0")
 IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 30
 MAX_CONSECUTIVE_FAILURES = 20
 
-USE_HUGGINGFACE_PROXY = True
-HUGGINGFACE_PROXY_URL = "http://127.0.0.1:12000"
+USE_HUGGINGFACE_PROXY = os.environ.get("VIBELO_USE_HF_PROXY", "0") == "1"
+HUGGINGFACE_PROXY_URL = os.environ.get("VIBELO_HF_PROXY_URL", "http://127.0.0.1:12000")
 
 if USE_HUGGINGFACE_PROXY:
     os.environ["HTTP_PROXY"] = HUGGINGFACE_PROXY_URL
@@ -55,9 +63,15 @@ if USE_HUGGINGFACE_PROXY:
 os.environ["NO_PROXY"] = "localhost,127.0.0.1,::1"
 os.environ["no_proxy"] = "localhost,127.0.0.1,::1"
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
-os.environ.setdefault("HF_HOME", HF_CACHE_DIR)
-os.environ.setdefault("TRANSFORMERS_CACHE", str(Path(HF_CACHE_DIR) / "transformers"))
+os.environ.setdefault("HF_HOME", str(HF_CACHE_DIR))
+os.environ.setdefault("HF_HUB_CACHE", str(HF_CACHE_DIR / "hub"))
+os.environ.setdefault("TRANSFORMERS_CACHE", str(HF_CACHE_DIR / "transformers"))
+os.environ.setdefault("TORCH_HOME", str(TORCH_CACHE_DIR))
+os.environ.setdefault("XDG_CACHE_HOME", str(MODELS_DIR / "cache"))
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+MODELS_DIR.mkdir(parents=True, exist_ok=True)
+HF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+TORCH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 _PYMYSQL = None
 _MILVUS = None
@@ -77,6 +91,17 @@ class ImageRow:
     image_hash: str
     main_category_id: int
     published_at_epoch: int
+
+
+def resolve_imported_image_path(raw_path: object) -> Optional[Path]:
+    image_path = Path(str(raw_path or ""))
+    if image_path.name:
+        fallback = IMAGE_DIR / image_path.name
+        if fallback.exists():
+            return fallback
+    if image_path.exists():
+        return image_path
+    return None
 
 
 def require_pymysql():
@@ -118,9 +143,22 @@ def require_model():
         return _MODEL
     try:
         import torch
+        import transformers
         from transformers import AutoModel, AutoProcessor
     except ImportError as exc:
         raise SystemExit("Missing torch/transformers. Install tools/requirements_recommendation.txt first.") from exc
+    version_parts = tuple(
+        int(part)
+        for part in transformers.__version__.split("+", 1)[0].split(".")[:2]
+        if part.isdigit()
+    )
+    if version_parts < (4, 51):
+        raise SystemExit(
+            "transformers {} is too old for SigLIP2. Use the project venv instead:\n"
+            "  .\\tools\\.venv\\Scripts\\python.exe tools\\vectorize_images.py\n"
+            "Current Python:\n"
+            "  {}".format(transformers.__version__, sys.executable)
+        )
 
     if DEVICE == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -131,8 +169,8 @@ def require_model():
         model_kwargs["torch_dtype"] = torch.float16
     elif MODEL_TORCH_DTYPE and MODEL_TORCH_DTYPE != "auto":
         model_kwargs["torch_dtype"] = getattr(torch, MODEL_TORCH_DTYPE)
-    processor = AutoProcessor.from_pretrained(MODEL_NAME)
-    model = AutoModel.from_pretrained(MODEL_NAME, **model_kwargs)
+    processor = AutoProcessor.from_pretrained(MODEL_LOAD_PATH)
+    model = AutoModel.from_pretrained(MODEL_LOAD_PATH, **model_kwargs)
     model.to(device)
     model.eval()
     _MODEL = (torch, processor, model, device)
@@ -250,8 +288,8 @@ def import_path_map() -> Dict[int, Path]:
                 continue
             if not row.get("ok") or not row.get("imageId") or not row.get("path"):
                 continue
-            path = Path(str(row["path"]))
-            if path.exists():
+            path = resolve_imported_image_path(row["path"])
+            if path:
                 result[int(row["imageId"])] = path
     return result
 
@@ -428,8 +466,9 @@ def upsert_vectors(collection, rows: Sequence[ImageRow], vectors) -> None:
 
 
 def run() -> None:
-    print("Loading embedding model {} with proxy {}.".format(
+    print("Loading embedding model {} from {} with proxy {}.".format(
         MODEL_NAME,
+        MODEL_LOAD_PATH,
         HUGGINGFACE_PROXY_URL if USE_HUGGINGFACE_PROXY else "disabled",
     ))
     require_model()

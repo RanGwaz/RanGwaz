@@ -17,10 +17,16 @@ Thumbs.db
 __pycache__/
 *.pyc
 backend/storage/
+tools/.venv/
+tools/.pip-cache/
+tools/.tmp/
+tools/models/*
+!tools/models/.gitkeep
 
 # Environment overrides
 .env
 .env.local
+tools/cloud_label_config.local.ps1
 *.log
 
 # Dataset collector runtime output
@@ -28,4 +34,6 @@ dataset/
 tools/downloaded_dataset/
 tools/.collector_browser/
 tools/import_results.jsonl
+tools/auto_label_results.jsonl
+tools/cloud_label_results.jsonl
 dataset/images/

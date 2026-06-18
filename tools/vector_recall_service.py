@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import List, Optional, Sequence
 
 import numpy as np
@@ -11,9 +12,9 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field
 from pymilvus import Collection, connections, utility
 
-MILVUS_HOST = "127.0.0.1"
-MILVUS_PORT = "19530"
-MILVUS_COLLECTION = "vibelo_image_vectors_siglip2_giant_p384_d512"
+MILVUS_HOST = os.environ.get("VIBELO_MILVUS_HOST", "127.0.0.1")
+MILVUS_PORT = os.environ.get("VIBELO_MILVUS_PORT", "19530")
+MILVUS_COLLECTION = os.environ.get("VIBELO_MILVUS_COLLECTION", "vibelo_image_vectors_siglip2_base_p224_d512")
 VECTOR_FIELD = "embedding"
 SEARCH_PARAMS = {"metric_type": "COSINE", "params": {"ef": 128}}
 MAX_LIMIT = 200

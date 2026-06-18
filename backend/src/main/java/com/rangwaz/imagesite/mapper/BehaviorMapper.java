@@ -75,6 +75,27 @@ public interface BehaviorMapper {
     List<Long> findRecentPositiveImageIds(@Param("userId") Long userId, @Param("limit") int limit);
 
     /**
+     * Finds the recent behavior sequence for sequence-aware recall.
+     *
+     * @param userId user id
+     * @param limit maximum rows
+     * @return recent behavior events
+     */
+    @Select("""
+            SELECT image_id AS imageId,
+                   behavior_type AS behaviorType,
+                   COALESCE(duration_ms,0) AS durationMs,
+                   TIMESTAMPDIFF(HOUR,created_at,NOW()) AS ageHours
+            FROM user_behaviors
+            WHERE user_id=#{userId}
+              AND behavior_type IN ('favorite','like','comment','share','click','view','impression')
+              AND created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)
+            ORDER BY created_at DESC,id DESC
+            LIMIT #{limit}
+            """)
+    List<BehaviorSequenceRow> findRecentBehaviorSequence(@Param("userId") Long userId, @Param("limit") int limit);
+
+    /**
      * Finds recently seen image ids for lightweight feed de-duplication.
      *
      * @param userId user id
@@ -92,4 +113,46 @@ public interface BehaviorMapper {
             LIMIT #{limit}
             """)
     List<Long> findRecentSeenImageIds(@Param("userId") Long userId, @Param("limit") int limit);
+
+    /**
+     * Recent user event row used by the model recall adapter.
+     */
+    class BehaviorSequenceRow {
+        private Long imageId;
+        private String behaviorType;
+        private Integer durationMs;
+        private Integer ageHours;
+
+        public Long getImageId() {
+            return imageId;
+        }
+
+        public void setImageId(Long imageId) {
+            this.imageId = imageId;
+        }
+
+        public String getBehaviorType() {
+            return behaviorType;
+        }
+
+        public void setBehaviorType(String behaviorType) {
+            this.behaviorType = behaviorType;
+        }
+
+        public Integer getDurationMs() {
+            return durationMs;
+        }
+
+        public void setDurationMs(Integer durationMs) {
+            this.durationMs = durationMs;
+        }
+
+        public Integer getAgeHours() {
+            return ageHours;
+        }
+
+        public void setAgeHours(Integer ageHours) {
+            this.ageHours = ageHours;
+        }
+    }
 }

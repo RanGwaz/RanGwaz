@@ -110,12 +110,6 @@ public class UserServiceImpl implements UserService {
         );
     }
 
-    /**
-     * Loads a user or throws a business exception.
-     *
-     * @param userId user id
-     * @return user entity
-     */
     private UserEntity requireUser(Long userId) {
         UserEntity user = userMapper.findById(userId);
         if (user == null) throw new BusinessException("USER_NOT_FOUND", "用户不存在");

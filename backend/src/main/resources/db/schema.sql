@@ -24,6 +24,7 @@ SET FOREIGN_KEY_CHECKS = 1;
 CREATE TABLE app_users (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   username VARCHAR(64) NOT NULL UNIQUE,
+  phone VARCHAR(32),
   password_hash VARCHAR(128) NOT NULL,
   nickname VARCHAR(64) NOT NULL,
   avatar_url VARCHAR(512),
@@ -32,7 +33,8 @@ CREATE TABLE app_users (
   status VARCHAR(24) NOT NULL DEFAULT 'ACTIVE',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  KEY idx_app_users_nickname (nickname)
+  KEY idx_app_users_nickname (nickname),
+  UNIQUE KEY uk_app_users_phone (phone)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE categories (
@@ -215,7 +217,7 @@ CREATE TABLE image_embeddings (
   vector_version VARCHAR(40) NOT NULL DEFAULT 'v1',
   vector_dimension INT NOT NULL DEFAULT 512,
   image_hash VARCHAR(128),
-  milvus_collection VARCHAR(80) NOT NULL DEFAULT 'vibelo_image_vectors_siglip2_giant_p384_d512',
+  milvus_collection VARCHAR(80) NOT NULL DEFAULT 'vibelo_image_vectors_siglip2_base_p224_d512',
   milvus_pk BIGINT,
   status VARCHAR(24) NOT NULL DEFAULT 'PENDING',
   last_error VARCHAR(500),

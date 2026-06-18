@@ -31,7 +31,7 @@ export function SearchPage() {
   }
 
   function openImage(target: ImageView) {
-    navigate(`/image/${target.id}`, { state: { previewImage: target } })
+    navigate(`/image/${target.id}`, { state: { previewImage: target, from: 'search' } })
     void api.trackImageClick(target.id, 'search').catch(() => undefined)
   }
 

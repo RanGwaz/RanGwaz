@@ -237,28 +237,61 @@ public interface RecommendationMapper {
               FROM images
               WHERE id=#{imageId}
             ),
-            tag_counts AS (
-              SELECT image_id,COUNT(*) AS tag_count
+            source_tags AS (
+              SELECT tag_id,confidence
               FROM image_tags
+              WHERE image_id=#{imageId}
+              ORDER BY confidence DESC
+              LIMIT 24
+            ),
+            tag_candidates AS (
+              SELECT it.image_id,
+                     SUM(COALESCE(source_tags.confidence,1) * COALESCE(it.confidence,1)) * 3.0 AS score
+              FROM source_image src
+              JOIN source_tags
+              JOIN image_tags it ON it.tag_id=source_tags.tag_id AND it.image_id<>src.id
+              JOIN images i ON i.id=it.image_id AND i.status='PUBLISHED'
+              GROUP BY it.image_id
+              ORDER BY score DESC
+              LIMIT #{size}
+            ),
+            category_candidates AS (
+              SELECT i.id AS image_id,
+                     2.2 + COALESCE(i.hot_score,0) * 0.25 AS score
+              FROM source_image src
+              JOIN images i FORCE INDEX (idx_images_status_category_ratio_hot)
+                ON i.status='PUBLISHED'
+               AND i.id<>src.id
+               AND i.main_category_id=src.main_category_id
+              WHERE src.main_category_id IS NOT NULL
+              ORDER BY i.hot_score DESC,i.published_at DESC,i.id DESC
+              LIMIT #{size}
+            ),
+            ratio_candidates AS (
+              SELECT i.id AS image_id,
+                     0.6 + COALESCE(i.hot_score,0) * 0.18 AS score
+              FROM source_image src
+              JOIN images i ON i.status='PUBLISHED' AND i.id<>src.id AND i.ratio=src.ratio
+              WHERE src.ratio IS NOT NULL
+              ORDER BY i.hot_score DESC,i.published_at DESC,i.id DESC
+              LIMIT #{size}
+            ),
+            merged_candidates AS (
+              SELECT image_id,score FROM tag_candidates
+              UNION ALL
+              SELECT image_id,score FROM category_candidates
+              UNION ALL
+              SELECT image_id,score FROM ratio_candidates
+            ),
+            scored_candidates AS (
+              SELECT image_id,SUM(score) AS score
+              FROM merged_candidates
               GROUP BY image_id
             )
             SELECT i.*
-            FROM source_image src
-            JOIN images i ON i.status='PUBLISHED' AND i.id<>src.id
-            LEFT JOIN image_tags source_tags ON source_tags.image_id=src.id
-            LEFT JOIN image_tags it ON it.image_id=i.id AND it.tag_id=source_tags.tag_id
-            LEFT JOIN tag_counts tc ON tc.image_id=i.id
-            GROUP BY i.id,src.main_category_id,src.ratio
-            ORDER BY
-              (
-                COALESCE(SUM(CASE WHEN it.tag_id IS NULL THEN 0 ELSE COALESCE(it.confidence,1) END),0) * 3.0
-                + CASE WHEN i.main_category_id IS NOT NULL AND i.main_category_id=src.main_category_id THEN 2.2 ELSE 0 END
-                + CASE WHEN i.ratio IS NOT NULL AND i.ratio=src.ratio THEN 0.6 ELSE 0 END
-                + COALESCE(i.hot_score,0) * 0.25
-                + LEAST(COALESCE(tc.tag_count,0),12) * 0.04
-              ) DESC,
-              i.published_at DESC,
-              i.id DESC
+            FROM scored_candidates candidates
+            JOIN images i ON i.id=candidates.image_id
+            ORDER BY candidates.score DESC,i.published_at DESC,i.id DESC
             LIMIT #{size} OFFSET #{offset}
             """)
     List<ImageEntity> selectSimilarByMetadata(@Param("imageId") Long imageId,
@@ -278,19 +311,52 @@ public interface RecommendationMapper {
               SELECT id,main_category_id,ratio
               FROM images
               WHERE id=#{imageId}
+            ),
+            category_candidates AS (
+              SELECT i.id AS image_id,
+                     2.0 + COALESCE(i.hot_score,0) * 0.22 AS score
+              FROM source_image src
+              JOIN images i FORCE INDEX (idx_images_status_category_ratio_hot)
+                ON i.status='PUBLISHED'
+               AND i.id<>src.id
+               AND i.main_category_id=src.main_category_id
+              WHERE src.main_category_id IS NOT NULL
+              ORDER BY i.hot_score DESC,i.published_at DESC,i.id DESC
+              LIMIT #{size}
+            ),
+            ratio_candidates AS (
+              SELECT i.id AS image_id,
+                     0.7 + COALESCE(i.hot_score,0) * 0.18 AS score
+              FROM source_image src
+              JOIN images i ON i.status='PUBLISHED' AND i.id<>src.id AND i.ratio=src.ratio
+              WHERE src.ratio IS NOT NULL
+              ORDER BY i.hot_score DESC,i.published_at DESC,i.id DESC
+              LIMIT #{size}
+            ),
+            hot_candidates AS (
+              SELECT i.id AS image_id,
+                     COALESCE(i.hot_score,0) * 0.12 + 24 / (TIMESTAMPDIFF(HOUR,i.published_at,NOW()) + 24) AS score
+              FROM source_image src
+              JOIN images i ON i.status='PUBLISHED' AND i.id<>src.id
+              ORDER BY i.hot_score DESC,i.published_at DESC,i.id DESC
+              LIMIT #{size}
+            ),
+            merged_candidates AS (
+              SELECT image_id,score FROM category_candidates
+              UNION ALL
+              SELECT image_id,score FROM ratio_candidates
+              UNION ALL
+              SELECT image_id,score FROM hot_candidates
+            ),
+            scored_candidates AS (
+              SELECT image_id,SUM(score) AS score
+              FROM merged_candidates
+              GROUP BY image_id
             )
             SELECT i.*
-            FROM source_image src
-            JOIN images i ON i.status='PUBLISHED' AND i.id<>src.id
-            ORDER BY
-              (
-                CASE WHEN i.main_category_id IS NOT NULL AND i.main_category_id=src.main_category_id THEN 2.0 ELSE 0 END
-                + CASE WHEN i.ratio IS NOT NULL AND i.ratio=src.ratio THEN 0.7 ELSE 0 END
-                + COALESCE(i.hot_score,0) * 0.22
-                + 24 / (TIMESTAMPDIFF(HOUR,i.published_at,NOW()) + 24)
-              ) DESC,
-              i.published_at DESC,
-              i.id DESC
+            FROM scored_candidates candidates
+            JOIN images i ON i.id=candidates.image_id
+            ORDER BY candidates.score DESC,i.published_at DESC,i.id DESC
             LIMIT #{size} OFFSET #{offset}
             """)
     List<ImageEntity> selectSimilarFallback(@Param("imageId") Long imageId,

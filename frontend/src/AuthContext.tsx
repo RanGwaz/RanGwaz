@@ -1,4 +1,4 @@
-﻿/** Authentication context for local token-backed sessions. */
+/** Authentication context for token-backed sessions. */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { api, getToken, setToken } from './services/api'
 import type { UserSummary } from './types'
@@ -11,6 +11,8 @@ interface AuthContextValue {
   openAuth: () => void
   closeAuth: () => void
   login: (username: string, password: string) => Promise<void>
+  sendSmsCode: (phone: string) => Promise<string>
+  loginWithPhone: (phone: string, code: string) => Promise<void>
   register: (username: string, password: string, nickname: string) => Promise<void>
   logout: () => Promise<void>
   updateUser: (user: UserSummary) => void
@@ -48,6 +50,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setAuthOpen(false)
   }, [])
 
+  const sendSmsCode = useCallback(async (phone: string) => {
+    const response = await api.sendSmsCode({ phone, scene: 'login' })
+    return response.mockCode || ''
+  }, [])
+
+  const loginWithPhone = useCallback(async (phone: string, code: string) => {
+    const response = await api.phoneLogin({ phone, code })
+    setToken(response.accessToken)
+    setTokenState(response.accessToken)
+    setUser(response.me)
+    setAuthOpen(false)
+  }, [])
+
   const register = useCallback(async (username: string, password: string, nickname: string) => {
     const response = await api.register({ username, password, nickname })
     setToken(response.accessToken)
@@ -74,10 +89,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     openAuth,
     closeAuth,
     login,
+    sendSmsCode,
+    loginWithPhone,
     register,
     logout,
     updateUser,
-  }), [authOpen, closeAuth, login, logout, openAuth, ready, register, token, updateUser, user])
+  }), [authOpen, closeAuth, login, loginWithPhone, logout, openAuth, ready, register, sendSmsCode, token, updateUser, user])
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

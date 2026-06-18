@@ -5,15 +5,24 @@ import { useNavigate } from 'react-router-dom'
 import { MasonryGrid } from '../components/MasonryGrid'
 import { api } from '../services/api'
 import type { ImageView } from '../types'
+import { clearFeedSession, readFeedSession, updateFeedScroll, writeFeedSession } from '../utils/feedSession'
 
 const pageSize = 30
 
+function createRefreshSeed() {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID()
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
 export function FeedPage() {
-  const [images, setImages] = useState<ImageView[]>([])
-  const [page, setPage] = useState(1)
-  const [total, setTotal] = useState(0)
-  const [loadedOnce, setLoadedOnce] = useState(false)
-  const [exhausted, setExhausted] = useState(false)
+  const initialSessionRef = useRef(readFeedSession())
+  const refreshSeedRef = useRef(initialSessionRef.current?.refreshSeed ?? createRefreshSeed())
+  const restoredScrollRef = useRef(false)
+  const [images, setImages] = useState<ImageView[]>(() => initialSessionRef.current?.images ?? [])
+  const [page, setPage] = useState(() => initialSessionRef.current?.page ?? 1)
+  const [total, setTotal] = useState(() => initialSessionRef.current?.total ?? 0)
+  const [loadedOnce, setLoadedOnce] = useState(() => initialSessionRef.current?.loadedOnce ?? false)
+  const [exhausted, setExhausted] = useState(() => initialSessionRef.current?.exhausted ?? false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const sentinelRef = useRef<HTMLDivElement | null>(null)
@@ -31,18 +40,21 @@ export function FeedPage() {
     loadingRef.current = true
     setLoading(true)
     setError('')
+
     try {
-      const response = await api.homeFeed(targetPage, pageSize)
+      const response = await api.homeFeed(targetPage, pageSize, refreshSeedRef.current, refreshSeedRef.current)
       setTotal(response.total)
       setPage(targetPage + 1)
       setLoadedOnce(true)
+      setExhausted(response.records.length === 0 || targetPage * pageSize >= response.total)
+
       void api.trackBehaviors(response.records.map((image, index) => ({
         imageId: image.id,
         behaviorType: 'impression',
         scene: 'home',
         position: (targetPage - 1) * pageSize + index + 1,
       }))).catch(() => undefined)
-      if (response.records.length === 0) setExhausted(true)
+
       setImages((current) => {
         const base = reset ? [] : current
         const seen = new Set(base.map((image) => image.id))
@@ -59,8 +71,41 @@ export function FeedPage() {
   }, [])
 
   useEffect(() => {
-    void loadPage(1, true)
+    if (!initialSessionRef.current) void loadPage(1, true)
   }, [loadPage])
+
+  useEffect(() => {
+    writeFeedSession({ images, page, total, refreshSeed: refreshSeedRef.current, loadedOnce, exhausted, scrollY: window.scrollY })
+  }, [exhausted, images, loadedOnce, page, total])
+
+  useEffect(() => {
+    const save = () => updateFeedScroll()
+    window.addEventListener('pagehide', save)
+    window.addEventListener('beforeunload', save)
+    return () => {
+      save()
+      window.removeEventListener('pagehide', save)
+      window.removeEventListener('beforeunload', save)
+    }
+  }, [])
+
+  useEffect(() => {
+    const session = initialSessionRef.current
+    if (!session || restoredScrollRef.current || images.length === 0) return
+    restoredScrollRef.current = true
+    let frame = 0
+    const restore = () => {
+      frame = requestAnimationFrame(() => {
+        window.scrollTo({ top: session.scrollY, left: 0, behavior: 'auto' })
+      })
+    }
+    restore()
+    const timer = window.setTimeout(restore, 80)
+    return () => {
+      cancelAnimationFrame(frame)
+      window.clearTimeout(timer)
+    }
+  }, [images.length])
 
   useEffect(() => {
     const target = sentinelRef.current
@@ -74,29 +119,42 @@ export function FeedPage() {
 
   function openImage(image: ImageView) {
     const position = images.findIndex((item) => item.id === image.id) + 1
-    navigate(`/image/${image.id}`, { state: { previewImage: image } })
+    writeFeedSession({ images, page, total, refreshSeed: refreshSeedRef.current, loadedOnce, exhausted, scrollY: window.scrollY })
+    navigate(`/image/${image.id}`, { state: { previewImage: image, from: 'home' } })
     void api.trackImageClick(image.id, 'home', position).catch(() => undefined)
   }
 
   function reloadFeed() {
     requestedPagesRef.current.clear()
+    clearFeedSession()
+    refreshSeedRef.current = createRefreshSeed()
+    initialSessionRef.current = null
+    restoredScrollRef.current = false
     setImages([])
     setTotal(0)
     setPage(1)
     setLoadedOnce(false)
     setExhausted(false)
-    void loadPage(1, true)
     window.scrollTo({ top: 0, behavior: 'smooth' })
+    void loadPage(1, true)
   }
 
   return (
     <div className="feed-page">
       <main className="feed-page__main">
-        <MasonryGrid posts={images} loading={loading && images.length === 0} emptyLabel={loading ? '正在加载图片...' : '还没有图片'} onOpen={openImage} />
+        <MasonryGrid
+          posts={images}
+          loading={loading && images.length === 0}
+          emptyLabel={loading ? '正在加载图片...' : '还没有图片'}
+          onOpen={openImage}
+        />
         {error && (
           <div className="feed-page__state">
             <span>{error}</span>
-            <button type="button" onClick={reloadFeed}><RefreshCw size={15} />重新加载</button>
+            <button type="button" onClick={reloadFeed}>
+              <RefreshCw size={15} />
+              重新加载
+            </button>
           </div>
         )}
         <div ref={sentinelRef} className="feed-page__sentinel" />

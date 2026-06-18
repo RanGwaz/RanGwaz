@@ -2,7 +2,9 @@ package com.rangwaz.imagesite.service.impl;
 
 import com.rangwaz.imagesite.config.RecommendationProperties;
 import com.rangwaz.imagesite.service.VectorRecallClient;
+import com.rangwaz.imagesite.service.VectorRecallClient.UserEvent;
 import com.rangwaz.imagesite.service.VectorRecallClient.VectorHit;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
@@ -15,7 +17,8 @@ import java.util.List;
 @Component
 public class HttpVectorRecallClient implements VectorRecallClient {
     private final RecommendationProperties properties;
-    private final RestClient restClient;
+    private final RestClient vectorRestClient;
+    private final RestClient modelRestClient;
 
     /**
      * Creates the vector recall client.
@@ -24,25 +27,61 @@ public class HttpVectorRecallClient implements VectorRecallClient {
      */
     public HttpVectorRecallClient(RecommendationProperties properties) {
         this.properties = properties;
-        this.restClient = RestClient.builder().baseUrl(properties.getVectorServiceUrl()).build();
+        SimpleClientHttpRequestFactory vectorRequestFactory = new SimpleClientHttpRequestFactory();
+        vectorRequestFactory.setConnectTimeout(800);
+        vectorRequestFactory.setReadTimeout(2000);
+        this.vectorRestClient = RestClient.builder()
+                .requestFactory(vectorRequestFactory)
+                .baseUrl(properties.getVectorServiceUrl())
+                .build();
+        SimpleClientHttpRequestFactory modelRequestFactory = new SimpleClientHttpRequestFactory();
+        modelRequestFactory.setConnectTimeout(properties.getModelConnectTimeoutMs());
+        modelRequestFactory.setReadTimeout(properties.getModelReadTimeoutMs());
+        this.modelRestClient = RestClient.builder()
+                .requestFactory(modelRequestFactory)
+                .baseUrl(properties.getModelServiceUrl())
+                .build();
     }
 
     /**
      * Recalls personalized feed candidates from user seed images.
      *
      * @param userId optional user id
+     * @param recentEvents recent behavior sequence
      * @param seedImageIds recent positive image ids
      * @param offset result offset
      * @param limit result limit
      * @return recalled hits ordered by vector score
      */
     @Override
-    public List<VectorHit> feed(Long userId, List<Long> seedImageIds, int offset, int limit) {
-        if (!properties.isVectorEnabled() || seedImageIds == null || seedImageIds.isEmpty()) return List.of();
+    public List<VectorHit> feed(Long userId,
+                                List<UserEvent> recentEvents,
+                                List<Long> seedImageIds,
+                                int offset,
+                                int limit) {
+        boolean noSeeds = seedImageIds == null || seedImageIds.isEmpty();
+        boolean noEvents = recentEvents == null || recentEvents.isEmpty();
+        if (!properties.isVectorEnabled() || (noSeeds && noEvents)) return List.of();
+        if (!properties.isModelRecallEnabled() && noSeeds) return List.of();
+        List<Long> safeSeedImageIds = noSeeds ? List.of() : seedImageIds;
         try {
-            VectorRecallResponse response = restClient.post()
+            VectorRecallResponse response = properties.isModelRecallEnabled()
+                    ? modelRestClient.post()
+                    .uri("/recall/home")
+                    .body(new ModelFeedRecallRequest(
+                            userId,
+                            recentEvents == null ? List.of() : recentEvents,
+                            safeSeedImageIds,
+                            List.of(),
+                            Math.max(0, offset),
+                            Math.max(1, limit),
+                            null
+                    ))
+                    .retrieve()
+                    .body(VectorRecallResponse.class)
+                    : vectorRestClient.post()
                     .uri("/recall/feed")
-                    .body(new FeedRecallRequest(userId, seedImageIds, Math.max(0, offset), Math.max(1, limit)))
+                    .body(new FeedRecallRequest(userId, safeSeedImageIds, Math.max(0, offset), Math.max(1, limit)))
                     .retrieve()
                     .body(VectorRecallResponse.class);
             return hits(response);
@@ -63,7 +102,7 @@ public class HttpVectorRecallClient implements VectorRecallClient {
     public List<VectorHit> similar(Long imageId, int offset, int limit) {
         if (!properties.isVectorEnabled() || imageId == null) return List.of();
         try {
-            VectorRecallResponse response = restClient.post()
+            VectorRecallResponse response = vectorRestClient.post()
                     .uri("/recall/similar")
                     .body(new SimilarRecallRequest(imageId, Math.max(0, offset), Math.max(1, limit)))
                     .retrieve()
@@ -83,6 +122,15 @@ public class HttpVectorRecallClient implements VectorRecallClient {
     }
 
     private record FeedRecallRequest(Long userId, List<Long> seedImageIds, int offset, int limit) {
+    }
+
+    private record ModelFeedRecallRequest(Long userId,
+                                          List<UserEvent> events,
+                                          List<Long> seedImageIds,
+                                          List<Long> excludeImageIds,
+                                          int offset,
+                                          int limit,
+                                          String refreshSeed) {
     }
 
     private record SimilarRecallRequest(Long imageId, int offset, int limit) {

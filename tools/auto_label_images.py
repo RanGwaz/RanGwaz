@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""Development-only labeler: local vision model -> MySQL annotations directly."""
+"""Local GPU labeler: Ollama vision model -> MySQL annotations directly."""
 
 from __future__ import annotations
 
@@ -23,22 +23,31 @@ from urllib.parse import urljoin
 from urllib.request import ProxyHandler, Request, build_opener
 
 ROOT = Path(__file__).resolve().parents[1]
+MODELS_DIR = ROOT / "tools" / "models"
+
+
+def normalize_url(value: str) -> str:
+    text = str(value or "").strip()
+    if "://" not in text:
+        text = "http://" + text
+    return text.rstrip("/")
 
 # Edit these constants in code when the local development environment changes.
 IMPORT_RESULTS_PATH = ROOT / "tools" / "import_results.jsonl"
 LABEL_RESULTS_PATH = ROOT / "tools" / "auto_label_results.jsonl"
-LIMIT = 0
+IMAGE_DIR = ROOT / "tools" / "downloaded_dataset" / "images"
+LIMIT = int(os.environ.get("VIBELO_LABEL_LIMIT", "0") or "0")
 
-MYSQL_HOST = "127.0.0.1"
-MYSQL_PORT = 3306
-MYSQL_DATABASE = "rangwaz_image_dev"
-MYSQL_USER = "rangwaz"
-MYSQL_PASSWORD = "rangwaz123"
+MYSQL_HOST = os.environ.get("VIBELO_MYSQL_HOST", "127.0.0.1")
+MYSQL_PORT = int(os.environ.get("VIBELO_MYSQL_PORT", "3306") or "3306")
+MYSQL_DATABASE = os.environ.get("VIBELO_MYSQL_DATABASE", "rangwaz_image_dev")
+MYSQL_USER = os.environ.get("VIBELO_MYSQL_USER", "rangwaz")
+MYSQL_PASSWORD = os.environ.get("VIBELO_MYSQL_PASSWORD", "rangwaz123")
 
-OLLAMA_URL = "http://localhost:11434"
-OLLAMA_MODEL = "qwen2.5vl:7b"
-OLLAMA_MODELS_PATH = "H:\\ollama\\models"
-OLLAMA_EXE = ""
+OLLAMA_URL = normalize_url(os.environ.get("OLLAMA_HOST", "http://localhost:11434"))
+OLLAMA_MODEL = os.environ.get("VIBELO_LABEL_MODEL", "qwen3-vl:8b")
+OLLAMA_MODELS_PATH = os.environ.get("VIBELO_OLLAMA_MODELS", str(MODELS_DIR / "ollama"))
+OLLAMA_EXE = os.environ.get("OLLAMA_EXE", "")
 AUTO_START_OLLAMA = True
 AUTO_PULL_OLLAMA_MODEL = True
 OLLAMA_STARTUP_WAIT_SECONDS = 25
@@ -51,12 +60,14 @@ RETRY_FAILED_ON_RESUME = False
 RETRY_ATTEMPTS = 5
 RETRY_BASE_DELAY_SECONDS = 2.0
 RETRY_MAX_DELAY_SECONDS = 45.0
-OLLAMA_TIMEOUT_SECONDS = 300
+OLLAMA_TIMEOUT_SECONDS = int(os.environ.get("VIBELO_LABEL_TIMEOUT_SECONDS", "300") or "300")
 MAX_CONSECUTIVE_FAILURES = 20
-MODEL_IMAGE_MAX_SIDE = 1280
-MODEL_IMAGE_JPEG_QUALITY = 88
+MODEL_IMAGE_MAX_SIDE = int(os.environ.get("VIBELO_LABEL_IMAGE_MAX_SIDE", "1024") or "1024")
+MODEL_IMAGE_JPEG_QUALITY = int(os.environ.get("VIBELO_LABEL_JPEG_QUALITY", "85") or "85")
 
 # Ollama is local. Keep localhost traffic away from any system proxy.
+MODELS_DIR.mkdir(parents=True, exist_ok=True)
+Path(OLLAMA_MODELS_PATH).mkdir(parents=True, exist_ok=True)
 os.environ["OLLAMA_MODELS"] = OLLAMA_MODELS_PATH
 os.environ["OLLAMA_MAX_LOADED_MODELS"] = "1"
 os.environ["OLLAMA_NUM_PARALLEL"] = "1"
@@ -81,6 +92,17 @@ class ResumeState:
     attempted_image_ids: Set[int]
     ok_image_ids: Set[int]
     failed_image_ids: Set[int]
+
+
+def resolve_imported_image_path(raw_path: object) -> Optional[Path]:
+    image_path = Path(str(raw_path or ""))
+    if image_path.name:
+        fallback = IMAGE_DIR / image_path.name
+        if fallback.exists():
+            return fallback
+    if image_path.exists():
+        return image_path
+    return None
 
 
 _PYMYSQL = None
@@ -311,8 +333,8 @@ def jobs_from_results() -> List[LabelJob]:
             image_id = row.get("imageId")
             if not row.get("ok") or not image_id:
                 continue
-            image_path = Path(str(row.get("path") or ""))
-            if image_path.exists():
+            image_path = resolve_imported_image_path(row.get("path"))
+            if image_path:
                 jobs.append(LabelJob(image_path=image_path, image_id=int(image_id), source_index=source_index))
     unique: Dict[int, LabelJob] = {}
     for job in jobs:
@@ -552,6 +574,8 @@ def db_labeled_image_ids(conn) -> Set[int]:
 
 def check_ollama_ready() -> None:
     ollama_exe = find_ollama_exe()
+    print("本地打标模型：{}，Ollama 模型目录：{}".format(OLLAMA_MODEL, OLLAMA_MODELS_PATH))
+    print("如果 Ollama 早已在别处启动，请先关闭它，再让本脚本启动，才能确保模型写入上述目录。")
     try:
         payload = read_ollama_tags()
     except Exception as first_error:

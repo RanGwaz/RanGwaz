@@ -1,8 +1,9 @@
 /** Top navigation shell for the image feed. */
-import { ChevronDown, LogIn, LogOut, Plus, Search, User } from 'lucide-react'
+import { ChevronDown, LogIn, LogOut, Moon, Plus, Search, Sun, User } from 'lucide-react'
 import { FormEvent, PropsWithChildren, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../AuthContext'
+import { useTheme } from '../ThemeContext'
 import { avatarUrl } from '../utils/format'
 import { LeftRail } from './LeftRail'
 
@@ -12,6 +13,7 @@ export function AppShell({ children }: PropsWithChildren) {
   const menuRef = useRef<HTMLDivElement | null>(null)
   const navigate = useNavigate()
   const auth = useAuth()
+  const theme = useTheme()
 
   function submit(event: FormEvent) {
     event.preventDefault()
@@ -43,27 +45,38 @@ export function AppShell({ children }: PropsWithChildren) {
           <Search size={19} />
           <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索图片、标签或用户" />
         </form>
-        <div className="app-shell__account" ref={menuRef}>
-          {auth.user ? (
-            <>
-              <button className="app-shell__avatar-btn" type="button" onClick={() => setMenuOpen((value) => !value)} aria-label="账户菜单">
-                <img src={avatarUrl(auth.user.avatarUrl)} alt={auth.user.nickname} />
-                <ChevronDown size={15} />
+        <div className="app-shell__actions">
+          <button
+            className="app-shell__icon-btn"
+            type="button"
+            onClick={theme.toggleTheme}
+            aria-label={theme.resolvedTheme === 'dark' ? '切换浅色主题' : '切换深色主题'}
+            title={theme.resolvedTheme === 'dark' ? '浅色主题' : '深色主题'}
+          >
+            {theme.resolvedTheme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+          </button>
+          <div className="app-shell__account" ref={menuRef}>
+            {auth.user ? (
+              <>
+                <button className="app-shell__avatar-btn" type="button" onClick={() => setMenuOpen((value) => !value)} aria-label="账户菜单">
+                  <img src={avatarUrl(auth.user.avatarUrl)} alt={auth.user.nickname} />
+                  <ChevronDown size={15} />
+                </button>
+                {menuOpen && (
+                  <nav className="app-shell__account-menu" aria-label="账户菜单">
+                    <button type="button" onClick={() => openAuthed('/profile')}><User size={17} />个人主页</button>
+                    <button type="button" onClick={() => openAuthed('/publish')}><Plus size={17} />发布图片</button>
+                    <button type="button" onClick={() => { setMenuOpen(false); void auth.logout() }}><LogOut size={17} />退出登录</button>
+                  </nav>
+                )}
+              </>
+            ) : (
+              <button className="app-shell__login-btn" type="button" onClick={auth.openAuth}>
+                <LogIn size={17} />
+                登录
               </button>
-              {menuOpen && (
-                <nav className="app-shell__account-menu" aria-label="账户菜单">
-                  <button type="button" onClick={() => openAuthed('/profile')}><User size={17} />个人主页</button>
-                  <button type="button" onClick={() => openAuthed('/publish')}><Plus size={17} />发布图片</button>
-                  <button type="button" onClick={() => { setMenuOpen(false); void auth.logout() }}><LogOut size={17} />退出登录</button>
-                </nav>
-              )}
-            </>
-          ) : (
-            <button className="app-shell__login-btn" type="button" onClick={auth.openAuth}>
-              <LogIn size={17} />
-              登录
-            </button>
-          )}
+            )}
+          </div>
         </div>
       </header>
       <LeftRail />

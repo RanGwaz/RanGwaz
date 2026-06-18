@@ -23,6 +23,12 @@ export interface AuthTokenResponse {
   me: UserSummary
 }
 
+export interface SmsCodeResponse {
+  sent: boolean
+  mockCode?: string
+  expiresInSeconds: number
+}
+
 export interface ImageAssetView {
   id: number
   objectKey: string

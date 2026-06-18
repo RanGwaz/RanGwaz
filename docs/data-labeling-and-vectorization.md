@@ -8,8 +8,8 @@ Vibelo 是图片内容与推荐平台，核心不是简单标签站。标签、�
 
 ```text
 图片入库 -> MinIO + MySQL images
-图片描述/分类/标签 -> 远端 GPU VLM -> MySQL categories/tags/image_tags/images.description
-图片向量化 -> SigLIP2 Giant + 512 维投影 -> Milvus
+图片描述/分类/标签 -> 本地 GPU VLM -> MySQL categories/tags/image_tags/images.description
+图片向量化 -> SigLIP2 Base + 512 维投影 -> Milvus
 用户行为 -> Kafka -> user_behaviors + feed_impressions
 首页推荐 -> 多路召回 + 轻量排序
 详情页相似 -> 当前图片向量相似 + 标签/分类辅助相似
@@ -27,150 +27,191 @@ Vibelo 是图片内容与推荐平台，核心不是简单标签站。标签、�
 - `feed_impressions`：Kafka 消费后异步写入的首页和详情页曝光日志。
 - `recommendation_candidates`：后续准实时首页候选缓存。
 
-## 远端 GPU 打标签
+## 本地 GPU 环境
 
-当前使用远端 vLLM OpenAI-compatible 服务生成描述、分类和标签。
-
-模型：
+所有大文件默认放在项目目录内：
 
 ```text
-Qwen/Qwen2.5-VL-3B-Instruct
+tools/.venv                  Python 虚拟环境
+tools/.pip-cache             pip 缓存
+tools/models/ollama          Ollama 标签模型
+tools/models/huggingface     Hugging Face 向量模型
+tools/models/torch           Torch 缓存
 ```
 
-如果服务器不能访问 Hugging Face，先用 ModelScope 下载模型：
-
-```bash
-pip install -U modelscope
-
-modelscope download \
-  --model Qwen/Qwen2.5-VL-3B-Instruct \
-  --local_dir /root/models/Qwen2.5-VL-3B-Instruct
-```
-
-启动 vLLM。当前服务器需要禁用 FlashInfer sampler：
-
-```bash
-pkill -f "vllm serve" || true
-
-nohup env VLLM_USE_FLASHINFER_SAMPLER=0 \
-  VLLM_ATTENTION_BACKEND=FLASH_ATTN \
-  vllm serve /root/models/Qwen2.5-VL-3B-Instruct \
-  --served-model-name Qwen/Qwen2.5-VL-3B-Instruct \
-  --host 0.0.0.0 \
-  --port 6006 \
-  --api-key VibeloGPU_20260606_QwenVL \
-  --limit-mm-per-prompt '{"image": 1}' \
-  --max-model-len 8192 \
-  --gpu-memory-utilization 0.85 \
-  --max-num-seqs 4 \
-  > vllm.log 2>&1 &
-```
-
-查看日志：
-
-```bash
-tail -f vllm.log
-```
-
-远程服务器本地测试：
-
-```bash
-curl -H "Authorization: Bearer VibeloGPU_20260606_QwenVL" \
-  http://127.0.0.1:6006/v1/models
-```
-
-本机测试公网映射：
-
-```powershell
-Invoke-RestMethod `
-  -Uri "https://u1040521-ba3c-2fe32904.westb.seetacloud.com:8443/v1/models" `
-  -Headers @{Authorization="Bearer VibeloGPU_20260606_QwenVL"} |
-  ConvertTo-Json -Depth 5
-```
-
-本机批量打标签：
+初始化环境：
 
 ```powershell
 Set-Location 'H:\桌面\一坨屎\RanGwaz'
-G:\Anaconda\envs\DL\python.exe tools\fast_label_images_openai_compatible.py
+.\tools\setup_local_gpu.ps1
 ```
 
-## 远端 GPU 向量化
+如果需要走本机 12000 代理，且想明确使用非 C 盘 Python：
+
+```powershell
+.\tools\setup_local_gpu.ps1 -Python "D:\Python316\python.exe" -ProxyUrl "http://127.0.0.1:12000"
+```
+
+如果本机 CUDA/PyTorch 需要其它 wheel 源，可以指定：
+
+```powershell
+.\tools\setup_local_gpu.ps1 -TorchIndexUrl "https://download.pytorch.org/whl/cu124"
+```
+
+下载默认模型：
+
+```powershell
+.\tools\.venv\Scripts\python.exe tools\download_local_models.py
+```
+
+如果 Hugging Face 访问慢，可以临时使用镜像：
+
+```powershell
+$env:HF_ENDPOINT="https://hf-mirror.com"
+.\tools\.venv\Scripts\python.exe tools\download_local_models.py --skip-label
+```
+
+如果你开的是本机代理，端口是 12000，推荐这样续下向量模型：
+
+```powershell
+.\tools\.venv\Scripts\python.exe tools\download_local_models.py --skip-label --use-hf-proxy --hf-proxy-url http://127.0.0.1:12000
+```
+
+注意：如果 Ollama 已经提前启动，它可能还在使用旧的模型目录。为了确保模型不写到 C 盘，先关闭已运行的 Ollama，再运行下载脚本或 `tools/auto_label_images.py`，让脚本带着 `OLLAMA_MODELS=tools/models/ollama` 启动 Ollama。
+
+## 本地 GPU 打标签
+
+默认标签模型：
+
+```text
+qwen3-vl:8b
+```
+
+这是当前本地打标签的优先选择：视觉理解、中文输出和结构化 JSON 能力比小模型更稳，Ollama 运行也比自己维护 vLLM 省事。显存紧张时可临时降级：
+
+```powershell
+$env:VIBELO_LABEL_MODEL="qwen2.5vl:7b"
+.\tools\.venv\Scripts\python.exe tools\download_local_models.py --skip-embedding
+```
+
+批量打标签：
+
+```powershell
+Set-Location 'H:\桌面\一坨屎\RanGwaz'
+.\tools\.venv\Scripts\python.exe tools\auto_label_images.py
+```
+
+脚本会读取 `tools/import_results.jsonl` 里的本地图片路径，生成描述、主分类和标签，写入：
+
+```text
+images.description
+images.main_category_id
+categories
+tags
+image_tags
+```
+
+常用调参：
+
+```powershell
+$env:VIBELO_LABEL_LIMIT="200"              # 先试跑 200 张；0 表示不限
+$env:VIBELO_LABEL_IMAGE_MAX_SIDE="1024"   # 更大更准但更慢
+$env:VIBELO_LABEL_TIMEOUT_SECONDS="300"
+```
+
+脚本支持断点续跑，结果写入 `tools/auto_label_results.jsonl`。默认会跳过数据库中已经有描述或标签的图片。
+
+## 云端打标签
+
+如果本机 GTX 1650 显存/内存不足以跑 Qwen-VL，本地打标签可以换成云端视觉模型。脚本是 OpenAI-compatible 写法，不绑定某一家服务商；只要服务提供 `/chat/completions` 且支持 `image_url` 输入即可。
+
+常见配置示例：
+
+```powershell
+Set-Location 'H:\桌面\一坨屎\RanGwaz'
+.\tools\run_cloud_label.ps1 -InitConfig
+# edit tools\cloud_label_config.local.ps1 and replace sk-your-api-key
+.\tools\run_cloud_label.ps1
+```
+
+如果云端 API 也需要走本机代理：
+
+```powershell
+$env:VIBELO_CLOUD_LABEL_PROXY_URL="http://127.0.0.1:12000"
+```
+
+脚本结果写入 `tools/cloud_label_results.jsonl`，并和本地脚本一样写回：
+
+```text
+images.description
+images.main_category_id
+categories
+tags
+image_tags
+```
+
+建议先用 `VIBELO_LABEL_LIMIT=20` 小批量试跑，确认标签质量和费用后再放开。
+
+## 本地 GPU 向量化
 
 当前默认向量配置：
 
 ```text
-model_name      = google/siglip2-giant-opt-patch16-384
-vector_version  = siglip2-giant-p384-d512-v1
+model_name      = google/siglip2-base-patch16-224
+vector_version  = siglip2-base-p224-d512-v1
 dimension       = 512
 metric          = COSINE
 index           = HNSW
-collection      = vibelo_image_vectors_siglip2_giant_p384_d512
+collection      = vibelo_image_vectors_siglip2_base_p224_d512
 ```
 
-说明：SigLIP2 Giant 原始视觉特征较强，但原始维度较高。当前服务会先提取强特征，再用固定随机投影降到 512 维并重新 L2 归一化。这样可以明显降低 Milvus 存储、传输和检索成本，同时保留足够支撑推荐召回的语义信息。
+说明：GTX 1650 只有 4GB 显存，默认使用 SigLIP2 Base。它比 Giant 更适合本机批处理，显存占用低很多；脚本仍会用固定随机投影降到 512 维并重新 L2 归一化，降低 Milvus 存储和检索成本。
 
-远端服务器先下载 SigLIP2 Giant：
+下载脚本会把 SigLIP2 Base 放到：
 
-```bash
-export HF_ENDPOINT=https://hf-mirror.com
-hf download google/siglip2-giant-opt-patch16-384 \
-  --local-dir /root/models/siglip2-giant-opt-patch16-384
+```text
+tools/models/huggingface/google__siglip2-base-patch16-224
 ```
 
-把本机脚本放到远端：
+如果以后换到 8GB/12GB 以上显卡，可以手动切回 Giant：
 
 ```powershell
-Set-Location 'H:\桌面\一坨屎\RanGwaz'
-scp -P 17270 .\tools\remote_siglip_embedding_service.py root@connect.westb.seetacloud.com:/root/remote_siglip_embedding_service.py
-```
-
-远端启动 6008 端口 embedding 服务：
-
-```bash
-pkill -f "remote_siglip_embedding_service.py" || true
-
-nohup python /root/remote_siglip_embedding_service.py \
-  > siglip_embed.log 2>&1 &
-
-tail -f siglip_embed.log
-```
-
-远端本地测试：
-
-```bash
-curl -H "Authorization: Bearer VibeloGPU_20260606_SigLIP2" \
-  http://127.0.0.1:6008/health
-```
-
-本机测试公网映射：
-
-```powershell
-Invoke-RestMethod `
-  -Uri "https://uu1040521-ba3c-2fe32904.westb.seetacloud.com:8443/health" `
-  -Headers @{Authorization="Bearer VibeloGPU_20260606_SigLIP2"} |
-  ConvertTo-Json -Depth 5
+$env:VIBELO_EMBED_MODEL="google/siglip2-giant-opt-patch16-384"
+$env:VIBELO_EMBED_VECTOR_VERSION="siglip2-giant-p384-d512-v1"
+$env:VIBELO_MILVUS_COLLECTION="vibelo_image_vectors_siglip2_giant_p384_d512"
 ```
 
 清空旧向量状态和旧 Milvus collection：
 
 ```powershell
 Set-Location 'H:\桌面\一坨屎\RanGwaz'
-G:\Anaconda\envs\DL\python.exe tools\reset_vectors.py
+.\tools\.venv\Scripts\python.exe tools\reset_vectors.py
 ```
 
 生成 512 维向量并写入本机 Milvus/MySQL：
 
 ```powershell
 Set-Location 'H:\桌面\一坨屎\RanGwaz'
-G:\Anaconda\envs\DL\python.exe tools\vectorize_images_remote.py
+.\tools\.venv\Scripts\python.exe tools\vectorize_images.py
+```
+
+注意：不要用 `G:\Anaconda\envs\DL\python.exe` 跑向量脚本。那个环境的 `transformers` 是 4.30.2，不能识别 SigLIP2；请使用项目内 `tools\.venv`。
+
+常用调参：
+
+```powershell
+$env:VIBELO_EMBED_LIMIT="1000"       # 先试跑 1000 张；0 表示不限
+$env:VIBELO_EMBED_BATCH_SIZE="8"     # 显存够可调大，OOM 就调小
+$env:VIBELO_EMBED_DEVICE="cuda"      # 默认 auto
+$env:VIBELO_USE_HF_PROXY="1"         # 如果本地模型缺文件，需要临时联网补下载
+$env:VIBELO_HF_PROXY_URL="http://127.0.0.1:12000"
 ```
 
 启动向量召回服务：
 
 ```powershell
 Set-Location 'H:\桌面\一坨屎\RanGwaz'
-G:\Anaconda\envs\DL\python.exe tools\vector_recall_service.py
+.\tools\.venv\Scripts\python.exe tools\vector_recall_service.py
 ```
 
 ## 推荐链路

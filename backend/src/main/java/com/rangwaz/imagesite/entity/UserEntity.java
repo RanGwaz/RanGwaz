@@ -11,6 +11,7 @@ import java.time.LocalDateTime;
 public class UserEntity {
     private Long id;
     private String username;
+    private String phone;
     private String passwordHash;
     private String nickname;
     private String avatarUrl;

@@ -55,6 +55,28 @@ public class AuthController {
     }
 
     /**
+     * Sends a phone verification code.
+     *
+     * @param request SMS code request
+     * @return SMS code result
+     */
+    @PostMapping("/sms-code")
+    public ApiResponse<ApiDtos.SmsCodeResponse> sendSmsCode(@Valid @RequestBody ApiDtos.SendSmsCodeRequest request) {
+        return ApiResponse.ok(authService.sendSmsCode(request));
+    }
+
+    /**
+     * Logs in with phone and SMS code.
+     *
+     * @param request phone login request
+     * @return token response
+     */
+    @PostMapping("/phone-login")
+    public ApiResponse<ApiDtos.AuthTokenResponse> phoneLogin(@Valid @RequestBody ApiDtos.PhoneLoginRequest request) {
+        return ApiResponse.ok(authService.loginWithPhone(request));
+    }
+
+    /**
      * Returns the current user.
      *
      * @param authorization authorization header

@@ -5,10 +5,11 @@ import type {
   CategoryView,
   CommentView,
   FollowStatus,
-  PageResponse,
   ImageInteractionStatus,
   ImageView,
+  PageResponse,
   SearchResult,
+  SmsCodeResponse,
   TagView,
   ToggleResult,
   TopicView,
@@ -28,26 +29,45 @@ export function setToken(token: string) {
   else localStorage.removeItem(TOKEN_KEY)
 }
 
+function nonJsonMessage(path: string, response: Response, text: string) {
+  const preview = text.trim().slice(0, 180)
+  if (preview.toLowerCase().startsWith('<!doctype') || preview.toLowerCase().startsWith('<html')) {
+    return `接口 ${path} 返回了页面而不是 JSON。请确认后端 8080 已启动，且 Vite 代理没有失效。`
+  }
+  return `接口 ${path} 返回了非 JSON 内容：${preview || response.statusText || '空响应'}`
+}
+
 async function request<T>(path: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers)
   const token = getToken()
   if (token) headers.set('Authorization', `Bearer ${token}`)
   if (!(init.body instanceof FormData) && init.body !== undefined) headers.set('Content-Type', 'application/json')
+
   const response = await fetch(path, { ...init, headers })
   const text = await response.text()
+  let parsed: unknown
   let payload: ApiResponse<T>
+
   try {
-    payload = text ? JSON.parse(text) as ApiResponse<T> : {
+    parsed = text ? JSON.parse(text) as unknown : {
       code: response.ok ? 'OK' : 'EMPTY_RESPONSE',
-      data: undefined as T,
+      data: undefined,
       message: '',
       success: response.ok,
       timestamp: new Date().toISOString(),
     }
   } catch {
-    throw new Error(`接口 ${path} 返回了非 JSON 内容，请检查前端代理或后端路由`)
+    throw new Error(nonJsonMessage(path, response, text))
   }
-  if (!response.ok || !payload.success) throw new Error(payload.message || '请求失败')
+
+  if (!parsed || typeof parsed !== 'object' || !('success' in parsed)) {
+    throw new Error(`接口 ${path} 返回的 JSON 不是统一 ApiResponse 格式`)
+  }
+  payload = parsed as ApiResponse<T>
+
+  if (!response.ok || !payload.success) {
+    throw new Error(payload.message || `请求失败：${payload.code || response.status}`)
+  }
   return payload.data
 }
 
@@ -58,14 +78,23 @@ export const api = {
   login(payload: { username: string; password: string }) {
     return request<AuthTokenResponse>('/auth/login', { method: 'POST', body: JSON.stringify(payload) })
   },
+  sendSmsCode(payload: { phone: string; scene?: string }) {
+    return request<SmsCodeResponse>('/auth/sms-code', { method: 'POST', body: JSON.stringify(payload) })
+  },
+  phoneLogin(payload: { phone: string; code: string }) {
+    return request<AuthTokenResponse>('/auth/phone-login', { method: 'POST', body: JSON.stringify(payload) })
+  },
   logout() {
     return request<void>('/auth/logout', { method: 'POST' })
   },
   me() {
     return request<AuthTokenResponse>('/auth/me')
   },
-  homeFeed(page = 1, pageSize = 30) {
-    return request<PageResponse<ImageView>>(`/feed?page=${page}&pageSize=${pageSize}`)
+  homeFeed(page = 1, pageSize = 30, refreshSeed?: string, feedSessionId?: string) {
+    const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) })
+    if (refreshSeed) query.set('refreshSeed', refreshSeed)
+    if (feedSessionId) query.set('feedSessionId', feedSessionId)
+    return request<PageResponse<ImageView>>(`/feed?${query.toString()}`)
   },
   similarImages(imageId: number, page = 1, size = 24) {
     return request<PageResponse<ImageView>>(`/feed/images/${imageId}/similar?page=${page}&size=${size}`)
