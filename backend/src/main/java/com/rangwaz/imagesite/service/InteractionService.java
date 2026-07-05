@@ -3,6 +3,8 @@ package com.rangwaz.imagesite.service;
 import com.rangwaz.imagesite.common.api.PageResponse;
 import com.rangwaz.imagesite.dto.ApiDtos;
 
+import java.util.List;
+
 /**
  * Service interface for likes, favorites, comments, follows, and behavior events.
  */
@@ -12,18 +14,24 @@ public interface InteractionService {
      *
      * @param userId user id
      * @param postId post id
+     * @param latitude optional latitude
+     * @param longitude optional longitude
+     * @param locationLabel optional human-readable location
      * @return toggle result
      */
-    ApiDtos.ToggleResult toggleLike(Long userId, Long postId);
+    ApiDtos.ToggleResult toggleLike(Long userId, Long postId, Double latitude, Double longitude, String locationLabel);
 
     /**
      * Toggles a favorite.
      *
      * @param userId user id
      * @param postId post id
+     * @param latitude optional latitude
+     * @param longitude optional longitude
+     * @param locationLabel optional human-readable location
      * @return toggle result
      */
-    ApiDtos.ToggleResult toggleFavorite(Long userId, Long postId);
+    ApiDtos.ToggleResult toggleFavorite(Long userId, Long postId, Double latitude, Double longitude, String locationLabel);
 
     /**
      * Gets current user's interaction status.
@@ -33,6 +41,15 @@ public interface InteractionService {
      * @return status response
      */
     ApiDtos.ImageInteractionStatus status(Long userId, Long postId);
+
+    /**
+     * Lists images liked by a user.
+     *
+     * @param userId user id
+     * @param limit maximum rows
+     * @return liked images
+     */
+    List<ApiDtos.ImageView> likedImages(Long userId, int limit);
 
     /**
      * Pages comments.
@@ -84,15 +101,17 @@ public interface InteractionService {
      * Tracks a behavior event.
      *
      * @param userId optional user id
+     * @param visitorId optional visitor id
      * @param request behavior request
      */
-    void behavior(Long userId, ApiDtos.BehaviorRequest request);
+    void behavior(Long userId, String visitorId, ApiDtos.BehaviorRequest request);
 
     /**
      * Tracks multiple behavior events.
      *
      * @param userId optional user id
+     * @param visitorId optional visitor id
      * @param request batch behavior request
      */
-    void behaviors(Long userId, ApiDtos.BehaviorBatchRequest request);
+    void behaviors(Long userId, String visitorId, ApiDtos.BehaviorBatchRequest request);
 }

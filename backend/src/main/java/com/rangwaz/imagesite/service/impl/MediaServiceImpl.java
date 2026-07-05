@@ -3,6 +3,7 @@ package com.rangwaz.imagesite.service.impl;
 import com.rangwaz.imagesite.common.exception.BusinessException;
 import com.rangwaz.imagesite.config.MinioProperties;
 import com.rangwaz.imagesite.dto.ApiDtos;
+import com.rangwaz.imagesite.service.ContentSafetyService;
 import com.rangwaz.imagesite.service.MediaObject;
 import com.rangwaz.imagesite.service.MediaService;
 import io.minio.BucketExistsArgs;
@@ -36,16 +37,19 @@ public class MediaServiceImpl implements MediaService {
 
     private final MinioClient minioClient;
     private final MinioProperties properties;
+    private final ContentSafetyService contentSafetyService;
 
     /**
      * Creates the media storage service.
      *
      * @param minioClient MinIO client
      * @param properties MinIO properties
+     * @param contentSafetyService content safety service
      */
-    public MediaServiceImpl(MinioClient minioClient, MinioProperties properties) {
+    public MediaServiceImpl(MinioClient minioClient, MinioProperties properties, ContentSafetyService contentSafetyService) {
         this.minioClient = minioClient;
         this.properties = properties;
+        this.contentSafetyService = contentSafetyService;
     }
 
     /**
@@ -60,21 +64,23 @@ public class MediaServiceImpl implements MediaService {
         String contentType = file.getContentType() == null ? "" : file.getContentType().toLowerCase(Locale.ROOT);
         if (!contentType.startsWith("image/")) throw new BusinessException("BAD_FILE_TYPE", "只能上传图片文件");
         try {
-            ensureBucket();
             byte[] originalBytes = file.getBytes();
             String hash = sha256(originalBytes);
             BufferedImage image = ImageIO.read(new ByteArrayInputStream(originalBytes));
             if (image == null) throw new BusinessException("BAD_IMAGE", "图片无法解析");
+            contentSafetyService.requireSafeImage(image, originalBytes, contentType);
+            ensureBucket();
             String ext = extension(file.getOriginalFilename(), contentType);
             String datePath = LocalDate.now().toString().replace("-", "/");
             String uuid = UUID.randomUUID().toString();
             String originalKey = "originals/" + datePath + "/" + uuid + ext;
             String thumbKey = "thumbs/" + datePath + "/" + uuid + ".jpg";
+            String originalUrl = publicUrl(originalKey);
             putObject(originalKey, originalBytes, contentType);
             putObject(thumbKey, thumbnailBytes(image), "image/jpeg");
             return new ApiDtos.UploadResponse(
                     originalKey,
-                    publicUrl(originalKey),
+                    originalUrl,
                     "image",
                     publicUrl(thumbKey),
                     image.getWidth(),

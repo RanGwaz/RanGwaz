@@ -77,6 +77,17 @@ public class AuthController {
     }
 
     /**
+     * Logs in with phone and password.
+     *
+     * @param request phone-password login request
+     * @return token response
+     */
+    @PostMapping("/phone-password-login")
+    public ApiResponse<ApiDtos.AuthTokenResponse> phonePasswordLogin(@Valid @RequestBody ApiDtos.PhonePasswordLoginRequest request) {
+        return ApiResponse.ok(authService.loginWithPhonePassword(request));
+    }
+
+    /**
      * Returns the current user.
      *
      * @param authorization authorization header

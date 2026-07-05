@@ -41,21 +41,53 @@ public class BehaviorEventPublisher {
      * Publishes one behavior event.
      *
      * @param userId optional user id
+     * @param visitorId stable anonymous visitor id
      * @param imageId image id
      * @param behaviorType behavior type
      * @param scene source scene
      * @param position position in feed
      * @param duration duration in milliseconds
      */
-    public void publish(Long userId, Long imageId, String behaviorType, String scene, Integer position, Integer duration) {
+    public void publish(Long userId, String visitorId, Long imageId, String behaviorType, String scene, Integer position, Integer duration) {
+        publish(userId, visitorId, imageId, behaviorType, scene, position, duration, null, null, null);
+    }
+
+    /**
+     * Publishes one behavior event with optional geolocation context.
+     *
+     * @param userId optional user id
+     * @param visitorId stable anonymous visitor id
+     * @param imageId image id
+     * @param behaviorType behavior type
+     * @param scene source scene
+     * @param position position in feed
+     * @param duration duration in milliseconds
+     * @param latitude optional latitude
+     * @param longitude optional longitude
+     * @param locationLabel optional human-readable location
+     */
+    public void publish(Long userId,
+                        String visitorId,
+                        Long imageId,
+                        String behaviorType,
+                        String scene,
+                        Integer position,
+                        Integer duration,
+                        Double latitude,
+                        Double longitude,
+                        String locationLabel) {
         if (imageId == null) return;
         BehaviorEvent event = new BehaviorEvent(
                 userId,
+                cleanVisitorId(visitorId),
                 imageId,
                 StringUtils.hasText(behaviorType) ? behaviorType.trim() : "unknown",
                 StringUtils.hasText(scene) ? scene.trim() : "unknown",
                 position,
                 duration,
+                cleanCoordinate(latitude),
+                cleanCoordinate(longitude),
+                cleanLabel(locationLabel),
                 LocalDateTime.now()
         );
         try {
@@ -69,5 +101,22 @@ public class BehaviorEventPublisher {
         } catch (JsonProcessingException ex) {
             log.warn("Failed to serialize behavior event imageId={} type={}", imageId, behaviorType, ex);
         }
+    }
+
+    private String cleanVisitorId(String visitorId) {
+        if (!StringUtils.hasText(visitorId)) return null;
+        String cleaned = visitorId.trim();
+        return cleaned.length() > 64 ? cleaned.substring(0, 64) : cleaned;
+    }
+
+    private Double cleanCoordinate(Double value) {
+        if (value == null || !Double.isFinite(value)) return null;
+        return value;
+    }
+
+    private String cleanLabel(String value) {
+        if (!StringUtils.hasText(value)) return null;
+        String cleaned = value.trim();
+        return cleaned.length() > 80 ? cleaned.substring(0, 80) : cleaned;
     }
 }

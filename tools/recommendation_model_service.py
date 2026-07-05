@@ -28,6 +28,7 @@ BASE_DIR = Path(__file__).resolve().parent
 MODEL_DIR = Path(os.environ.get("VIBELO_RECOMMENDATION_MODEL_DIR", BASE_DIR / "models" / "recommendation"))
 RANKER_PATH = MODEL_DIR / "ranker.joblib"
 RANKER_METADATA_PATH = MODEL_DIR / "ranker_metadata.json"
+RECALL_METADATA_PATH = MODEL_DIR / "recall_metadata.json"
 SERVICE_HOST = os.environ.get("VIBELO_RECOMMENDATION_HOST", "127.0.0.1")
 SERVICE_PORT = int(os.environ.get("VIBELO_RECOMMENDATION_PORT", "8092"))
 
@@ -47,7 +48,7 @@ FEATURE_NAMES = [
     "source_global",
 ]
 
-BEHAVIOR_WEIGHTS = {
+DEFAULT_BEHAVIOR_WEIGHTS = {
     "favorite": 5.0,
     "like": 4.0,
     "comment": 4.0,
@@ -56,12 +57,22 @@ BEHAVIOR_WEIGHTS = {
     "view": 1.8,
     "impression": 0.35,
 }
+DEFAULT_RECALL_CONFIG = {
+    "behaviorWeights": DEFAULT_BEHAVIOR_WEIGHTS,
+    "timeHalfLifeHours": 336.0,
+    "timeDecayFloor": 0.65,
+    "durationBonus": 0.15,
+    "durationCapMs": 120000,
+    "minEventWeight": 0.001,
+}
 
 app = FastAPI(title="Vibelo Recommendation Model Service")
 _COLLECTION: Optional[Collection] = None
 _RANKER: Any = None
 _RANKER_MTIME: Optional[float] = None
 _RANKER_METADATA: Dict[str, Any] = {}
+_RECALL_METADATA: Dict[str, Any] = {}
+_RECALL_METADATA_MTIME: Optional[float] = None
 
 
 class UserEvent(BaseModel):
@@ -180,13 +191,57 @@ def query_vectors(image_ids: Sequence[int]) -> Dict[int, np.ndarray]:
     return vectors
 
 
+def load_recall_metadata() -> Dict[str, Any]:
+    global _RECALL_METADATA, _RECALL_METADATA_MTIME
+    if not RECALL_METADATA_PATH.exists():
+        _RECALL_METADATA = {}
+        _RECALL_METADATA_MTIME = None
+        return {}
+    mtime = RECALL_METADATA_PATH.stat().st_mtime
+    if _RECALL_METADATA and _RECALL_METADATA_MTIME == mtime:
+        return _RECALL_METADATA
+    try:
+        _RECALL_METADATA = json.loads(RECALL_METADATA_PATH.read_text(encoding="utf-8"))
+        _RECALL_METADATA_MTIME = mtime
+    except Exception:
+        _RECALL_METADATA = {}
+        _RECALL_METADATA_MTIME = None
+    return _RECALL_METADATA
+
+
+def recall_config() -> Dict[str, Any]:
+    metadata = load_recall_metadata()
+    config = metadata.get("recall_config") if isinstance(metadata, dict) else None
+    if not isinstance(config, dict):
+        return DEFAULT_RECALL_CONFIG
+    merged = dict(DEFAULT_RECALL_CONFIG)
+    merged.update(config)
+    weights = dict(DEFAULT_BEHAVIOR_WEIGHTS)
+    configured_weights = config.get("behaviorWeights")
+    if isinstance(configured_weights, dict):
+        weights.update({str(key): float(value) for key, value in configured_weights.items()})
+    merged["behaviorWeights"] = weights
+    return merged
+
+
 def event_weight(event: UserEvent) -> float:
+    config = recall_config()
+    behavior_weights = config.get("behaviorWeights") or DEFAULT_BEHAVIOR_WEIGHTS
     behavior = (event.behaviorType or "unknown").lower()
-    base = BEHAVIOR_WEIGHTS.get(behavior, 0.5)
+    base = float(behavior_weights.get(behavior, 0.5))
     age_hours = max(0, int(event.ageHours or 0))
-    time_decay = math.exp(-age_hours / (24.0 * 14.0))
-    duration_bonus = min(max(int(event.durationMs or 0), 0), 120_000) / 120_000.0
-    return base * (0.65 + 0.35 * time_decay) * (1.0 + duration_bonus * 0.15)
+    half_life_hours = max(1.0, float(config.get("timeHalfLifeHours") or 336.0))
+    time_floor = clamp(float(config.get("timeDecayFloor") or 0.65), 0, 1)
+    time_decay = math.pow(0.5, age_hours / half_life_hours)
+    duration_cap = max(1, int(config.get("durationCapMs") or 120000))
+    duration_ratio = min(max(int(event.durationMs or 0), 0), duration_cap) / float(duration_cap)
+    duration_bonus = max(0.0, float(config.get("durationBonus") or 0.0))
+    min_event_weight = max(0.0, float(config.get("minEventWeight") or 0.001))
+    return max(min_event_weight, base * (time_floor + (1.0 - time_floor) * time_decay) * (1.0 + duration_ratio * duration_bonus))
+
+
+def behavior_weights() -> Dict[str, float]:
+    return {key: float(value) for key, value in (recall_config().get("behaviorWeights") or DEFAULT_BEHAVIOR_WEIGHTS).items()}
 
 
 def user_interest_vector(events: Sequence[UserEvent], seed_ids: Sequence[int]) -> Optional[np.ndarray]:
@@ -368,6 +423,7 @@ def diversify(scored: Sequence[Tuple[HomeRankCandidate, float]], limit: int) -> 
 def health() -> Dict[str, Any]:
     coll = collection()
     ranker, metadata = load_ranker()
+    recall_metadata = load_recall_metadata()
     return {
         "ok": True,
         "milvusCollection": MILVUS_COLLECTION,
@@ -376,6 +432,8 @@ def health() -> Dict[str, Any]:
         "rankerLoaded": ranker is not None,
         "rankerPath": str(RANKER_PATH),
         "rankerMetadata": metadata,
+        "recallMetadataPath": str(RECALL_METADATA_PATH),
+        "recallMetadata": recall_metadata,
     }
 
 

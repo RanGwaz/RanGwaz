@@ -33,6 +33,8 @@ public class ImageEntity {
     private Integer shareCount;
     private Integer viewCount;
     private BigDecimal hotScore;
+    private String reviewReason;
+    private LocalDateTime reviewedAt;
     private LocalDateTime publishedAt;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

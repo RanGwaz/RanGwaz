@@ -21,6 +21,12 @@ public final class ApiDtos {
     }
 
     /**
+     * Client network address response.
+     */
+    public record ClientIpResponse(String ip) {
+    }
+
+    /**
      * Login or register token payload.
      */
     public record AuthTokenResponse(String accessToken, String tokenType, long expiresInSeconds, UserSummary me) {
@@ -47,13 +53,19 @@ public final class ApiDtos {
     /**
      * SMS code request result. mockCode is only present in local mock mode.
      */
-    public record SmsCodeResponse(boolean sent, String mockCode, long expiresInSeconds) {
+    public record SmsCodeResponse(boolean sent, String mockCode, long expiresInSeconds, long cooldownSeconds, boolean registered) {
     }
 
     /**
      * Phone verification-code login request.
      */
-    public record PhoneLoginRequest(@NotBlank String phone, @NotBlank String code) {
+    public record PhoneLoginRequest(@NotBlank String phone, @NotBlank String code, String password, String passwordConfirm) {
+    }
+
+    /**
+     * Phone-password login request.
+     */
+    public record PhonePasswordLoginRequest(@NotBlank String phone, @NotBlank String password) {
     }
 
     /**
@@ -108,7 +120,7 @@ public final class ApiDtos {
     /**
      * Post creation request.
      */
-    public record CreateImageRequest(@NotBlank @Size(max = 160) String title,
+    public record CreateImageRequest(@Size(max = 160) String title,
                                     @Size(max = 5000) String content,
                                     String postType,
                                     List<String> imageUrls,
@@ -169,7 +181,9 @@ public final class ApiDtos {
                            Integer shareCount,
                            Integer viewCount,
                            String recommendationReason,
-                           LocalDateTime createdAt) {
+                           LocalDateTime createdAt,
+                           String status,
+                           String reviewReason) {
     }
 
     /**
@@ -187,7 +201,22 @@ public final class ApiDtos {
     /**
      * Search response containing users, images, and topics.
      */
-    public record SearchResult(List<UserSummary> users, List<ImageView> images, List<TopicView> topics) {
+    public record SearchResult(List<UserSummary> users,
+                               List<ImageView> images,
+                               List<TopicView> topics,
+                               List<SearchSuggestionItem> related) {
+    }
+
+    /**
+     * One clickable search idea for the focused search panel.
+     */
+    public record SearchSuggestionItem(String keyword, String kind, String imageUrl, Long postCount) {
+    }
+
+    /**
+     * Search ideas grouped by product intent.
+     */
+    public record SearchSuggestionResponse(List<SearchSuggestionItem> recommended, List<SearchSuggestionItem> trending) {
     }
 
     /**
@@ -217,13 +246,21 @@ public final class ApiDtos {
     /**
      * Behavior tracking request for image analytics.
      */
-    public record BehaviorRequest(Long imageId, String behaviorType, String scene, Integer position, Integer duration) {
+    public record BehaviorRequest(Long imageId,
+                                  String behaviorType,
+                                  String scene,
+                                  Integer position,
+                                  Integer duration,
+                                  String visitorId,
+                                  Double latitude,
+                                  Double longitude,
+                                  String locationLabel) {
     }
 
     /**
      * Batch behavior tracking request for feed impressions.
      */
-    public record BehaviorBatchRequest(List<BehaviorRequest> events) {
+    public record BehaviorBatchRequest(String visitorId, List<BehaviorRequest> events) {
     }
 
     /**
@@ -236,5 +273,39 @@ public final class ApiDtos {
      * Profile update request.
      */
     public record UpdateProfileRequest(String nickname, String avatarUrl, String backgroundUrl, String bio) {
+    }
+
+    /**
+     * Profile update review view.
+     */
+    public record ProfileReviewView(Long id,
+                                    Long userId,
+                                    String nickname,
+                                    String avatarUrl,
+                                    String backgroundUrl,
+                                    String bio,
+                                    String status,
+                                    String reviewReason,
+                                    LocalDateTime reviewedAt,
+                                    LocalDateTime createdAt) {
+    }
+
+    /**
+     * Moderation decision request for admin/manual review.
+     */
+    public record ReviewDecisionRequest(@NotBlank String status, String reason) {
+    }
+
+    /**
+     * User notification view.
+     */
+    public record NotificationView(Long id,
+                                   String type,
+                                   String title,
+                                   String content,
+                                   String targetType,
+                                   Long targetId,
+                                   Boolean read,
+                                   LocalDateTime createdAt) {
     }
 }

@@ -4,12 +4,13 @@ import type { ImageView } from '../types'
 import { aspectRatio } from '../utils/format'
 import { PostCard } from './PostCard'
 
-const MASONRY_GAP = 10
+const MASONRY_GAP = 12
 const MASONRY_TARGET_WIDTH = 236
 const MASONRY_MAX_COLUMNS = 12
-const MASONRY_CARD_CHROME = 0
+const MASONRY_CARD_CHROME = 48
 
 interface MasonryGridProps {
+  onLikeChange?: (post: ImageView, liked: boolean, likeCount: number) => void
   posts: ImageView[]
   loading?: boolean
   emptyLabel?: string
@@ -65,7 +66,7 @@ function SkeletonItems() {
   )
 }
 
-export function MasonryGrid({ posts, loading = false, emptyLabel = '暂无内容', onOpen }: MasonryGridProps) {
+export function MasonryGrid({ posts, loading = false, emptyLabel = '暂无内容', onLikeChange, onOpen }: MasonryGridProps) {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const [metrics, setMetrics] = useState({ columnCount: 1, columnWidth: MASONRY_TARGET_WIDTH, ready: false })
   const layout = useMemo(() => packPosts(posts, metrics.columnCount, metrics.columnWidth), [metrics.columnCount, metrics.columnWidth, posts])
@@ -111,7 +112,7 @@ export function MasonryGrid({ posts, loading = false, emptyLabel = '暂无内容
               key={item.post.id}
               style={{ transform: `translate3d(${item.x}px,${item.y}px,0)`, width: item.width } as CSSProperties}
             >
-              <PostCard post={item.post} onOpen={onOpen} />
+              <PostCard post={item.post} onLikeChange={onLikeChange} onOpen={onOpen} />
             </div>
           ))}
         </div>

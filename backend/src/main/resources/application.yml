@@ -73,6 +73,9 @@ app:
     model-read-timeout-ms: 1500
   behavior:
     kafka-topic: vibelo.user-behaviors
+  moderation:
+    review-token: ${APP_MODERATION_TOKEN:}
+  # 号码认证服务短信认证配置
   sms:
     mock: true
     dev-code: ""
@@ -80,14 +83,58 @@ app:
     cooldown-seconds: 60
     provider: aliyun
     aliyun:
-      access-key-id: ${ALIYUN_SMS_ACCESS_KEY_ID:}
-      access-key-secret: ${ALIYUN_SMS_ACCESS_KEY_SECRET:}
-      sign-name: ${ALIYUN_SMS_SIGN_NAME:}
-      template-code: ${ALIYUN_SMS_TEMPLATE_CODE:}
+      endpoint: ${ALIYUN_PNVS_SMS_ENDPOINT:https://dypnsapi.aliyuncs.com/}
+      region-id: ${ALIYUN_PNVS_SMS_REGION_ID:cn-hangzhou}
+      access-key-id: ${ALIYUN_PNVS_SMS_ACCESS_KEY_ID:${ALIYUN_SMS_ACCESS_KEY_ID:}}
+      access-key-secret: ${ALIYUN_PNVS_SMS_ACCESS_KEY_SECRET:${ALIYUN_SMS_ACCESS_KEY_SECRET:}}
+      sign-name: ${ALIYUN_PNVS_SMS_SIGN_NAME:速通互联验证码}
+      template-code: ${ALIYUN_PNVS_SMS_TEMPLATE_CODE:100001}
+      country-code: ${ALIYUN_PNVS_SMS_COUNTRY_CODE:86}
+      scheme-name: ${ALIYUN_PNVS_SMS_SCHEME_NAME:}
+      duplicate-policy: ${ALIYUN_PNVS_SMS_DUPLICATE_POLICY:1}
+      interval-seconds: ${ALIYUN_PNVS_SMS_INTERVAL_SECONDS:${app.sms.cooldown-seconds}}
+      return-verify-code: ${ALIYUN_PNVS_SMS_RETURN_VERIFY_CODE:false}
+      auto-retry: ${ALIYUN_PNVS_SMS_AUTO_RETRY:1}
+      request-timeout-ms: ${ALIYUN_PNVS_SMS_REQUEST_TIMEOUT_MS:6000}
   storage:
     minio:
       endpoint: http://localhost:9000
       access-key: minioadmin
       secret-key: minioadmin
       bucket: rangwaz-media
-      object-url-prefix: /media/object
+      object-url-prefix: ${APP_STORAGE_MINIO_OBJECT_URL_PREFIX:/media/object}
+  search:
+    elasticsearch-url: http://localhost:9200
+    index-name: rangwaz-images
+    connect-timeout-ms: 800
+    read-timeout-ms: 2500
+    reindex-batch-size: 500
+  content-safety:
+    enabled: true
+    text:
+      enabled: true
+    image:
+      enabled: true
+      sample-max-width: 160
+      high-skin-ratio: 0.68
+      high-largest-component-ratio: 0.40
+      medium-skin-ratio: 0.54
+      medium-largest-component-ratio: 0.34
+      center-skin-ratio: 0.52
+      lower-skin-ratio: 0.50
+    cloud:
+      enabled: ${CONTENT_SAFETY_CLOUD_ENABLED:false}
+      provider: ${CONTENT_SAFETY_CLOUD_PROVIDER:local-model}
+      fail-closed: ${CONTENT_SAFETY_CLOUD_FAIL_CLOSED:true}
+      model:
+        url: ${CONTENT_SAFETY_MODEL_URL:http://127.0.0.1:8093/moderate/image}
+        request-timeout-ms: ${CONTENT_SAFETY_MODEL_REQUEST_TIMEOUT_MS:8000}
+        max-base64-bytes: ${CONTENT_SAFETY_MODEL_MAX_BASE64_BYTES:8388608}
+      aliyun:
+        endpoint: ${ALIYUN_CONTENT_SAFETY_ENDPOINT:https://green-cip.cn-shanghai.aliyuncs.com/}
+        region-id: ${ALIYUN_CONTENT_SAFETY_REGION_ID:cn-shanghai}
+        access-key-id: ${ALIYUN_CONTENT_SAFETY_ACCESS_KEY_ID:${ALIYUN_SMS_ACCESS_KEY_ID:}}
+        access-key-secret: ${ALIYUN_CONTENT_SAFETY_ACCESS_KEY_SECRET:${ALIYUN_SMS_ACCESS_KEY_SECRET:}}
+        service: ${ALIYUN_CONTENT_SAFETY_SERVICE:baselineCheck}
+        request-timeout-ms: ${ALIYUN_CONTENT_SAFETY_REQUEST_TIMEOUT_MS:8000}
+        max-base64-bytes: ${ALIYUN_CONTENT_SAFETY_MAX_BASE64_BYTES:4194304}

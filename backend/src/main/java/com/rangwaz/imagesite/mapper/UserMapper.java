@@ -89,6 +89,15 @@ public interface UserMapper {
     void updateProfile(UserEntity user);
 
     /**
+     * Updates a user's password hash.
+     *
+     * @param id user id
+     * @param passwordHash new password hash
+     */
+    @Update("UPDATE app_users SET password_hash=#{passwordHash} WHERE id=#{id}")
+    void updatePassword(@Param("id") Long id, @Param("passwordHash") String passwordHash);
+
+    /**
      * Lists users that match a keyword.
      *
      * @param keyword search keyword

@@ -40,12 +40,18 @@ public class InteractionController {
      *
      * @param authorization authorization header
      * @param postId post id
+     * @param latitude optional latitude
+     * @param longitude optional longitude
+     * @param locationLabel optional human-readable location
      * @return toggle result
      */
     @PostMapping("/images/{imageId}/like/toggle")
     public ApiResponse<ApiDtos.ToggleResult> toggleLike(@RequestHeader(value = "Authorization", required = false) String authorization,
-                                                        @PathVariable Long imageId) {
-        return ApiResponse.ok(interactionService.toggleLike(authContext.requireUserId(authorization), imageId));
+                                                        @PathVariable Long imageId,
+                                                        @RequestParam(required = false) Double latitude,
+                                                        @RequestParam(required = false) Double longitude,
+                                                        @RequestParam(required = false) String locationLabel) {
+        return ApiResponse.ok(interactionService.toggleLike(authContext.requireUserId(authorization), imageId, latitude, longitude, locationLabel));
     }
 
     /**
@@ -53,12 +59,18 @@ public class InteractionController {
      *
      * @param authorization authorization header
      * @param postId post id
+     * @param latitude optional latitude
+     * @param longitude optional longitude
+     * @param locationLabel optional human-readable location
      * @return toggle result
      */
     @PostMapping("/images/{imageId}/favorite/toggle")
     public ApiResponse<ApiDtos.ToggleResult> toggleFavorite(@RequestHeader(value = "Authorization", required = false) String authorization,
-                                                            @PathVariable Long imageId) {
-        return ApiResponse.ok(interactionService.toggleFavorite(authContext.requireUserId(authorization), imageId));
+                                                            @PathVariable Long imageId,
+                                                            @RequestParam(required = false) Double latitude,
+                                                            @RequestParam(required = false) Double longitude,
+                                                            @RequestParam(required = false) String locationLabel) {
+        return ApiResponse.ok(interactionService.toggleFavorite(authContext.requireUserId(authorization), imageId, latitude, longitude, locationLabel));
     }
 
     /**

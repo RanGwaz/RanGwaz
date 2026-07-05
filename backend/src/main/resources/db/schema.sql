@@ -18,6 +18,8 @@ DROP TABLE IF EXISTS tags;
 DROP TABLE IF EXISTS categories;
 DROP TABLE IF EXISTS post_assets;
 DROP TABLE IF EXISTS posts;
+DROP TABLE IF EXISTS user_notifications;
+DROP TABLE IF EXISTS profile_update_reviews;
 DROP TABLE IF EXISTS app_users;
 SET FOREIGN_KEY_CHECKS = 1;
 
@@ -35,6 +37,38 @@ CREATE TABLE app_users (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   KEY idx_app_users_nickname (nickname),
   UNIQUE KEY uk_app_users_phone (phone)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE profile_update_reviews (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  nickname VARCHAR(80),
+  avatar_url VARCHAR(500),
+  background_url VARCHAR(500),
+  bio VARCHAR(500),
+  status VARCHAR(24) NOT NULL DEFAULT 'PENDING_REVIEW',
+  review_reason VARCHAR(500),
+  reviewed_at DATETIME,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_profile_reviews_user_status_time (user_id, status, created_at),
+  KEY idx_profile_reviews_status_time (status, created_at),
+  CONSTRAINT fk_profile_reviews_user FOREIGN KEY (user_id) REFERENCES app_users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE user_notifications (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  type VARCHAR(40) NOT NULL,
+  title VARCHAR(120) NOT NULL,
+  content VARCHAR(500),
+  target_type VARCHAR(40),
+  target_id BIGINT,
+  is_read TINYINT(1) NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_user_notifications_user_time (user_id, created_at),
+  KEY idx_user_notifications_user_read_time (user_id, is_read, created_at),
+  CONSTRAINT fk_user_notifications_user FOREIGN KEY (user_id) REFERENCES app_users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE categories (
@@ -80,6 +114,8 @@ CREATE TABLE images (
   hash VARCHAR(128),
   main_category_id BIGINT,
   status VARCHAR(24) NOT NULL DEFAULT 'PUBLISHED',
+  review_reason VARCHAR(500),
+  reviewed_at DATETIME,
   like_count INT NOT NULL DEFAULT 0,
   favorite_count INT NOT NULL DEFAULT 0,
   comment_count INT NOT NULL DEFAULT 0,
@@ -93,9 +129,11 @@ CREATE TABLE images (
   KEY idx_images_hash (hash),
   KEY idx_images_category (main_category_id),
   KEY idx_images_ratio (ratio),
+  KEY idx_images_author_status_time (author_id, status, created_at),
   KEY idx_images_feed (status, hot_score, published_at),
   KEY idx_images_status_time (status, created_at),
   KEY idx_images_status_published_id (status, published_at, id),
+  KEY idx_images_status_hot_published_id (status, hot_score, published_at, id),
   KEY idx_images_status_category_ratio_hot (status, main_category_id, ratio, hot_score, published_at, id),
   CONSTRAINT fk_images_author FOREIGN KEY (author_id) REFERENCES app_users(id),
   CONSTRAINT fk_images_category FOREIGN KEY (main_category_id) REFERENCES categories(id)
@@ -183,6 +221,7 @@ CREATE TABLE user_interactions (
 CREATE TABLE user_behaviors (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   user_id BIGINT,
+  visitor_id VARCHAR(64),
   image_id BIGINT NOT NULL,
   behavior_type VARCHAR(32) NOT NULL,
   scene VARCHAR(32),
@@ -190,15 +229,21 @@ CREATE TABLE user_behaviors (
   duration_ms INT,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   KEY idx_user_behaviors_user_time (user_id, created_at),
+  KEY idx_user_behaviors_visitor_time (visitor_id, created_at),
   KEY idx_user_behaviors_user_image_type_time (user_id, image_id, behavior_type, created_at),
+  KEY idx_user_behaviors_visitor_image_type_time (visitor_id, image_id, behavior_type, created_at),
   KEY idx_user_behaviors_image_type (image_id, behavior_type),
   KEY idx_user_behaviors_user_type_time_image (user_id, behavior_type, created_at, image_id),
+  KEY idx_user_behaviors_visitor_type_time_image (visitor_id, behavior_type, created_at, image_id),
+  KEY idx_user_behaviors_user_time_image_type (user_id, created_at, image_id, behavior_type),
+  KEY idx_user_behaviors_visitor_time_image_type (visitor_id, created_at, image_id, behavior_type),
   CONSTRAINT fk_user_behaviors_image FOREIGN KEY (image_id) REFERENCES images(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE feed_impressions (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   user_id BIGINT,
+  visitor_id VARCHAR(64),
   image_id BIGINT NOT NULL,
   scene VARCHAR(32) NOT NULL DEFAULT 'home',
   position_no INT,
@@ -206,6 +251,7 @@ CREATE TABLE feed_impressions (
   score DECIMAL(12,6),
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   KEY idx_feed_impressions_user_time (user_id, created_at),
+  KEY idx_feed_impressions_visitor_time (visitor_id, created_at),
   KEY idx_feed_impressions_image_time (image_id, created_at),
   CONSTRAINT fk_feed_impressions_user FOREIGN KEY (user_id) REFERENCES app_users(id) ON DELETE SET NULL,
   CONSTRAINT fk_feed_impressions_image FOREIGN KEY (image_id) REFERENCES images(id) ON DELETE CASCADE

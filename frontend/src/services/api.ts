@@ -3,12 +3,16 @@ import type {
   ApiResponse,
   AuthTokenResponse,
   CategoryView,
+  ClientIpResponse,
   CommentView,
   FollowStatus,
   ImageInteractionStatus,
   ImageView,
+  NotificationView,
   PageResponse,
+  ProfileReviewView,
   SearchResult,
+  SearchSuggestionResponse,
   SmsCodeResponse,
   TagView,
   ToggleResult,
@@ -17,6 +21,7 @@ import type {
   UserStats,
   UserSummary,
 } from '../types'
+import { getVisitorId } from '../utils/visitorIdentity'
 
 const TOKEN_KEY = 'rangwaz-token'
 
@@ -81,8 +86,11 @@ export const api = {
   sendSmsCode(payload: { phone: string; scene?: string }) {
     return request<SmsCodeResponse>('/auth/sms-code', { method: 'POST', body: JSON.stringify(payload) })
   },
-  phoneLogin(payload: { phone: string; code: string }) {
+  phoneLogin(payload: { phone: string; code: string; password?: string; passwordConfirm?: string }) {
     return request<AuthTokenResponse>('/auth/phone-login', { method: 'POST', body: JSON.stringify(payload) })
+  },
+  phonePasswordLogin(payload: { phone: string; password: string }) {
+    return request<AuthTokenResponse>('/auth/phone-password-login', { method: 'POST', body: JSON.stringify(payload) })
   },
   logout() {
     return request<void>('/auth/logout', { method: 'POST' })
@@ -90,10 +98,12 @@ export const api = {
   me() {
     return request<AuthTokenResponse>('/auth/me')
   },
-  homeFeed(page = 1, pageSize = 30, refreshSeed?: string, feedSessionId?: string) {
+  homeFeed(page = 1, pageSize = 30, refreshSeed?: string, feedSessionId?: string, visitorId = getVisitorId(), excludeIds: number[] = []) {
     const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) })
     if (refreshSeed) query.set('refreshSeed', refreshSeed)
     if (feedSessionId) query.set('feedSessionId', feedSessionId)
+    if (visitorId) query.set('visitorId', visitorId)
+    excludeIds.slice(0, 360).forEach((id) => query.append('excludeIds', String(id)))
     return request<PageResponse<ImageView>>(`/feed?${query.toString()}`)
   },
   similarImages(imageId: number, page = 1, size = 24) {
@@ -102,14 +112,18 @@ export const api = {
   imageDetail(imageId: number) {
     return request<ImageView>(`/images/${imageId}`)
   },
-  trackImageClick(imageId: number, scene = 'feed', position?: number) {
+  clientIp() {
+    return request<ClientIpResponse>('/users/client-ip')
+  },
+  trackImageClick(imageId: number, scene = 'feed', position?: number, visitorId = getVisitorId()) {
     const query = new URLSearchParams({ scene })
     if (position) query.set('position', String(position))
+    if (visitorId) query.set('visitorId', visitorId)
     return request<void>(`/images/${imageId}/click?${query.toString()}`, { method: 'POST' })
   },
-  trackBehaviors(events: Array<{ imageId: number; behaviorType: string; scene?: string; position?: number; duration?: number }>) {
+  trackBehaviors(events: Array<{ imageId: number; behaviorType: string; scene?: string; position?: number; duration?: number; visitorId?: string }>, visitorId = getVisitorId()) {
     if (events.length === 0) return Promise.resolve()
-    return request<void>('/behaviors/batch', { method: 'POST', body: JSON.stringify({ events }) })
+    return request<void>('/behaviors/batch', { method: 'POST', body: JSON.stringify({ visitorId, events }) })
   },
   trackImageShare(imageId: number) {
     return request<void>(`/images/${imageId}/share`, { method: 'POST' })
@@ -150,7 +164,13 @@ export const api = {
     return request<UserSummary>(`/users/${userId}`)
   },
   updateProfile(payload: { nickname: string; avatarUrl?: string; backgroundUrl?: string; bio?: string }) {
-    return request<UserSummary>('/users/me', { method: 'PUT', body: JSON.stringify(payload) })
+    return request<ProfileReviewView>('/users/me', { method: 'PUT', body: JSON.stringify(payload) })
+  },
+  profileReview() {
+    return request<ProfileReviewView | null>('/users/me/profile-review')
+  },
+  notifications(limit = 20) {
+    return request<NotificationView[]>(`/users/me/notifications?limit=${limit}`)
   },
   userStats(userId: number) {
     return request<UserStats>(`/users/${userId}/stats`)
@@ -158,8 +178,14 @@ export const api = {
   userImages(userId: number, limit = 30) {
     return request<ImageView[]>(`/users/${userId}/images?limit=${limit}`)
   },
+  userLikedImages(userId: number, limit = 12) {
+    return request<ImageView[]>(`/users/${userId}/liked-images?limit=${limit}`)
+  },
   search(keyword: string) {
     return request<SearchResult>(`/search?keyword=${encodeURIComponent(keyword)}`)
+  },
+  searchSuggestions(keyword = '') {
+    return request<SearchSuggestionResponse>(`/search/suggestions?keyword=${encodeURIComponent(keyword)}`)
   },
   trendingTopics(limit = 20) {
     return request<TopicView[]>(`/topics/trending?limit=${limit}`)

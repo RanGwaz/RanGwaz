@@ -1,0 +1,6 @@
+Do not store AccessKey credentials in this repository.
+
+Use environment variables instead:
+
+ALIYUN_PNVS_SMS_ACCESS_KEY_ID
+ALIYUN_PNVS_SMS_ACCESS_KEY_SECRET

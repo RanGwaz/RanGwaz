@@ -5,7 +5,17 @@ import { useNavigate } from 'react-router-dom'
 import { MasonryGrid } from '../components/MasonryGrid'
 import { api } from '../services/api'
 import type { ImageView } from '../types'
-import { clearFeedSession, readFeedSession, updateFeedScroll, writeFeedSession } from '../utils/feedSession'
+import {
+  clearFeedSession,
+  readFeedSession,
+  readRecentFeedIds,
+  readRecentInteractedIds,
+  rememberRecentFeedIds,
+  rememberRecentInteractedIds,
+  updateFeedScroll,
+  writeFeedSession,
+} from '../utils/feedSession'
+import { getVisitorId } from '../utils/visitorIdentity'
 
 const pageSize = 30
 
@@ -14,8 +24,24 @@ function createRefreshSeed() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
+function isBrowserReload() {
+  const navigation = performance.getEntriesByType?.('navigation')?.[0] as PerformanceNavigationTiming | undefined
+  return navigation?.type === 'reload'
+}
+
+function uniqueIds(ids: number[], limit = 320) {
+  const seen = new Set<number>()
+  return ids.filter((id) => {
+    if (!Number.isFinite(id) || id <= 0 || seen.has(id)) return false
+    seen.add(id)
+    return true
+  }).slice(0, limit)
+}
+
 export function FeedPage() {
-  const initialSessionRef = useRef(readFeedSession())
+  const initialSessionRef = useRef(isBrowserReload() ? null : readFeedSession())
+  const visitorIdRef = useRef(getVisitorId())
+  const feedSessionIdRef = useRef(initialSessionRef.current?.feedSessionId ?? createRefreshSeed())
   const refreshSeedRef = useRef(initialSessionRef.current?.refreshSeed ?? createRefreshSeed())
   const restoredScrollRef = useRef(false)
   const [images, setImages] = useState<ImageView[]>(() => initialSessionRef.current?.images ?? [])
@@ -28,9 +54,10 @@ export function FeedPage() {
   const sentinelRef = useRef<HTMLDivElement | null>(null)
   const loadingRef = useRef(false)
   const requestedPagesRef = useRef<Set<number>>(new Set())
+  const loadedImageIdsRef = useRef<Set<number>>(new Set(initialSessionRef.current?.images.map((image) => image.id) ?? []))
   const navigate = useNavigate()
 
-  const hasMore = loadedOnce && !exhausted && images.length < total
+  const hasMore = loadedOnce && !exhausted
 
   const loadPage = useCallback(async (targetPage: number, reset = false) => {
     if (loadingRef.current) return
@@ -42,23 +69,32 @@ export function FeedPage() {
     setError('')
 
     try {
-      const response = await api.homeFeed(targetPage, pageSize, refreshSeedRef.current, refreshSeedRef.current)
+      const excludeIds = targetPage === 1
+        ? uniqueIds([...readRecentInteractedIds(), ...readRecentFeedIds()])
+        : uniqueIds(Array.from(loadedImageIdsRef.current), 360)
+      const response = await api.homeFeed(targetPage, pageSize, refreshSeedRef.current, feedSessionIdRef.current, visitorIdRef.current, excludeIds)
       setTotal(response.total)
       setPage(targetPage + 1)
       setLoadedOnce(true)
-      setExhausted(response.records.length === 0 || targetPage * pageSize >= response.total)
+      setExhausted(response.records.length === 0)
 
       void api.trackBehaviors(response.records.map((image, index) => ({
         imageId: image.id,
         behaviorType: 'impression',
         scene: 'home',
         position: (targetPage - 1) * pageSize + index + 1,
-      }))).catch(() => undefined)
+      })), visitorIdRef.current).catch(() => undefined)
+
+      if (response.records.length > 0) {
+        rememberRecentFeedIds(response.records.map((image) => image.id))
+      }
 
       setImages((current) => {
         const base = reset ? [] : current
         const seen = new Set(base.map((image) => image.id))
-        return [...base, ...response.records.filter((image) => !seen.has(image.id))]
+        const next = [...base, ...response.records.filter((image) => !seen.has(image.id))]
+        loadedImageIdsRef.current = new Set(next.map((image) => image.id))
+        return next
       })
     } catch (reason) {
       requestedPagesRef.current.delete(targetPage)
@@ -75,7 +111,7 @@ export function FeedPage() {
   }, [loadPage])
 
   useEffect(() => {
-    writeFeedSession({ images, page, total, refreshSeed: refreshSeedRef.current, loadedOnce, exhausted, scrollY: window.scrollY })
+    writeFeedSession({ feedSessionId: feedSessionIdRef.current, images, page, total, refreshSeed: refreshSeedRef.current, loadedOnce, exhausted, scrollY: window.scrollY })
   }, [exhausted, images, loadedOnce, page, total])
 
   useEffect(() => {
@@ -119,17 +155,20 @@ export function FeedPage() {
 
   function openImage(image: ImageView) {
     const position = images.findIndex((item) => item.id === image.id) + 1
-    writeFeedSession({ images, page, total, refreshSeed: refreshSeedRef.current, loadedOnce, exhausted, scrollY: window.scrollY })
+    rememberRecentInteractedIds([image.id])
+    writeFeedSession({ feedSessionId: feedSessionIdRef.current, images, page, total, refreshSeed: refreshSeedRef.current, loadedOnce, exhausted, scrollY: window.scrollY })
     navigate(`/image/${image.id}`, { state: { previewImage: image, from: 'home' } })
-    void api.trackImageClick(image.id, 'home', position).catch(() => undefined)
+    void api.trackImageClick(image.id, 'home', position, visitorIdRef.current).catch(() => undefined)
   }
 
   function reloadFeed() {
     requestedPagesRef.current.clear()
     clearFeedSession()
+    feedSessionIdRef.current = createRefreshSeed()
     refreshSeedRef.current = createRefreshSeed()
     initialSessionRef.current = null
     restoredScrollRef.current = false
+    loadedImageIdsRef.current = new Set()
     setImages([])
     setTotal(0)
     setPage(1)

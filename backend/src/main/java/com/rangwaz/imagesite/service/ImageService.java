@@ -36,14 +36,46 @@ public interface ImageService {
     List<ApiDtos.ImageView> byUser(Long userId, int limit);
 
     /**
+     * Lists posts authored by a user, optionally including review-only rows for owner.
+     *
+     * @param userId author id
+     * @param limit maximum rows
+     * @param includeReviewRows whether pending/rejected rows should be included
+     * @return post views
+     */
+    List<ApiDtos.ImageView> byUser(Long userId, int limit, boolean includeReviewRows);
+
+    /**
+     * Lists posts in a moderation queue.
+     *
+     * @param status review status
+     * @param limit maximum rows
+     * @return post views
+     */
+    List<ApiDtos.ImageView> reviewQueue(String status, int limit);
+
+    /**
+     * Applies a manual image review decision.
+     *
+     * @param imageId image id
+     * @param request decision request
+     * @return image view
+     */
+    ApiDtos.ImageView decideImageReview(Long imageId, ApiDtos.ReviewDecisionRequest request);
+
+    /**
      * Tracks a post click.
      *
      * @param postId post id
      * @param viewerId optional viewer id
+     * @param visitorId optional visitor id
      * @param scene scene
      * @param position position
+     * @param latitude optional latitude
+     * @param longitude optional longitude
+     * @param locationLabel optional human-readable location
      */
-    void click(Long postId, Long viewerId, String scene, Integer position);
+    void click(Long postId, Long viewerId, String visitorId, String scene, Integer position, Double latitude, Double longitude, String locationLabel);
 
     /**
      * Tracks a share.

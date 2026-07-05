@@ -8,6 +8,7 @@ import lombok.Data;
 @Data
 public class UserBehaviorEntity {
     private Long userId;
+    private String visitorId;
     private Long imageId;
     private String behaviorType;
     private String scene;

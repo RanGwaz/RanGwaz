@@ -19,8 +19,8 @@ public interface BehaviorMapper {
      * @param behavior behavior entity
      */
     @Insert("""
-            INSERT INTO user_behaviors(user_id,image_id,behavior_type,scene,position_no,duration_ms)
-            VALUES(#{userId},#{imageId},#{behaviorType},#{scene},#{positionNo},#{durationMs})
+            INSERT INTO user_behaviors(user_id,visitor_id,image_id,behavior_type,scene,position_no,duration_ms)
+            VALUES(#{userId},#{visitorId},#{imageId},#{behaviorType},#{scene},#{positionNo},#{durationMs})
             """)
     void insert(UserBehaviorEntity behavior);
 
@@ -28,16 +28,18 @@ public interface BehaviorMapper {
      * Inserts an impression row for recommendation analytics.
      *
      * @param userId optional user id
+     * @param visitorId optional visitor id
      * @param imageId image id
      * @param scene feed scene
      * @param positionNo position in feed
      * @param source recommendation source
      */
     @Insert("""
-            INSERT INTO feed_impressions(user_id,image_id,scene,position_no,source)
-            VALUES(#{userId},#{imageId},#{scene},#{positionNo},#{source})
+            INSERT INTO feed_impressions(user_id,visitor_id,image_id,scene,position_no,source)
+            VALUES(#{userId},#{visitorId},#{imageId},#{scene},#{positionNo},#{source})
             """)
     void insertFeedImpression(@Param("userId") Long userId,
+                              @Param("visitorId") String visitorId,
                               @Param("imageId") Long imageId,
                               @Param("scene") String scene,
                               @Param("positionNo") Integer positionNo,
@@ -51,9 +53,14 @@ public interface BehaviorMapper {
      * @return image ids
      */
     @Select("""
+            <script>
             SELECT image_id
             FROM user_behaviors
-            WHERE user_id=#{userId}
+            WHERE
+              <choose>
+                <when test="userId != null">user_id=#{userId}</when>
+                <otherwise>visitor_id=#{visitorId}</otherwise>
+              </choose>
               AND behavior_type IN ('favorite','like','comment','share','click','view')
               AND created_at >= DATE_SUB(NOW(), INTERVAL 60 DAY)
             GROUP BY image_id
@@ -71,8 +78,11 @@ public interface BehaviorMapper {
               ) DESC,
               MAX(created_at) DESC
             LIMIT #{limit}
+            </script>
             """)
-    List<Long> findRecentPositiveImageIds(@Param("userId") Long userId, @Param("limit") int limit);
+    List<Long> findRecentPositiveImageIds(@Param("userId") Long userId,
+                                          @Param("visitorId") String visitorId,
+                                          @Param("limit") int limit);
 
     /**
      * Finds the recent behavior sequence for sequence-aware recall.
@@ -82,37 +92,53 @@ public interface BehaviorMapper {
      * @return recent behavior events
      */
     @Select("""
+            <script>
             SELECT image_id AS imageId,
                    behavior_type AS behaviorType,
                    COALESCE(duration_ms,0) AS durationMs,
                    TIMESTAMPDIFF(HOUR,created_at,NOW()) AS ageHours
             FROM user_behaviors
-            WHERE user_id=#{userId}
+            WHERE
+              <choose>
+                <when test="userId != null">user_id=#{userId}</when>
+                <otherwise>visitor_id=#{visitorId}</otherwise>
+              </choose>
               AND behavior_type IN ('favorite','like','comment','share','click','view','impression')
               AND created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)
             ORDER BY created_at DESC,id DESC
             LIMIT #{limit}
+            </script>
             """)
-    List<BehaviorSequenceRow> findRecentBehaviorSequence(@Param("userId") Long userId, @Param("limit") int limit);
+    List<BehaviorSequenceRow> findRecentBehaviorSequence(@Param("userId") Long userId,
+                                                         @Param("visitorId") String visitorId,
+                                                         @Param("limit") int limit);
 
     /**
-     * Finds recently seen image ids for lightweight feed de-duplication.
+     * Finds recently seen or engaged image ids for lightweight feed de-duplication.
      *
      * @param userId user id
      * @param limit maximum rows
      * @return image ids
      */
     @Select("""
+            <script>
             SELECT image_id
             FROM user_behaviors
-            WHERE user_id=#{userId}
-              AND behavior_type IN ('impression','click','view')
+            WHERE
+              <choose>
+                <when test="userId != null">user_id=#{userId}</when>
+                <otherwise>visitor_id=#{visitorId}</otherwise>
+              </choose>
+              AND behavior_type IN ('impression','click','view','like','favorite','comment','share','unlike','unfavorite')
               AND created_at >= DATE_SUB(NOW(), INTERVAL 14 DAY)
             GROUP BY image_id
             ORDER BY MAX(created_at) DESC
             LIMIT #{limit}
+            </script>
             """)
-    List<Long> findRecentSeenImageIds(@Param("userId") Long userId, @Param("limit") int limit);
+    List<Long> findRecentSeenImageIds(@Param("userId") Long userId,
+                                      @Param("visitorId") String visitorId,
+                                      @Param("limit") int limit);
 
     /**
      * Recent user event row used by the model recall adapter.

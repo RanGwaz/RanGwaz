@@ -9,10 +9,14 @@ import com.rangwaz.imagesite.mapper.ImageContentMapper;
 import com.rangwaz.imagesite.mapper.TopicMapper;
 import com.rangwaz.imagesite.mapper.UserMapper;
 import com.rangwaz.imagesite.messaging.BehaviorEventPublisher;
+import com.rangwaz.imagesite.service.ContentSafetyService;
 import com.rangwaz.imagesite.service.ImageMetadataService;
 import com.rangwaz.imagesite.service.ImageService;
+import com.rangwaz.imagesite.service.SearchIndexService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
@@ -25,6 +29,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Locale;
 import java.util.stream.Collectors;
 
 /**
@@ -39,6 +44,8 @@ public class ImageServiceImpl implements ImageService {
     private final UserServiceImpl userService;
     private final TopicServiceImpl topicService;
     private final ImageMetadataService imageMetadataService;
+    private final SearchIndexService searchIndexService;
+    private final ContentSafetyService contentSafetyService;
 
     /**
      * Creates the post service.
@@ -50,6 +57,8 @@ public class ImageServiceImpl implements ImageService {
      * @param userService user service
      * @param topicService topic service
      * @param imageMetadataService image metadata service
+     * @param searchIndexService search index service
+     * @param contentSafetyService content safety service
      */
     public ImageServiceImpl(ImageContentMapper imageContentMapper,
                            TopicMapper topicMapper,
@@ -57,7 +66,9 @@ public class ImageServiceImpl implements ImageService {
                            BehaviorEventPublisher behaviorEventPublisher,
                            UserServiceImpl userService,
                            TopicServiceImpl topicService,
-                           ImageMetadataService imageMetadataService) {
+                           ImageMetadataService imageMetadataService,
+                           SearchIndexService searchIndexService,
+                           ContentSafetyService contentSafetyService) {
         this.imageContentMapper = imageContentMapper;
         this.topicMapper = topicMapper;
         this.userMapper = userMapper;
@@ -65,6 +76,8 @@ public class ImageServiceImpl implements ImageService {
         this.userService = userService;
         this.topicService = topicService;
         this.imageMetadataService = imageMetadataService;
+        this.searchIndexService = searchIndexService;
+        this.contentSafetyService = contentSafetyService;
     }
 
     /**
@@ -77,6 +90,7 @@ public class ImageServiceImpl implements ImageService {
     @Override
     @Transactional
     public ApiDtos.ImageView create(Long authorId, ApiDtos.CreateImageRequest request) {
+        contentSafetyService.requireSafeText(postText(request));
         List<ApiDtos.ImageAssetRequest> assets = normalizeAssets(request);
         if (assets.isEmpty()) throw new BusinessException("IMAGE_REQUIRED", "image required");
         ImageEntity image = toImageEntity(authorId, request, assets.get(0));
@@ -88,6 +102,8 @@ public class ImageServiceImpl implements ImageService {
             topicMapper.bindImage(image.getId(), topic.getId());
             topicMapper.incrementPostCount(topic.getId());
         }
+        indexAfterCommit(image.getId());
+        userService.notifyUser(authorId, "IMAGE_PUBLISHED", "作品已发布", "图片已完成自动安全审核，并展示在公开主页中。", "IMAGE", image.getId());
         return toView(imageContentMapper.findById(image.getId()), "published");
     }
 
@@ -103,7 +119,7 @@ public class ImageServiceImpl implements ImageService {
         requirePost(postId);
         imageContentMapper.incrementView(postId);
         if (viewerId != null) {
-            trackBehavior(viewerId, postId, "view", "detail", null, null);
+            trackBehavior(viewerId, null, postId, "view", "detail", null, null);
         }
         return toView(imageContentMapper.findById(postId), "detail");
     }
@@ -120,19 +136,55 @@ public class ImageServiceImpl implements ImageService {
         return toViews(imageContentMapper.findByAuthor(userId, Math.max(1, Math.min(limit, 200))), null);
     }
 
+    @Override
+    public List<ApiDtos.ImageView> byUser(Long userId, int limit, boolean includeReviewRows) {
+        int safeLimit = Math.max(1, Math.min(limit, 200));
+        List<ImageEntity> rows = includeReviewRows
+                ? imageContentMapper.findAllByAuthor(userId, safeLimit)
+                : imageContentMapper.findByAuthor(userId, safeLimit);
+        return toViews(rows, null);
+    }
+
+    @Override
+    public List<ApiDtos.ImageView> reviewQueue(String status, int limit) {
+        int safeLimit = Math.max(1, Math.min(limit, 200));
+        return toViews(imageContentMapper.findByStatus(normalizeQueueStatus(status), safeLimit), "review-queue");
+    }
+
+    @Override
+    @Transactional
+    public ApiDtos.ImageView decideImageReview(Long imageId, ApiDtos.ReviewDecisionRequest request) {
+        ImageEntity image = imageContentMapper.findAnyById(imageId);
+        if (image == null) throw new BusinessException("IMAGE_NOT_FOUND", "作品不存在");
+        String status = normalizeDecisionStatus(request.status());
+        String reason = StringUtils.hasText(request.reason()) ? request.reason().trim() : null;
+        imageContentMapper.updateReviewStatus(imageId, status, reason);
+        if ("PUBLISHED".equals(status)) {
+            indexAfterCommit(imageId);
+            userService.notifyUser(image.getAuthorId(), "IMAGE_REVIEW_APPROVED", "作品审核通过", "你的作品已公开展示。", "IMAGE", imageId);
+        } else {
+            userService.notifyUser(image.getAuthorId(), "IMAGE_REVIEW_REJECTED", "作品审核未通过", StringUtils.hasText(reason) ? reason : "作品内容不符合审核要求。", "IMAGE", imageId);
+        }
+        return toView(imageContentMapper.findAnyById(imageId), "review-decision");
+    }
+
     /**
      * Tracks an image content click.
      *
      * @param postId image id exposed as post id
      * @param viewerId optional user id
+     * @param visitorId optional visitor id
      * @param scene scene
      * @param position position
+     * @param latitude optional latitude
+     * @param longitude optional longitude
+     * @param locationLabel optional human-readable location
      */
     @Override
-    public void click(Long postId, Long viewerId, String scene, Integer position) {
+    public void click(Long postId, Long viewerId, String visitorId, String scene, Integer position, Double latitude, Double longitude, String locationLabel) {
         requirePost(postId);
         imageContentMapper.incrementView(postId);
-        trackBehavior(viewerId, postId, "click", scene, position, null);
+        trackBehavior(viewerId, visitorId, postId, "click", scene, position, null, latitude, longitude, locationLabel);
     }
 
     /**
@@ -229,14 +281,42 @@ public class ImageServiceImpl implements ImageService {
      * Tracks a recommendation behavior event.
      *
      * @param userId optional user id
+     * @param visitorId optional visitor id
      * @param postId image id exposed as post id
      * @param type behavior type
      * @param scene scene
      * @param position position
      * @param duration duration
      */
-    public void trackBehavior(Long userId, Long postId, String type, String scene, Integer position, Integer duration) {
-        behaviorEventPublisher.publish(userId, postId, type, scene, position, duration);
+    public void trackBehavior(Long userId, String visitorId, Long postId, String type, String scene, Integer position, Integer duration) {
+        behaviorEventPublisher.publish(userId, visitorId, postId, type, scene, position, duration);
+    }
+
+    /**
+     * Tracks a recommendation behavior event with optional geolocation context.
+     *
+     * @param userId optional user id
+     * @param visitorId optional visitor id
+     * @param postId image id exposed as post id
+     * @param type behavior type
+     * @param scene scene
+     * @param position position
+     * @param duration duration
+     * @param latitude optional latitude
+     * @param longitude optional longitude
+     * @param locationLabel optional human-readable location
+     */
+    public void trackBehavior(Long userId,
+                              String visitorId,
+                              Long postId,
+                              String type,
+                              String scene,
+                              Integer position,
+                              Integer duration,
+                              Double latitude,
+                              Double longitude,
+                              String locationLabel) {
+        behaviorEventPublisher.publish(userId, visitorId, postId, type, scene, position, duration, latitude, longitude, locationLabel);
     }
 
     private ApiDtos.ImageView toView(ImageEntity image,
@@ -265,7 +345,9 @@ public class ImageServiceImpl implements ImageService {
                 image.getShareCount(),
                 image.getViewCount(),
                 reason,
-                image.getPublishedAt()
+                image.getPublishedAt(),
+                image.getStatus(),
+                image.getReviewReason()
         );
     }
 
@@ -288,7 +370,7 @@ public class ImageServiceImpl implements ImageService {
     private ImageEntity toImageEntity(Long authorId, ApiDtos.CreateImageRequest request, ApiDtos.ImageAssetRequest asset) {
         ImageEntity image = new ImageEntity();
         image.setAuthorId(authorId);
-        image.setTitle(request.title().trim());
+        image.setTitle(StringUtils.hasText(request.title()) ? request.title().trim() : "");
         image.setContent(StringUtils.hasText(request.content()) ? request.content().trim() : "");
         image.setPostType(StringUtils.hasText(request.postType()) ? request.postType() : "image");
         image.setDescription(null);
@@ -303,6 +385,7 @@ public class ImageServiceImpl implements ImageService {
         image.setHash(asset.hash());
         image.setMainCategoryId(null);
         image.setStatus("PUBLISHED");
+        image.setReviewReason(null);
         image.setLikeCount(0);
         image.setFavoriteCount(0);
         image.setCommentCount(0);
@@ -311,6 +394,19 @@ public class ImageServiceImpl implements ImageService {
         image.setHotScore(BigDecimal.ZERO);
         image.setPublishedAt(LocalDateTime.now());
         return image;
+    }
+
+    private void indexAfterCommit(Long imageId) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    searchIndexService.indexImage(imageId);
+                }
+            });
+            return;
+        }
+        searchIndexService.indexImage(imageId);
     }
 
     private String ratioLabel(Integer width, Integer height) {
@@ -353,6 +449,18 @@ public class ImageServiceImpl implements ImageService {
         return assets;
     }
 
+    private String postText(ApiDtos.CreateImageRequest request) {
+        List<String> values = new ArrayList<>();
+        values.add(request.title());
+        values.add(request.content());
+        if (!CollectionUtils.isEmpty(request.tags())) values.addAll(request.tags());
+        if (!CollectionUtils.isEmpty(request.topics())) values.addAll(request.topics());
+        return values.stream()
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .collect(Collectors.joining(" "));
+    }
+
     private List<String> uniqueTopics(ApiDtos.CreateImageRequest request) {
         LinkedHashSet<String> topics = new LinkedHashSet<>();
         if (!CollectionUtils.isEmpty(request.tags())) topics.addAll(request.tags());
@@ -364,5 +472,19 @@ public class ImageServiceImpl implements ImageService {
                 .filter(StringUtils::hasText)
                 .limit(10)
                 .toList();
+    }
+
+    private String normalizeDecisionStatus(String rawStatus) {
+        String status = rawStatus == null ? "" : rawStatus.trim().toUpperCase(Locale.ROOT);
+        if ("APPROVED".equals(status)) return "PUBLISHED";
+        if ("PUBLISHED".equals(status)) return "PUBLISHED";
+        if ("REJECTED".equals(status)) return "REJECTED";
+        throw new BusinessException("BAD_REVIEW_STATUS", "审核状态只能是 APPROVED 或 REJECTED");
+    }
+
+    private String normalizeQueueStatus(String rawStatus) {
+        String status = StringUtils.hasText(rawStatus) ? rawStatus.trim().toUpperCase(Locale.ROOT) : "PENDING_REVIEW";
+        if ("PENDING_REVIEW".equals(status) || "PUBLISHED".equals(status) || "REJECTED".equals(status)) return status;
+        throw new BusinessException("BAD_REVIEW_STATUS", "审核队列状态只能是 PENDING_REVIEW、PUBLISHED 或 REJECTED");
     }
 }

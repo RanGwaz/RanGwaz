@@ -1,52 +1,53 @@
 /** Search page for images, users, and topics. */
-import { Search } from 'lucide-react'
-import { FormEvent, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { MasonryGrid } from '../components/MasonryGrid'
 import { api } from '../services/api'
-import type { ImageView, SearchResult } from '../types'
+import type { ImageView, SearchResult, SearchSuggestionItem } from '../types'
 import { avatarUrl, countText } from '../utils/format'
 
 export function SearchPage() {
   const [params] = useSearchParams()
   const navigate = useNavigate()
-  const [keyword, setKeyword] = useState(params.get('q') || '')
-  const [result, setResult] = useState<SearchResult>({ users: [], images: [], topics: [] })
+  const keyword = params.get('q') || ''
+  const [result, setResult] = useState<SearchResult>({ users: [], images: [], topics: [], related: [] })
   const [loading, setLoading] = useState(false)
+  const related = result.related ?? []
 
   useEffect(() => {
-    const q = params.get('q') || ''
-    setKeyword(q)
-    if (!q.trim()) {
-      setResult({ users: [], images: [], topics: [] })
+    if (!keyword.trim()) {
+      setResult({ users: [], images: [], topics: [], related: [] })
+      setLoading(false)
       return
     }
     setLoading(true)
-    api.search(q).then(setResult).finally(() => setLoading(false))
-  }, [params])
-
-  function submit(event: FormEvent) {
-    event.preventDefault()
-    if (keyword.trim()) navigate(`/discover?q=${encodeURIComponent(keyword.trim())}`)
-  }
+    api.search(keyword).then(setResult).finally(() => setLoading(false))
+  }, [keyword])
 
   function openImage(target: ImageView) {
     navigate(`/image/${target.id}`, { state: { previewImage: target, from: 'search' } })
     void api.trackImageClick(target.id, 'search').catch(() => undefined)
   }
 
+  function pickRelated(item: SearchSuggestionItem) {
+    navigate(`/discover?q=${encodeURIComponent(item.keyword)}`)
+  }
+
   return (
     <div className="search-page">
-      <header className="search-page__head">
-        <form className="search-page__search" onSubmit={submit}>
-          <Search size={20} />
-          <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索图片、用户或标签" />
-          <button type="submit">搜索</button>
-        </form>
-        <p>{keyword.trim() ? `搜索 "${keyword.trim()}"` : '输入关键词发现图片、用户和标签'}</p>
-      </header>
       <main className="search-page__body">
         {loading && <section className="search-page__state">正在搜索...</section>}
+        {!loading && related.length > 0 && (
+          <section className="search-page__section search-page__section--plain">
+            <div className="search-page__chips">
+              {related.map((item) => (
+                <button key={`${item.kind}-${item.keyword}`} type="button" onClick={() => pickRelated(item)}>
+                  {item.keyword}
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
         {!loading && result.topics.length > 0 && (
           <section className="search-page__section">
             <h2>标签</h2>

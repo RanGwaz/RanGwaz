@@ -21,9 +21,44 @@ public interface UserService {
      *
      * @param userId current user id
      * @param request update request
-     * @return updated summary
+     * @return created review request
      */
-    ApiDtos.UserSummary updateProfile(Long userId, ApiDtos.UpdateProfileRequest request);
+    ApiDtos.ProfileReviewView updateProfile(Long userId, ApiDtos.UpdateProfileRequest request);
+
+    /**
+     * Gets current user's latest profile review request.
+     *
+     * @param userId user id
+     * @return latest review
+     */
+    ApiDtos.ProfileReviewView latestProfileReview(Long userId);
+
+    /**
+     * Lists profile update requests in a moderation queue.
+     *
+     * @param status review status
+     * @param limit maximum rows
+     * @return review views
+     */
+    List<ApiDtos.ProfileReviewView> profileReviewQueue(String status, int limit);
+
+    /**
+     * Applies a manual profile review decision.
+     *
+     * @param reviewId review id
+     * @param request decision request
+     * @return review view
+     */
+    ApiDtos.ProfileReviewView decideProfileReview(Long reviewId, ApiDtos.ReviewDecisionRequest request);
+
+    /**
+     * Lists recent user notifications.
+     *
+     * @param userId user id
+     * @param limit maximum rows
+     * @return notifications
+     */
+    List<ApiDtos.NotificationView> notifications(Long userId, int limit);
 
     /**
      * Gets user statistics.

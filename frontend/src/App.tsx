@@ -6,6 +6,7 @@ import { AuthModal } from './components/AuthModal'
 import { LaunchSplash } from './components/LaunchSplash'
 import { DetailPage } from './pages/DetailPage'
 import { FeedPage } from './pages/FeedPage'
+import { ProfileEditPage } from './pages/ProfileEditPage'
 import { ProfilePage } from './pages/ProfilePage'
 import { PublishPage } from './pages/PublishPage'
 import { SearchPage } from './pages/SearchPage'
@@ -26,6 +27,7 @@ export function App() {
             <Route path="/discover" element={<SearchPage />} />
             <Route path="/publish" element={<PublishPage />} />
             <Route path="/profile" element={<ProfilePage />} />
+            <Route path="/profile/edit" element={<ProfileEditPage />} />
             <Route path="/profile/:id" element={<ProfilePage />} />
             <Route path="*" element={<Navigate to="/home" replace />} />
           </Routes>

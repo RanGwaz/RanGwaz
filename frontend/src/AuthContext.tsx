@@ -1,7 +1,7 @@
 /** Authentication context for token-backed sessions. */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { api, getToken, setToken } from './services/api'
-import type { UserSummary } from './types'
+import type { SmsCodeResponse, UserSummary } from './types'
 
 interface AuthContextValue {
   user: UserSummary | null
@@ -11,8 +11,9 @@ interface AuthContextValue {
   openAuth: () => void
   closeAuth: () => void
   login: (username: string, password: string) => Promise<void>
-  sendSmsCode: (phone: string) => Promise<string>
-  loginWithPhone: (phone: string, code: string) => Promise<void>
+  sendSmsCode: (phone: string) => Promise<SmsCodeResponse>
+  loginWithPhone: (phone: string, code: string, password?: string, passwordConfirm?: string) => Promise<void>
+  loginWithPhonePassword: (phone: string, password: string) => Promise<void>
   register: (username: string, password: string, nickname: string) => Promise<void>
   logout: () => Promise<void>
   updateUser: (user: UserSummary) => void
@@ -51,12 +52,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const sendSmsCode = useCallback(async (phone: string) => {
-    const response = await api.sendSmsCode({ phone, scene: 'login' })
-    return response.mockCode || ''
+    return api.sendSmsCode({ phone, scene: 'login' })
   }, [])
 
-  const loginWithPhone = useCallback(async (phone: string, code: string) => {
-    const response = await api.phoneLogin({ phone, code })
+  const loginWithPhone = useCallback(async (phone: string, code: string, password?: string, passwordConfirm?: string) => {
+    const response = await api.phoneLogin({ phone, code, password, passwordConfirm })
+    setToken(response.accessToken)
+    setTokenState(response.accessToken)
+    setUser(response.me)
+    setAuthOpen(false)
+  }, [])
+
+  const loginWithPhonePassword = useCallback(async (phone: string, password: string) => {
+    const response = await api.phonePasswordLogin({ phone, password })
     setToken(response.accessToken)
     setTokenState(response.accessToken)
     setUser(response.me)
@@ -91,10 +99,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     login,
     sendSmsCode,
     loginWithPhone,
+    loginWithPhonePassword,
     register,
     logout,
     updateUser,
-  }), [authOpen, closeAuth, login, loginWithPhone, logout, openAuth, ready, register, sendSmsCode, token, updateUser, user])
+  }), [authOpen, closeAuth, login, loginWithPhone, loginWithPhonePassword, logout, openAuth, ready, register, sendSmsCode, token, updateUser, user])
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

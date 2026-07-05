@@ -1,75 +1,49 @@
-# 手机号登录与短信服务配置
+# 手机号登录与号码认证短信配置
 
-当前项目已经接入手机号验证码登录的前后端接口：
+当前项目支持两种手机号登录方式：
 
 ```text
+POST /auth/phone-password-login
 POST /auth/sms-code
 POST /auth/phone-login
 ```
 
-默认配置是本地 mock 模式，后端会把验证码返回给前端并打印到控制台，方便开发调试，不会真的发短信。
+推荐用户日常使用“手机号 + 密码”登录。验证码登录主要用于首次注册，或用户选择短信验证码登录的场景。
+
+## 登录体验
+
+1. 密码登录：输入手机号和密码，不发送短信。
+2. 验证码登录：已注册手机号输入短信验证码即可登录，不强制修改密码。
+3. 新手机号注册：先获取验证码，验证码正确后必须设置 6-64 位密码，并再次输入确认密码。
+4. 新手机号只有在验证码正确、两次密码一致时才会注册成功。
+5. 数据库层通过 `uk_app_users_phone` 唯一索引保证一个手机号只能注册一个账号。
 
 ## 本地开发
-
-`backend/src/main/resources/application.yml` 默认：
-
-```yaml
-app:
-  sms:
-    mock: true
-    dev-code: ""
-    code-ttl-seconds: 300
-    cooldown-seconds: 60
-```
-
-如果想固定验证码，设置：
 
 ```yaml
 app:
   sms:
     mock: true
     dev-code: "123456"
+    code-ttl-seconds: 300
+    cooldown-seconds: 60
 ```
 
-## 阿里云短信准备
+## 阿里云号码认证短信
 
-阿里云短信服务正式发送前需要：
+当前真实发送接入的是号码认证服务里的短信认证接口，不是标准短信服务 `Dysmsapi.SendSms`：
 
-1. 注册阿里云账号并完成企业实名认证。
-2. 开通短信服务。
-3. 创建 RAM 用户并创建 AccessKey。
-4. 申请短信签名 `SignName`。
-5. 申请验证码短信模板 `TemplateCode`，模板变量建议使用 `${code}`。
+```text
+Dypnsapi.SendSmsVerifyCode
+```
 
-官方文档：
+当前项目默认使用签名 `速通互联验证码`、登录/注册模板 Code `100001`。
 
-- https://help.aliyun.com/zh/sms/getting-started/get-started-with-sms
-- https://help.aliyun.com/zh/sms/getting-started/use-sms-api
-- https://api.aliyun.com/document/Dysmsapi/2017-05-25/SendSms
-
-## 推荐环境变量
-
-不要把密钥写进代码，建议用环境变量：
+推荐使用环境变量，不要把密钥写进代码或文档：
 
 ```powershell
-$env:ALIYUN_SMS_ACCESS_KEY_ID="你的 AccessKey ID"
-$env:ALIYUN_SMS_ACCESS_KEY_SECRET="你的 AccessKey Secret"
-$env:ALIYUN_SMS_SIGN_NAME="你的短信签名"
-$env:ALIYUN_SMS_TEMPLATE_CODE="SMS_你的模板CODE"
+$env:ALIYUN_PNVS_SMS_ACCESS_KEY_ID="你的 AccessKey ID"
+$env:ALIYUN_PNVS_SMS_ACCESS_KEY_SECRET="你的 AccessKey Secret"
+$env:ALIYUN_PNVS_SMS_SIGN_NAME="速通互联验证码"
+$env:ALIYUN_PNVS_SMS_TEMPLATE_CODE="100001"
 ```
-
-对应配置已经预留在 `application.yml`：
-
-```yaml
-app:
-  sms:
-    mock: true
-    provider: aliyun
-    aliyun:
-      access-key-id: ${ALIYUN_SMS_ACCESS_KEY_ID:}
-      access-key-secret: ${ALIYUN_SMS_ACCESS_KEY_SECRET:}
-      sign-name: ${ALIYUN_SMS_SIGN_NAME:}
-      template-code: ${ALIYUN_SMS_TEMPLATE_CODE:}
-```
-
-正式发送前再把 `mock` 改成 `false`，并接入具体短信 SDK 或 HTTP 发送适配器。

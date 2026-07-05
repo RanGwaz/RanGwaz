@@ -20,6 +20,7 @@ public interface RecommendationMapper {
      * @return image rows
      */
     @Select("""
+            <script>
             WITH seed_events AS (
               SELECT ub.image_id,
                      MAX(
@@ -35,7 +36,11 @@ public interface RecommendationMapper {
                      ) AS behavior_weight,
                      MAX(ub.created_at) AS latest_at
               FROM user_behaviors ub
-              WHERE ub.user_id=#{userId}
+              WHERE
+                <choose>
+                  <when test="userId != null">ub.user_id=#{userId}</when>
+                  <otherwise>ub.visitor_id=#{visitorId}</otherwise>
+                </choose>
                 AND ub.behavior_type IN ('favorite','like','comment','share','click','view')
                 AND ub.created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)
               GROUP BY ub.image_id
@@ -64,8 +69,11 @@ public interface RecommendationMapper {
               i.published_at DESC,
               i.id DESC
             LIMIT #{size}
+            </script>
             """)
-    List<ImageEntity> selectUserTagRecall(@Param("userId") Long userId, @Param("size") int size);
+    List<ImageEntity> selectUserTagRecall(@Param("userId") Long userId,
+                                          @Param("visitorId") String visitorId,
+                                          @Param("size") int size);
 
     /**
      * Recalls images from categories in the user's positive behavior history.
@@ -75,6 +83,7 @@ public interface RecommendationMapper {
      * @return image rows
      */
     @Select("""
+            <script>
             WITH seed_events AS (
               SELECT ub.image_id,
                      MAX(
@@ -90,7 +99,11 @@ public interface RecommendationMapper {
                      ) AS behavior_weight,
                      MAX(ub.created_at) AS latest_at
               FROM user_behaviors ub
-              WHERE ub.user_id=#{userId}
+              WHERE
+                <choose>
+                  <when test="userId != null">ub.user_id=#{userId}</when>
+                  <otherwise>ub.visitor_id=#{visitorId}</otherwise>
+                </choose>
                 AND ub.behavior_type IN ('favorite','like','comment','share','click','view')
                 AND ub.created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)
               GROUP BY ub.image_id
@@ -118,8 +131,11 @@ public interface RecommendationMapper {
               i.published_at DESC,
               i.id DESC
             LIMIT #{size}
+            </script>
             """)
-    List<ImageEntity> selectUserCategoryRecall(@Param("userId") Long userId, @Param("size") int size);
+    List<ImageEntity> selectUserCategoryRecall(@Param("userId") Long userId,
+                                               @Param("visitorId") String visitorId,
+                                               @Param("size") int size);
 
     /**
      * Recalls images from lightweight topics attached to the user's positive behavior history.
@@ -129,6 +145,7 @@ public interface RecommendationMapper {
      * @return image rows
      */
     @Select("""
+            <script>
             WITH seed_events AS (
               SELECT ub.image_id,
                      MAX(
@@ -144,7 +161,11 @@ public interface RecommendationMapper {
                      ) AS behavior_weight,
                      MAX(ub.created_at) AS latest_at
               FROM user_behaviors ub
-              WHERE ub.user_id=#{userId}
+              WHERE
+                <choose>
+                  <when test="userId != null">ub.user_id=#{userId}</when>
+                  <otherwise>ub.visitor_id=#{visitorId}</otherwise>
+                </choose>
                 AND ub.behavior_type IN ('favorite','like','comment','share','click','view')
                 AND ub.created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)
               GROUP BY ub.image_id
@@ -173,8 +194,134 @@ public interface RecommendationMapper {
               i.published_at DESC,
               i.id DESC
             LIMIT #{size}
+            </script>
             """)
-    List<ImageEntity> selectUserTopicRecall(@Param("userId") Long userId, @Param("size") int size);
+    List<ImageEntity> selectUserTopicRecall(@Param("userId") Long userId,
+                                            @Param("visitorId") String visitorId,
+                                            @Param("size") int size);
+
+    /**
+     * Recalls images from tags, topics, and categories using one shared seed-event scan.
+     *
+     * @param userId user id
+     * @param visitorId anonymous visitor id
+     * @param size maximum rows
+     * @return image rows
+     */
+    @Select("""
+            <script>
+            WITH seed_events AS (
+              SELECT ub.image_id,
+                     MAX(
+                       CASE ub.behavior_type
+                         WHEN 'favorite' THEN 60
+                         WHEN 'like' THEN 45
+                         WHEN 'comment' THEN 40
+                         WHEN 'share' THEN 40
+                         WHEN 'click' THEN 25
+                         WHEN 'view' THEN 15
+                         ELSE 1
+                       END
+                     ) AS behavior_weight,
+                     MAX(ub.created_at) AS latest_at
+              FROM user_behaviors ub
+              WHERE
+                <choose>
+                  <when test="userId != null">ub.user_id=#{userId}</when>
+                  <otherwise>ub.visitor_id=#{visitorId}</otherwise>
+                </choose>
+                AND ub.behavior_type IN ('favorite','like','comment','share','click','view')
+                AND ub.created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)
+              GROUP BY ub.image_id
+              ORDER BY behavior_weight DESC, latest_at DESC
+              LIMIT 80
+            ),
+            seed_tags AS (
+              SELECT it.tag_id,
+                     SUM(seed_events.behavior_weight * COALESCE(it.confidence,1)) AS affinity
+              FROM seed_events
+              JOIN image_tags it ON it.image_id=seed_events.image_id
+              GROUP BY it.tag_id
+              ORDER BY affinity DESC
+              LIMIT 80
+            ),
+            tag_candidates AS (
+              SELECT it.image_id,
+                     SUM(seed_tags.affinity * COALESCE(it.confidence,1)) AS score
+              FROM seed_tags
+              JOIN image_tags it ON it.tag_id=seed_tags.tag_id
+              JOIN images i ON i.id=it.image_id AND i.status='PUBLISHED'
+              LEFT JOIN seed_events ON seed_events.image_id=i.id
+              WHERE seed_events.image_id IS NULL
+              GROUP BY it.image_id
+              ORDER BY score DESC
+              LIMIT #{size}
+            ),
+            seed_topics AS (
+              SELECT it.topic_id,
+                     SUM(seed_events.behavior_weight) AS affinity
+              FROM seed_events
+              JOIN image_topics it ON it.image_id=seed_events.image_id
+              GROUP BY it.topic_id
+              ORDER BY affinity DESC
+              LIMIT 50
+            ),
+            topic_candidates AS (
+              SELECT it.image_id,
+                     SUM(seed_topics.affinity) * 0.7 AS score
+              FROM seed_topics
+              JOIN image_topics it ON it.topic_id=seed_topics.topic_id
+              JOIN images i ON i.id=it.image_id AND i.status='PUBLISHED'
+              LEFT JOIN seed_events ON seed_events.image_id=i.id
+              WHERE seed_events.image_id IS NULL
+              GROUP BY it.image_id
+              ORDER BY score DESC
+              LIMIT #{size}
+            ),
+            seed_categories AS (
+              SELECT i.main_category_id,
+                     SUM(seed_events.behavior_weight) AS affinity
+              FROM seed_events
+              JOIN images i ON i.id=seed_events.image_id
+              WHERE i.main_category_id IS NOT NULL
+              GROUP BY i.main_category_id
+              ORDER BY affinity DESC
+              LIMIT 20
+            ),
+            category_candidates AS (
+              SELECT i.id AS image_id,
+                     seed_categories.affinity * 0.6 AS score
+              FROM seed_categories
+              JOIN images i FORCE INDEX (idx_images_status_category_ratio_hot)
+                ON i.status='PUBLISHED'
+               AND i.main_category_id=seed_categories.main_category_id
+              LEFT JOIN seed_events ON seed_events.image_id=i.id
+              WHERE seed_events.image_id IS NULL
+              ORDER BY score DESC,i.hot_score DESC,i.published_at DESC,i.id DESC
+              LIMIT #{size}
+            ),
+            merged_candidates AS (
+              SELECT image_id,score FROM tag_candidates
+              UNION ALL
+              SELECT image_id,score FROM topic_candidates
+              UNION ALL
+              SELECT image_id,score FROM category_candidates
+            ),
+            scored_candidates AS (
+              SELECT image_id,SUM(score) AS score
+              FROM merged_candidates
+              GROUP BY image_id
+            )
+            SELECT i.*
+            FROM scored_candidates candidates
+            JOIN images i ON i.id=candidates.image_id
+            ORDER BY candidates.score DESC,i.hot_score DESC,i.published_at DESC,i.id DESC
+            LIMIT #{size}
+            </script>
+            """)
+    List<ImageEntity> selectUserMetadataRecall(@Param("userId") Long userId,
+                                               @Param("visitorId") String visitorId,
+                                               @Param("size") int size);
 
     /**
      * Recalls fresh images from followed authors.
@@ -201,24 +348,10 @@ public interface RecommendationMapper {
      * @return image rows
      */
     @Select("""
-            WITH tag_counts AS (
-              SELECT image_id,COUNT(*) AS tag_count
-              FROM image_tags
-              GROUP BY image_id
-            )
-            SELECT i.*
-            FROM images i
-            LEFT JOIN tag_counts tc ON tc.image_id=i.id
-            WHERE i.status='PUBLISHED'
-            ORDER BY
-              (
-                COALESCE(i.hot_score,0) * 0.35
-                + LEAST(COALESCE(tc.tag_count,0),12) * 0.12
-                + CASE WHEN i.description IS NULL OR i.description='' THEN 0 ELSE 0.4 END
-                + 24 / (TIMESTAMPDIFF(HOUR,i.published_at,NOW()) + 24)
-              ) DESC,
-              i.published_at DESC,
-              i.id DESC
+            SELECT *
+            FROM images
+            WHERE status='PUBLISHED'
+            ORDER BY hot_score DESC,published_at DESC,id DESC
             LIMIT #{size} OFFSET #{offset}
             """)
     List<ImageEntity> selectColdStart(@Param("offset") int offset, @Param("size") int size);

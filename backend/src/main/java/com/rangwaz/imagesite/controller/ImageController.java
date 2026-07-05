@@ -66,17 +66,25 @@ public class ImageController {
      *
      * @param authorization authorization header
      * @param imageId image id
+     * @param visitorId stable anonymous visitor id
      * @param scene scene name
      * @param position feed position
+     * @param latitude optional latitude
+     * @param longitude optional longitude
+     * @param locationLabel optional human-readable location
      * @return empty response
      */
     @PostMapping("/{imageId}/click")
     public ApiResponse<Void> click(@RequestHeader(value = "Authorization", required = false) String authorization,
                                    @PathVariable Long imageId,
+                                   @RequestParam(required = false) String visitorId,
                                    @RequestParam(defaultValue = "feed") String scene,
-                                   @RequestParam(required = false) Integer position) {
+                                   @RequestParam(required = false) Integer position,
+                                   @RequestParam(required = false) Double latitude,
+                                   @RequestParam(required = false) Double longitude,
+                                   @RequestParam(required = false) String locationLabel) {
         Long userId = authContext.currentUserId(authorization).orElse(null);
-        imageService.click(imageId, userId, scene, position);
+        imageService.click(imageId, userId, visitorId, scene, position, latitude, longitude, locationLabel);
         return ApiResponse.ok(null);
     }
 

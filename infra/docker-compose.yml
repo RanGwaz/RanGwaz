@@ -28,6 +28,23 @@ services:
       - "6379:6379"
     volumes:
       - rangwaz-redis-data:/data
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.14.3
+    container_name: rangwaz-elasticsearch
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms1g -Xmx1g
+      TZ: Asia/Shanghai
+    ports:
+      - "9200:9200"
+    volumes:
+      - rangwaz-elasticsearch-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.1
     pull_policy: never
@@ -145,6 +162,7 @@ services:
 volumes:
   rangwaz-mysql-data:
   rangwaz-redis-data:
+  rangwaz-elasticsearch-data:
   rangwaz-zookeeper-data:
   rangwaz-zookeeper-log:
   rangwaz-kafka-data:

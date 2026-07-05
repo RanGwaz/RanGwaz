@@ -41,6 +41,14 @@ public interface AuthService {
     ApiDtos.AuthTokenResponse loginWithPhone(ApiDtos.PhoneLoginRequest request);
 
     /**
+     * Logs in with phone and password.
+     *
+     * @param request phone-password login request
+     * @return token response
+     */
+    ApiDtos.AuthTokenResponse loginWithPhonePassword(ApiDtos.PhonePasswordLoginRequest request);
+
+    /**
      * Resolves the current user from a bearer token.
      *
      * @param authorization authorization header

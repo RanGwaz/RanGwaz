@@ -33,14 +33,21 @@ import java.util.Set;
 @Service
 public class FeedServiceImpl implements FeedService {
     private static final int MAX_RECALL_CANDIDATES = 240;
-    private static final int HOME_RECALL_MULTIPLIER = 5;
+    private static final int ANONYMOUS_FIRST_PAGE_POOL_SIZE = 300;
+    private static final int MAX_CLIENT_EXCLUDE_IDS = 420;
+    private static final int RECENT_HOME_EXCLUDE_LIMIT = 1200;
+    private static final int HOME_RECALL_MULTIPLIER = 2;
     private static final int SIMILAR_RECALL_MULTIPLIER = 4;
     private static final double ROUTE_VECTOR_WEIGHT = 0.38;
     private static final double ROUTE_TAG_WEIGHT = 0.2;
     private static final double ROUTE_TOPIC_WEIGHT = 0.14;
     private static final double ROUTE_CATEGORY_WEIGHT = 0.12;
+    private static final double ROUTE_METADATA_WEIGHT = ROUTE_TAG_WEIGHT + ROUTE_TOPIC_WEIGHT + ROUTE_CATEGORY_WEIGHT;
     private static final double ROUTE_FOLLOW_WEIGHT = 0.08;
     private static final double ROUTE_GLOBAL_WEIGHT = 0.08;
+    private static final double ANON_EXPLORATION_WEIGHT = 0.34;
+    private static final double VISITOR_EXPLORATION_WEIGHT = 0.18;
+    private static final double USER_EXPLORATION_WEIGHT = 0.12;
 
     private final ImageContentMapper imageContentMapper;
     private final RecommendationMapper recommendationMapper;
@@ -79,38 +86,66 @@ public class FeedServiceImpl implements FeedService {
      * @param userId optional user id
      * @param page page number
      * @param size page size
+     * @param visitorId stable anonymous visitor id
      * @param feedSessionId stable frontend feed session id
      * @param refreshSeed seed used to keep one refresh's pagination stable
      * @return page response
      */
     @Override
-    public PageResponse<ApiDtos.ImageView> home(Long userId, int page, int size, String feedSessionId, String refreshSeed) {
+    public PageResponse<ApiDtos.ImageView> home(Long userId,
+                                                int page,
+                                                int size,
+                                                String visitorId,
+                                                String feedSessionId,
+                                                String refreshSeed,
+                                                List<Long> excludeImageIds) {
         int safePage = Math.max(1, page);
         int safeSize = Math.max(1, Math.min(size, 60));
         int offset = (safePage - 1) * safeSize;
         int recallLimit = candidateLimit(offset, safeSize, HOME_RECALL_MULTIPLIER);
+        String cleanedRefreshSeed = cleanText(refreshSeed);
+        Set<Long> clientExcludedIds = cleanImageIds(excludeImageIds);
         Map<Long, RecallScore> recallScores = new LinkedHashMap<>();
-        Set<Long> recentSeenIds = Set.of();
-        if (userId != null) {
-            List<UserEvent> recentEvents = behaviorMapper.findRecentBehaviorSequence(userId, 120).stream()
+        Set<Long> recentSeenIds = new HashSet<>(clientExcludedIds);
+        String profileVisitorId = userId == null ? cleanVisitorId(visitorId) : null;
+        boolean hasProfileKey = userId != null || profileVisitorId != null;
+        boolean firstAnonymousPage = userId == null && safePage == 1;
+        if (firstAnonymousPage) {
+            List<ImageEntity> images = rankAnonymousFirstPage(
+                    recommendationMapper.selectColdStart(0, firstPagePoolSize(safeSize)),
+                    cleanedRefreshSeed,
+                    clientExcludedIds,
+                    safeSize
+            );
+            var records = imageService.toViews(images, "cold-start-refresh");
+            return new PageResponse<>(records, totalEstimate(offset, safeSize, records.size()), safePage, safeSize);
+        }
+        if (hasProfileKey && !firstAnonymousPage) {
+            List<UserEvent> recentEvents = behaviorMapper.findRecentBehaviorSequence(userId, profileVisitorId, 120).stream()
                     .filter(row -> row.getImageId() != null)
                     .map(row -> new UserEvent(row.getImageId(), row.getBehaviorType(), row.getDurationMs(), row.getAgeHours()))
                     .toList();
-            List<Long> seedImageIds = behaviorMapper.findRecentPositiveImageIds(userId, 40);
-            List<VectorHit> vectorHits = vectorRecallClient.feed(
-                    userId,
-                    recentEvents,
-                    seedImageIds,
-                    0,
-                    recallLimit
-            );
-            addVectorRecall(recallScores, vectorHits, ROUTE_VECTOR_WEIGHT, "vector");
-            addRankedRecall(recallScores, recommendationMapper.selectUserTagRecall(userId, recallLimit), ROUTE_TAG_WEIGHT, "tag");
-            addRankedRecall(recallScores, recommendationMapper.selectUserTopicRecall(userId, recallLimit), ROUTE_TOPIC_WEIGHT, "topic");
-            addRankedRecall(recallScores, recommendationMapper.selectUserCategoryRecall(userId, recallLimit), ROUTE_CATEGORY_WEIGHT, "category");
-            addRankedRecall(recallScores, recommendationMapper.selectFollowedAuthorRecall(userId, recallLimit), ROUTE_FOLLOW_WEIGHT, "follow");
-            recentSeenIds = new HashSet<>(behaviorMapper.findRecentSeenImageIds(userId, 1200));
+            List<Long> seedImageIds = behaviorMapper.findRecentPositiveImageIds(userId, profileVisitorId, 40);
+            if (userId != null && !recentEvents.isEmpty()) {
+                List<VectorHit> vectorHits = vectorRecallClient.feed(
+                        userId,
+                        recentEvents,
+                        seedImageIds,
+                        0,
+                        recallLimit
+                );
+                addVectorRecall(recallScores, vectorHits, ROUTE_VECTOR_WEIGHT, "vector");
+            }
+            if (userId != null) {
+                addRankedRecall(recallScores, recommendationMapper.selectFollowedAuthorRecall(userId, recallLimit), ROUTE_FOLLOW_WEIGHT, "follow");
+            }
+            if (!seedImageIds.isEmpty()) {
+                addRankedRecall(recallScores, recommendationMapper.selectUserMetadataRecall(userId, profileVisitorId, recallLimit), ROUTE_METADATA_WEIGHT, "metadata");
+            }
+            recentSeenIds.addAll(behaviorMapper.findRecentSeenImageIds(userId, profileVisitorId, RECENT_HOME_EXCLUDE_LIMIT));
+            recentSeenIds.addAll(clientExcludedIds);
         }
+        boolean personalizedRecall = !recallScores.isEmpty();
         addRankedRecall(recallScores, recommendationMapper.selectColdStart(0, recallLimit), ROUTE_GLOBAL_WEIGHT, "global");
         HomeRankResult ranked = recallScores.isEmpty()
                 ? new HomeRankResult(recommendationMapper.selectColdStart(offset, safeSize), false)
@@ -121,17 +156,19 @@ public class FeedServiceImpl implements FeedService {
                 safeSize,
                 userId,
                 requestId(feedSessionId, userId, safePage),
-                cleanText(refreshSeed));
+                cleanedRefreshSeed,
+                explorationWeight(userId, profileVisitorId),
+                !firstAnonymousPage);
         List<ImageEntity> images = ranked.images();
         String reason = ranked.modelUsed()
                 ? "model-home"
-                : (userId == null || recallScores.isEmpty() ? "cold-start" : "multi-recall-home");
+                : (personalizedRecall ? "multi-recall-home" : "cold-start");
         if (images.isEmpty()) {
             images = recommendationMapper.selectColdStart(offset, safeSize);
             reason = "cold-start";
         }
         var records = imageService.toViews(images, reason);
-        return new PageResponse<>(records, imageContentMapper.countPublished(), safePage, safeSize);
+        return new PageResponse<>(records, totalEstimate(offset, safeSize, records.size()), safePage, safeSize);
     }
 
     /**
@@ -161,6 +198,44 @@ public class FeedServiceImpl implements FeedService {
 
     private int candidateLimit(int offset, int size, int multiplier) {
         return Math.min(MAX_RECALL_CANDIDATES, Math.max(size, offset + size * multiplier));
+    }
+
+    private int firstPagePoolSize(int size) {
+        return Math.max(size, Math.min(ANONYMOUS_FIRST_PAGE_POOL_SIZE, size * 10));
+    }
+
+    private List<ImageEntity> rankAnonymousFirstPage(List<ImageEntity> pool,
+                                                     String refreshSeed,
+                                                     Set<Long> excludedIds,
+                                                     int size) {
+        if (pool == null || pool.isEmpty()) return List.of();
+        Map<Long, Integer> globalRanks = new LinkedHashMap<>();
+        for (int index = 0; index < pool.size(); index++) {
+            ImageEntity image = pool.get(index);
+            if (image.getId() != null) globalRanks.putIfAbsent(image.getId(), index);
+        }
+        List<ImageEntity> ranked = pool.stream()
+                .filter(image -> image.getId() != null)
+                .sorted(Comparator
+                        .comparingDouble((ImageEntity image) -> anonymousFirstPageScore(
+                                image,
+                                globalRanks.getOrDefault(image.getId(), pool.size()),
+                                refreshSeed,
+                                excludedIds.contains(image.getId())
+                        )).reversed()
+                        .thenComparing(ImageEntity::getPublishedAt, Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing(ImageEntity::getId, Comparator.nullsLast(Comparator.reverseOrder())))
+                .toList();
+        return ranked.stream().limit(size).toList();
+    }
+
+    private double anonymousFirstPageScore(ImageEntity image, int rank, String refreshSeed, boolean recentlyShown) {
+        return rankDecay(rank) * 0.04
+                + engagementScore(image) * 0.08
+                + freshnessScore(image) * 0.06
+                + metadataQualityScore(image) * 0.02
+                + seedJitter(refreshSeed, image.getId()) * 0.52
+                - (recentlyShown ? 0.72 : 0);
     }
 
     private void addVectorRecall(Map<Long, RecallScore> scores,
@@ -198,25 +273,40 @@ public class FeedServiceImpl implements FeedService {
                                     int size,
                                     Long userId,
                                     String requestId,
-                                    String refreshSeed) {
+                                    String refreshSeed,
+                                    double explorationWeight,
+                                    boolean allowExternalRanking) {
         List<ImageEntity> fallbackOrder = candidates.stream()
                 .filter(image -> image.getId() != null)
                 .sorted(Comparator
-                        .comparingDouble((ImageEntity image) -> homeScore(image, recallScores, recentSeenIds)).reversed()
+                        .comparingDouble((ImageEntity image) -> homeScore(
+                                image,
+                                recallScores,
+                                recentSeenIds,
+                                refreshSeed,
+                                explorationWeight
+                        )).reversed()
                         .thenComparing(ImageEntity::getPublishedAt, Comparator.nullsLast(Comparator.reverseOrder()))
                         .thenComparing(ImageEntity::getId, Comparator.nullsLast(Comparator.reverseOrder())))
                 .toList();
-        List<RankedHit> modelHits = rankingModelClient.rankHome(
+        List<RankedHit> modelHits = allowExternalRanking
+                ? rankingModelClient.rankHome(
                 userId,
                 requestId,
                 refreshSeed,
                 modelCandidates(fallbackOrder, recallScores, recentSeenIds),
                 fallbackOrder.size()
-        );
-        if (!modelHits.isEmpty()) {
+        )
+                : List.of();
+        if (modelHits != null && !modelHits.isEmpty()) {
             return new HomeRankResult(pageSlice(mergeModelOrder(modelHits, fallbackOrder), offset, size), true);
         }
         return new HomeRankResult(pageSlice(fallbackOrder, offset, size), false);
+    }
+
+    private long totalEstimate(int offset, int size, int recordCount) {
+        if (recordCount < size) return offset + recordCount;
+        return offset + recordCount + size;
     }
 
     private List<HomeRankCandidate> modelCandidates(List<ImageEntity> orderedCandidates,
@@ -269,17 +359,33 @@ public class FeedServiceImpl implements FeedService {
         return ordered.stream().skip(offset).limit(size).toList();
     }
 
-    private double homeScore(ImageEntity image, Map<Long, RecallScore> recallScores, Set<Long> recentSeenIds) {
+    private double homeScore(ImageEntity image,
+                             Map<Long, RecallScore> recallScores,
+                             Set<Long> recentSeenIds,
+                             String refreshSeed,
+                             double explorationWeight) {
         RecallScore recall = recallScores.get(image.getId());
         double recallScore = recall == null ? 0 : recall.score();
         double routeBonus = recall == null ? 0 : Math.min(0.08, recall.routeCount() * 0.02);
-        double seenPenalty = recentSeenIds.contains(image.getId()) ? 0.28 : 0;
+        double seenPenalty = recentSeenIds.contains(image.getId()) ? 0.72 : 0;
         return recallScore
                 + routeBonus
                 + engagementScore(image) * 0.12
                 + freshnessScore(image) * 0.08
                 + metadataQualityScore(image) * 0.02
+                + seedJitter(refreshSeed, image.getId()) * explorationWeight
                 - seenPenalty;
+    }
+
+    private double seedJitter(String refreshSeed, Long imageId) {
+        if (refreshSeed == null || refreshSeed.isBlank() || imageId == null) return 0;
+        return (Integer.toUnsignedLong(Objects.hash(refreshSeed, imageId)) % 10_000L) / 10_000D;
+    }
+
+    private double explorationWeight(Long userId, String visitorId) {
+        if (userId != null) return USER_EXPLORATION_WEIGHT;
+        if (visitorId != null) return VISITOR_EXPLORATION_WEIGHT;
+        return ANON_EXPLORATION_WEIGHT;
     }
 
     private List<ImageEntity> rankSimilar(List<VectorHit> vectorHits,
@@ -400,6 +506,23 @@ public class FeedServiceImpl implements FeedService {
     private String cleanText(String value) {
         if (value == null || value.isBlank()) return null;
         return value.trim();
+    }
+
+    private Set<Long> cleanImageIds(List<Long> ids) {
+        if (ids == null || ids.isEmpty()) return Set.of();
+        Set<Long> cleaned = new HashSet<>();
+        for (Long id : ids) {
+            if (id == null || id <= 0) continue;
+            cleaned.add(id);
+            if (cleaned.size() >= MAX_CLIENT_EXCLUDE_IDS) break;
+        }
+        return cleaned;
+    }
+
+    private String cleanVisitorId(String value) {
+        String cleaned = cleanText(value);
+        if (cleaned == null) return null;
+        return cleaned.length() > 64 ? cleaned.substring(0, 64) : cleaned;
     }
 
     private record HomeRankResult(List<ImageEntity> images, boolean modelUsed) {

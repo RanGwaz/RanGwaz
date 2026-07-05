@@ -35,4 +35,15 @@ public class SearchController {
     public ApiResponse<ApiDtos.SearchResult> search(@RequestParam(defaultValue = "") String keyword) {
         return ApiResponse.ok(searchService.search(keyword));
     }
+
+    /**
+     * Suggests search ideas for the global search focus panel.
+     *
+     * @param keyword optional typed keyword
+     * @return grouped suggestions
+     */
+    @GetMapping("/suggestions")
+    public ApiResponse<ApiDtos.SearchSuggestionResponse> suggestions(@RequestParam(defaultValue = "") String keyword) {
+        return ApiResponse.ok(searchService.suggestions(keyword));
+    }
 }

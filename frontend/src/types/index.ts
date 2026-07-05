@@ -16,6 +16,10 @@ export interface UserSummary {
   bio?: string
 }
 
+export interface ClientIpResponse {
+  ip: string
+}
+
 export interface AuthTokenResponse {
   accessToken: string
   tokenType: string
@@ -27,6 +31,8 @@ export interface SmsCodeResponse {
   sent: boolean
   mockCode?: string
   expiresInSeconds: number
+  cooldownSeconds: number
+  registered: boolean
 }
 
 export interface ImageAssetView {
@@ -64,11 +70,38 @@ export interface ImageView {
   thumbUrl?: string
   likeCount: number
   favoriteCount: number
+  likedByMe?: boolean
   collectCount?: number
   commentCount: number
   shareCount?: number
   viewCount: number
   recommendationReason?: string
+  createdAt: string
+  status?: string
+  reviewReason?: string
+}
+
+export interface ProfileReviewView {
+  id: number
+  userId: number
+  nickname?: string
+  avatarUrl?: string
+  backgroundUrl?: string
+  bio?: string
+  status: string
+  reviewReason?: string
+  reviewedAt?: string
+  createdAt: string
+}
+
+export interface NotificationView {
+  id: number
+  type: string
+  title: string
+  content?: string
+  targetType?: string
+  targetId?: number
+  read: boolean
   createdAt: string
 }
 
@@ -134,6 +167,19 @@ export interface SearchResult {
   users: UserSummary[]
   images: ImageView[]
   topics: TopicView[]
+  related: SearchSuggestionItem[]
+}
+
+export interface SearchSuggestionItem {
+  keyword: string
+  kind: string
+  imageUrl?: string
+  postCount?: number
+}
+
+export interface SearchSuggestionResponse {
+  recommended: SearchSuggestionItem[]
+  trending: SearchSuggestionItem[]
 }
 
 export interface UploadResponse {

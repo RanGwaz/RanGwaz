@@ -6,11 +6,15 @@ import com.rangwaz.imagesite.dto.ApiDtos;
 import com.rangwaz.imagesite.entity.UserEntity;
 import com.rangwaz.imagesite.mapper.UserMapper;
 import com.rangwaz.imagesite.service.AuthService;
+import com.rangwaz.imagesite.service.SmsSender;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.Map;
@@ -26,12 +30,13 @@ import java.util.regex.Pattern;
 public class AuthServiceImpl implements AuthService {
     private static final long TOKEN_TTL_SECONDS = 86_400L;
     private static final Pattern MAINLAND_PHONE = Pattern.compile("^1[3-9]\\d{9}$");
-    private static final Pattern INTERNATIONAL_PHONE = Pattern.compile("^\\+\\d{8,15}$");
 
     private final UserMapper userMapper;
     private final UserServiceImpl userService;
+    private final Optional<SmsSender> smsSender;
     private final SecureRandom random = new SecureRandom();
     private final Map<String, SmsChallenge> smsChallenges = new ConcurrentHashMap<>();
+    private final Map<String, Object> smsLocks = new ConcurrentHashMap<>();
 
     @Value("${app.sms.mock:true}")
     private boolean smsMock;
@@ -50,10 +55,14 @@ public class AuthServiceImpl implements AuthService {
      *
      * @param userMapper user mapper
      * @param userService user service
+     * @param smsSenderProvider optional SMS provider
      */
-    public AuthServiceImpl(UserMapper userMapper, UserServiceImpl userService) {
+    public AuthServiceImpl(UserMapper userMapper,
+                           UserServiceImpl userService,
+                           ObjectProvider<SmsSender> smsSenderProvider) {
         this.userMapper = userMapper;
         this.userService = userService;
+        this.smsSender = Optional.ofNullable(smsSenderProvider.getIfAvailable());
     }
 
     /**
@@ -68,9 +77,10 @@ public class AuthServiceImpl implements AuthService {
         if (userMapper.findByUsername(username) != null) {
             throw new BusinessException("USERNAME_EXISTS", "用户名已存在");
         }
+        String password = requireUsablePassword(request.password());
         UserEntity user = new UserEntity();
         user.setUsername(username);
-        user.setPasswordHash(PasswordHasher.hash(request.password()));
+        user.setPasswordHash(PasswordHasher.hash(password));
         user.setNickname(request.nickname().trim());
         user.setAvatarUrl("https://api.dicebear.com/9.x/adventurer/svg?seed=" + user.getUsername());
         user.setBio("用图片收集灵感，用审美整理世界。");
@@ -103,18 +113,26 @@ public class AuthServiceImpl implements AuthService {
     @Override
     public ApiDtos.SmsCodeResponse sendSmsCode(ApiDtos.SendSmsCodeRequest request) {
         String phone = normalizePhone(request.phone());
-        long now = Instant.now().getEpochSecond();
-        SmsChallenge existing = smsChallenges.get(phone);
-        if (existing != null && existing.sentAt() + smsCooldownSeconds > now) {
-            throw new BusinessException("SMS_TOO_FREQUENT", "验证码发送太频繁，请稍后再试");
+        Object lock = smsLocks.computeIfAbsent(phone, ignored -> new Object());
+        synchronized (lock) {
+            boolean registered = userMapper.findByPhone(phone) != null;
+            long now = Instant.now().getEpochSecond();
+            SmsChallenge existing = smsChallenges.get(phone);
+            if (existing != null && existing.sentAt() + smsCooldownSeconds > now) {
+                long retryAfter = existing.sentAt() + smsCooldownSeconds - now;
+                throw new BusinessException("SMS_TOO_FREQUENT", "验证码发送太频繁，请 " + retryAfter + " 秒后再试");
+            }
+            String code = newSmsCode();
+            if (smsMock) {
+                System.out.println("[SMS mock] " + phone + " code=" + code);
+            } else {
+                SmsSender sender = smsSender.orElseThrow(() ->
+                        new BusinessException("SMS_PROVIDER_NOT_CONFIGURED", "真实短信服务尚未启用，请先配置短信发送适配器"));
+                sender.sendVerificationCode(phone, code, Duration.ofSeconds(smsCodeTtlSeconds), request.scene());
+            }
+            smsChallenges.put(phone, new SmsChallenge(code, now + smsCodeTtlSeconds, now, 0));
+            return new ApiDtos.SmsCodeResponse(true, smsMock ? code : null, smsCodeTtlSeconds, smsCooldownSeconds, registered);
         }
-        String code = newSmsCode();
-        if (!smsMock) {
-            throw new BusinessException("SMS_PROVIDER_NOT_CONFIGURED", "真实短信服务尚未启用，请先配置短信发送适配器");
-        }
-        smsChallenges.put(phone, new SmsChallenge(code, now + smsCodeTtlSeconds, now));
-        System.out.println("[SMS mock] " + phone + " code=" + code);
-        return new ApiDtos.SmsCodeResponse(true, smsMock ? code : null, smsCodeTtlSeconds);
     }
 
     /**
@@ -129,9 +147,28 @@ public class AuthServiceImpl implements AuthService {
         assertSmsCode(phone, request.code());
         UserEntity user = userMapper.findByPhone(phone);
         if (user == null) {
-            user = createPhoneUser(phone);
+            String password = requireMatchingPassword(request.password(), request.passwordConfirm());
+            user = createPhoneUser(phone, password);
+        } else {
+            user = maybeUpdatePassword(user, request.password(), request.passwordConfirm());
         }
         smsChallenges.remove(phone);
+        return tokenResponse(user);
+    }
+
+    /**
+     * Logs in with a phone number and password.
+     *
+     * @param request phone-password login request
+     * @return token response
+     */
+    @Override
+    public ApiDtos.AuthTokenResponse loginWithPhonePassword(ApiDtos.PhonePasswordLoginRequest request) {
+        String phone = normalizePhone(request.phone());
+        UserEntity user = userMapper.findByPhone(phone);
+        if (user == null || !PasswordHasher.matches(request.password(), user.getPasswordHash())) {
+            throw new BusinessException("BAD_CREDENTIALS", "手机号或密码错误");
+        }
         return tokenResponse(user);
     }
 
@@ -178,8 +215,10 @@ public class AuthServiceImpl implements AuthService {
 
     private String normalizePhone(String rawPhone) {
         String phone = rawPhone == null ? "" : rawPhone.trim().replaceAll("[\\s-]", "");
-        if (!MAINLAND_PHONE.matcher(phone).matches() && !INTERNATIONAL_PHONE.matcher(phone).matches()) {
-            throw new BusinessException("INVALID_PHONE", "请输入有效手机号");
+        if (phone.startsWith("+86")) phone = phone.substring(3);
+        else if (phone.startsWith("86") && phone.length() == 13) phone = phone.substring(2);
+        if (!MAINLAND_PHONE.matcher(phone).matches()) {
+            throw new BusinessException("INVALID_PHONE", "请输入有效的中国大陆手机号");
         }
         return phone;
     }
@@ -199,20 +238,60 @@ public class AuthServiceImpl implements AuthService {
             throw new BusinessException("SMS_CODE_EXPIRED", "验证码已过期，请重新获取");
         }
         if (!challenge.code().equals(code)) {
+            int attempts = challenge.attempts() + 1;
+            if (attempts >= 5) {
+                smsChallenges.remove(phone);
+                throw new BusinessException("BAD_SMS_CODE_LOCKED", "验证码错误次数过多，请重新获取");
+            }
+            smsChallenges.put(phone, new SmsChallenge(challenge.code(), challenge.expiresAt(), challenge.sentAt(), attempts));
             throw new BusinessException("BAD_SMS_CODE", "验证码错误");
         }
     }
 
-    private UserEntity createPhoneUser(String phone) {
+    private String requireUsablePassword(String rawPassword) {
+        String password = rawPassword == null ? "" : rawPassword.trim();
+        if (password.length() < 6 || password.length() > 64) {
+            throw new BusinessException("INVALID_PASSWORD", "密码需为 6-64 位");
+        }
+        return password;
+    }
+
+    private String requireMatchingPassword(String rawPassword, String rawPasswordConfirm) {
+        String password = requireUsablePassword(rawPassword);
+        String passwordConfirm = rawPasswordConfirm == null ? "" : rawPasswordConfirm.trim();
+        if (!password.equals(passwordConfirm)) {
+            throw new BusinessException("PASSWORD_MISMATCH", "两次输入的密码不一致");
+        }
+        return password;
+    }
+
+    private UserEntity maybeUpdatePassword(UserEntity user, String rawPassword, String rawPasswordConfirm) {
+        String password = rawPassword == null ? "" : rawPassword.trim();
+        String passwordConfirm = rawPasswordConfirm == null ? "" : rawPasswordConfirm.trim();
+        if (password.isEmpty() && passwordConfirm.isEmpty()) {
+            return user;
+        }
+        String matchingPassword = requireMatchingPassword(password, passwordConfirm);
+        String passwordHash = PasswordHasher.hash(matchingPassword);
+        userMapper.updatePassword(user.getId(), passwordHash);
+        user.setPasswordHash(passwordHash);
+        return user;
+    }
+
+    private UserEntity createPhoneUser(String phone, String password) {
         UserEntity user = new UserEntity();
         user.setPhone(phone);
         user.setUsername(uniquePhoneUsername(phone));
-        user.setPasswordHash(PasswordHasher.hash(UUID.randomUUID().toString()));
+        user.setPasswordHash(PasswordHasher.hash(password));
         user.setNickname("手机用户" + phone.substring(Math.max(0, phone.length() - 4)));
         user.setAvatarUrl("https://api.dicebear.com/9.x/adventurer/svg?seed=" + user.getUsername());
         user.setBio("用手机号登录 Vibelo。");
         user.setStatus("ACTIVE");
-        userMapper.insert(user);
+        try {
+            userMapper.insert(user);
+        } catch (DuplicateKeyException exception) {
+            throw new BusinessException("PHONE_EXISTS", "该手机号已注册，请直接登录");
+        }
         return user;
     }
 
@@ -227,6 +306,6 @@ public class AuthServiceImpl implements AuthService {
         return username;
     }
 
-    private record SmsChallenge(String code, long expiresAt, long sentAt) {
+    private record SmsChallenge(String code, long expiresAt, long sentAt, int attempts) {
     }
 }

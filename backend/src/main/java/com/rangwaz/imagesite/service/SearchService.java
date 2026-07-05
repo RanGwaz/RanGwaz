@@ -13,4 +13,12 @@ public interface SearchService {
      * @return search result
      */
     ApiDtos.SearchResult search(String keyword);
+
+    /**
+     * Suggests search ideas for the focused global search box.
+     *
+     * @param keyword optional typed keyword
+     * @return grouped search suggestions
+     */
+    ApiDtos.SearchSuggestionResponse suggestions(String keyword);
 }

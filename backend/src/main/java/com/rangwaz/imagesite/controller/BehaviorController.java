@@ -40,7 +40,7 @@ public class BehaviorController {
     @PostMapping
     public ApiResponse<Void> record(@RequestHeader(value = "Authorization", required = false) String authorization,
                                     @RequestBody ApiDtos.BehaviorRequest request) {
-        interactionService.behavior(authContext.currentUserId(authorization).orElse(null), request);
+        interactionService.behavior(authContext.currentUserId(authorization).orElse(null), request == null ? null : request.visitorId(), request);
         return ApiResponse.ok(null);
     }
 
@@ -54,7 +54,7 @@ public class BehaviorController {
     @PostMapping("/batch")
     public ApiResponse<Void> recordBatch(@RequestHeader(value = "Authorization", required = false) String authorization,
                                          @RequestBody ApiDtos.BehaviorBatchRequest request) {
-        interactionService.behaviors(authContext.currentUserId(authorization).orElse(null), request);
+        interactionService.behaviors(authContext.currentUserId(authorization).orElse(null), request == null ? null : request.visitorId(), request);
         return ApiResponse.ok(null);
     }
 }

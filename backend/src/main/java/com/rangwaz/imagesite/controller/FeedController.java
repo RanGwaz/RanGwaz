@@ -12,6 +12,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
+
 /**
  * Feed endpoints for home and detail recommendations.
  */
@@ -38,18 +40,22 @@ public class FeedController {
      * @param authorization authorization header
      * @param page page number
      * @param pageSize page size
+     * @param visitorId stable anonymous visitor id
      * @param feedSessionId stable frontend feed session id
      * @param refreshSeed seed used to keep one refresh's pagination stable
+     * @param excludeIds image ids recently shown on the frontend
      * @return feed page
      */
     @GetMapping
     public ApiResponse<PageResponse<ApiDtos.ImageView>> home(@RequestHeader(value = "Authorization", required = false) String authorization,
                                                             @RequestParam(defaultValue = "1") int page,
                                                             @RequestParam(defaultValue = "30") int pageSize,
+                                                            @RequestParam(required = false) String visitorId,
                                                             @RequestParam(required = false) String feedSessionId,
-                                                            @RequestParam(required = false) String refreshSeed) {
+                                                            @RequestParam(required = false) String refreshSeed,
+                                                            @RequestParam(required = false) List<Long> excludeIds) {
         Long userId = authContext.currentUserId(authorization).orElse(null);
-        return ApiResponse.ok(feedService.home(userId, page, pageSize, feedSessionId, refreshSeed));
+        return ApiResponse.ok(feedService.home(userId, page, pageSize, visitorId, feedSessionId, refreshSeed, excludeIds));
     }
 
     /**
