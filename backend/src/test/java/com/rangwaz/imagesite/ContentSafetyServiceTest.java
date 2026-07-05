@@ -30,6 +30,18 @@ class ContentSafetyServiceTest {
     }
 
     @Test
+    void allowsPlaceholderProfileNickname() {
+        assertDoesNotThrow(() -> contentSafetyService.requireSafeProfileText("XXX", "bbbb"));
+        assertTrue(contentSafetyService.checkProfileText("XXX", "bbbb").allowed());
+    }
+
+    @Test
+    void blocksExplicitProfileText() {
+        assertFalse(contentSafetyService.checkProfileText("mira", "porn site").allowed());
+        assertFalse(contentSafetyService.checkProfileText("测试", "色情内容").allowed());
+    }
+
+    @Test
     void allowsOrdinaryImageColors() {
         BufferedImage image = solidImage(new Color(46, 91, 178));
 
@@ -41,6 +53,18 @@ class ContentSafetyServiceTest {
         BufferedImage image = solidImage(new Color(220, 150, 120));
 
         assertFalse(contentSafetyService.checkImage(image).allowed());
+        assertThrows(RuntimeException.class, () -> contentSafetyService.requireSafeImage(image, new byte[]{1, 2, 3}, "image/jpeg"));
+    }
+
+    @Test
+    void allowsUploadWhenCloudModerationAllowsEvenIfLocalHeuristicWouldBlock() {
+        ContentSafetyProperties properties = new ContentSafetyProperties();
+        properties.getCloud().setEnabled(true);
+        ContentSafetyService service = new ContentSafetyService(properties, allowingModerationClient());
+        BufferedImage image = solidImage(new Color(220, 150, 120));
+
+        assertFalse(service.checkImage(image).allowed());
+        assertDoesNotThrow(() -> service.requireSafeImage(image, new byte[]{1, 2, 3}, "image/jpeg"));
     }
 
     @Test
@@ -81,5 +105,9 @@ class ContentSafetyServiceTest {
         return (imageUrl, bytes, contentType) -> {
             throw new RuntimeException("provider down");
         };
+    }
+
+    private ImageModerationClient allowingModerationClient() {
+        return (imageUrl, bytes, contentType) -> ImageModerationClient.ModerationDecision.allow("test-request");
     }
 }

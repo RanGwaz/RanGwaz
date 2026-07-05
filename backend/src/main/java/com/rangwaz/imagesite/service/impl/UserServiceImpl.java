@@ -5,6 +5,7 @@ import com.rangwaz.imagesite.dto.ApiDtos;
 import com.rangwaz.imagesite.entity.UserEntity;
 import com.rangwaz.imagesite.mapper.FollowMapper;
 import com.rangwaz.imagesite.mapper.ImageContentMapper;
+import com.rangwaz.imagesite.mapper.InteractionMapper;
 import com.rangwaz.imagesite.mapper.ProfileReviewMapper;
 import com.rangwaz.imagesite.mapper.UserNotificationMapper;
 import com.rangwaz.imagesite.mapper.UserMapper;
@@ -27,6 +28,7 @@ public class UserServiceImpl implements UserService {
     private final UserMapper userMapper;
     private final ImageContentMapper imageContentMapper;
     private final FollowMapper followMapper;
+    private final InteractionMapper interactionMapper;
     private final ProfileReviewMapper profileReviewMapper;
     private final UserNotificationMapper userNotificationMapper;
     private final ContentSafetyService contentSafetyService;
@@ -41,12 +43,14 @@ public class UserServiceImpl implements UserService {
     public UserServiceImpl(UserMapper userMapper,
                            ImageContentMapper imageContentMapper,
                            FollowMapper followMapper,
+                           InteractionMapper interactionMapper,
                            ProfileReviewMapper profileReviewMapper,
                            UserNotificationMapper userNotificationMapper,
                            ContentSafetyService contentSafetyService) {
         this.userMapper = userMapper;
         this.imageContentMapper = imageContentMapper;
         this.followMapper = followMapper;
+        this.interactionMapper = interactionMapper;
         this.profileReviewMapper = profileReviewMapper;
         this.userNotificationMapper = userNotificationMapper;
         this.contentSafetyService = contentSafetyService;
@@ -78,7 +82,7 @@ public class UserServiceImpl implements UserService {
         String avatarUrl = request.avatarUrl() == null ? user.getAvatarUrl() : request.avatarUrl().trim();
         String backgroundUrl = request.backgroundUrl() == null ? user.getBackgroundUrl() : request.backgroundUrl().trim();
         String bio = request.bio() == null ? user.getBio() : request.bio().trim();
-        contentSafetyService.requireSafeText(String.join(" ", List.of(nickname, bio == null ? "" : bio)));
+        contentSafetyService.requireSafeProfileText(nickname, bio);
 
         user.setNickname(nickname);
         user.setAvatarUrl(avatarUrl);
@@ -146,7 +150,9 @@ public class UserServiceImpl implements UserService {
         return new ApiDtos.UserStats(
                 imageContentMapper.findByAuthor(userId, 10_000).size(),
                 followMapper.countFollowing(userId),
-                followMapper.countFollowers(userId)
+                followMapper.countFollowers(userId),
+                interactionMapper.countActiveByType(userId, "LIKE"),
+                interactionMapper.countActiveByType(userId, "FAVORITE")
         );
     }
 

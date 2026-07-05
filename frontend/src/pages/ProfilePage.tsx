@@ -2,9 +2,6 @@
 import {
   BadgeCheck,
   BarChart3,
-  Bell,
-  CircleAlert,
-  Clock3,
   Edit3,
   Grid2X2,
   Heart,
@@ -17,26 +14,29 @@ import {
   MessageCircle,
   MoreHorizontal,
   Plus,
-  ShieldCheck,
   UserPlus,
+  X,
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '../AuthContext'
 import { MasonryGrid } from '../components/MasonryGrid'
 import { api } from '../services/api'
-import type { ImageView, NotificationView, ProfileReviewView, UserStats, UserSummary } from '../types'
+import type { ImageView, UserStats, UserSummary } from '../types'
 import { avatarUrl, countText, imageThumbnail } from '../utils/format'
 
 const DEFAULT_PROFILE_BACKGROUND = '/default-background.jpg'
 const PROFILE_LOCATION = '中国'
 
 type LayoutMode = 'grid' | 'list'
-type ProfileTab = 'works' | 'collections' | 'likes' | 'about'
+type ProfileTab = 'works' | 'collections' | 'likes'
+type SocialListKind = 'followers' | 'following'
 
-interface TagSummary {
-  count: number
-  name: string
+interface SocialDialog {
+  error?: string
+  kind: SocialListKind
+  loading: boolean
+  users: UserSummary[]
 }
 
 function cleanDisplayText(value?: string | null) {
@@ -57,24 +57,17 @@ function isPublicImage(image: ImageView) {
 }
 
 function reviewLabel(status?: string) {
-  if (status === 'PENDING_REVIEW') return '检测中'
-  if (status === 'REJECTED') return '安全检测未通过'
+  if (status === 'PENDING_REVIEW') return '待处理'
+  if (status === 'REJECTED') return '未通过'
   if (status === 'PUBLISHED' || status === 'APPROVED') return '已通过'
   if (status === 'SUPERSEDED') return '已替换'
-  return '检测中'
+  return '待处理'
 }
 
 function reviewTone(status?: string) {
   if (status === 'REJECTED') return 'is-rejected'
   if (status === 'PUBLISHED' || status === 'APPROVED') return 'is-approved'
   return 'is-pending'
-}
-
-function formatTime(value?: string) {
-  if (!value) return ''
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-  return date.toLocaleString('zh-CN', { hour12: false })
 }
 
 function collectTags(images: ImageView[]) {
@@ -109,29 +102,26 @@ export function ProfilePage() {
   const [stats, setStats] = useState<UserStats | null>(null)
   const [images, setImages] = useState<ImageView[]>([])
   const [likedImages, setLikedImages] = useState<ImageView[]>([])
-  const [profileReview, setProfileReview] = useState<ProfileReviewView | null>(null)
-  const [notifications, setNotifications] = useState<NotificationView[]>([])
+  const [favoriteImages, setFavoriteImages] = useState<ImageView[]>([])
   const [following, setFollowing] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [activeTab, setActiveTab] = useState<ProfileTab>('works')
   const [layoutMode, setLayoutMode] = useState<LayoutMode>('grid')
   const [clientIp, setClientIp] = useState('')
+  const [socialDialog, setSocialDialog] = useState<SocialDialog | null>(null)
 
   const topTags = useMemo(() => collectTags(images), [images])
-  const pendingImages = useMemo(() => images.filter((image) => image.status === 'PENDING_REVIEW'), [images])
-  const rejectedImages = useMemo(() => images.filter((image) => image.status === 'REJECTED'), [images])
-  const totalLikes = likedImages.length
+  const workCount = stats?.imageCount ?? images.length
+  const totalLikes = stats?.likedCount ?? likedImages.length
+  const totalFavorites = stats?.favoriteCount ?? favoriteImages.length
   const displayBackgroundUrl = profile?.backgroundUrl || DEFAULT_PROFILE_BACKGROUND
   const recentLiked = useMemo(() => likedImages.slice(0, 3), [likedImages])
   const displayImages = useMemo(() => {
     if (activeTab === 'likes') return likedImages
-    const next = [...images]
-    if (activeTab === 'collections') {
-      return next.sort((left, right) => (right.favoriteCount + (right.collectCount || 0)) - (left.favoriteCount + (left.collectCount || 0)))
-    }
-    return next.sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
-  }, [activeTab, images, likedImages])
+    if (activeTab === 'collections') return favoriteImages
+    return [...images].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
+  }, [activeTab, favoriteImages, images, likedImages])
 
   useEffect(() => {
     api.clientIp().then((response) => setClientIp(response.ip)).catch(() => undefined)
@@ -146,15 +136,19 @@ export function ProfilePage() {
     }
     setLoading(true)
     setError('')
-    const reviewRequest = isOwnProfile ? api.profileReview() : Promise.resolve(null)
-    const notificationRequest = isOwnProfile ? api.notifications(8) : Promise.resolve([])
-    Promise.all([api.profile(targetId), api.userStats(targetId), api.userImages(targetId, 60), api.userLikedImages(targetId, 60), reviewRequest, notificationRequest]).then(([user, userStats, userImages, userLikedImages, latestReview, userNotifications]) => {
+    setSocialDialog(null)
+    Promise.all([
+      api.profile(targetId),
+      api.userStats(targetId),
+      api.userImages(targetId, 60),
+      api.userLikedImages(targetId, 100),
+      api.userFavoriteImages(targetId, 100),
+    ]).then(([user, userStats, userImages, userLikedImages, userFavoriteImages]) => {
       setProfile(user)
       setStats(userStats)
       setImages(userImages)
       setLikedImages(userLikedImages.map((image) => (auth.user?.id === targetId ? { ...image, likedByMe: true } : image)))
-      setProfileReview(latestReview)
-      setNotifications(userNotifications)
+      setFavoriteImages(userFavoriteImages)
       if (auth.user && auth.user.id !== targetId) {
         api.followStatus(targetId).then((status) => setFollowing(status.following)).catch(() => undefined)
       }
@@ -185,31 +179,43 @@ export function ProfilePage() {
   }
 
   function syncLikeChange(post: ImageView, liked: boolean, likeCount: number) {
+    const wasLiked = likedImages.some((image) => image.id === post.id)
     const updatedPost = { ...post, likeCount, likedByMe: liked }
     setImages((current) => current.map((image) => (image.id === post.id ? { ...image, likeCount, likedByMe: liked } : image)))
     setLikedImages((current) => {
       const withoutPost = current.filter((image) => image.id !== post.id)
       return liked ? [updatedPost, ...withoutPost] : withoutPost
     })
+    if (liked !== wasLiked) {
+      setStats((current) => current ? { ...current, likedCount: Math.max(0, current.likedCount + (liked ? 1 : -1)) } : current)
+    }
+  }
+
+  async function openSocialList(kind: SocialListKind) {
+    setSocialDialog({ kind, loading: true, users: [] })
+    try {
+      const users = kind === 'followers'
+        ? await api.userFollowers(targetId, 80)
+        : await api.userFollowing(targetId, 80)
+      setSocialDialog((current) => current?.kind === kind ? { ...current, loading: false, users } : current)
+    } catch (reason) {
+      setSocialDialog((current) => current?.kind === kind
+        ? { ...current, loading: false, error: reason instanceof Error ? reason.message : '列表加载失败' }
+        : current)
+    }
+  }
+
+  function openUserProfile(user: UserSummary) {
+    setSocialDialog(null)
+    navigate(auth.user?.id === user.id ? '/profile' : `/profile/${user.id}`)
   }
 
   function renderGallery() {
     const emptyLabel = activeTab === 'likes'
       ? (isOwnProfile ? '点赞喜欢的作品后，会在这里显示。' : '这个用户还没有公开喜欢记录。')
-      : (isOwnProfile ? '发布第一张图片，开始你的主页。' : '这个用户还没有发布内容。')
-
-    if (activeTab === 'about') {
-      return (
-        <section className="profile-page__tag-board">
-          {topTags.length ? topTags.map((tag: TagSummary) => (
-            <button key={tag.name} type="button" onClick={() => setActiveTab('works')}>
-              <strong>#{tag.name}</strong>
-              <span>{tag.count} 次出现</span>
-            </button>
-          )) : <p>{isOwnProfile ? '发布第一张图片后，主页会自动整理常用标签。' : '这个用户还没有公开标签。'}</p>}
-        </section>
-      )
-    }
+      : activeTab === 'collections'
+        ? (isOwnProfile ? '收藏作品后，会在这里显示。' : '这个用户还没有公开收藏。')
+        : (isOwnProfile ? '发布第一张图片，开始你的主页。' : '这个用户还没有发布内容。')
 
     if (layoutMode === 'list') {
       return (
@@ -305,18 +311,21 @@ export function ProfilePage() {
         </div>
 
         <nav className="profile-page__stats" aria-label="主页统计">
-          <strong><span>{countText(stats?.imageCount)}</span><small>作品</small></strong>
-          <strong><span>{countText(stats?.followerCount)}</span><small>粉丝</small></strong>
-          <strong><span>{countText(stats?.followingCount)}</span><small>关注</small></strong>
-          <strong><span>{countText(totalLikes)}</span><small>喜欢</small></strong>
+          <button type="button" onClick={() => void openSocialList('followers')}>
+            <span>{countText(stats?.followerCount)}</span>
+            <small>粉丝</small>
+          </button>
+          <button type="button" onClick={() => void openSocialList('following')}>
+            <span>{countText(stats?.followingCount)}</span>
+            <small>关注</small>
+          </button>
         </nav>
 
         <div className="profile-page__navline">
           <div className="profile-page__tabs" role="tablist" aria-label="主页内容">
-            <button className={activeTab === 'works' ? 'is-active' : undefined} type="button" onClick={() => setActiveTab('works')}>作品</button>
-            <button className={activeTab === 'collections' ? 'is-active' : undefined} type="button" onClick={() => setActiveTab('collections')}>收藏</button>
-            <button className={activeTab === 'likes' ? 'is-active' : undefined} type="button" onClick={() => setActiveTab('likes')}>喜欢</button>
-            <button className={activeTab === 'about' ? 'is-active' : undefined} type="button" onClick={() => setActiveTab('about')}>关于</button>
+            <button className={activeTab === 'works' ? 'is-active' : undefined} type="button" onClick={() => setActiveTab('works')}>作品（{countText(workCount)}）</button>
+            <button className={activeTab === 'collections' ? 'is-active' : undefined} type="button" onClick={() => setActiveTab('collections')}>收藏（{countText(totalFavorites)}）</button>
+            <button className={activeTab === 'likes' ? 'is-active' : undefined} type="button" onClick={() => setActiveTab('likes')}>喜欢（{countText(totalLikes)}）</button>
           </div>
           <div className="profile-page__tools">
             <button type="button" onClick={() => setActiveTab('works')}><BarChart3 size={14} />最新发布</button>
@@ -330,46 +339,10 @@ export function ProfilePage() {
 
       <main className="profile-page__content">
         <section className="profile-page__gallery" aria-label="主页作品">
-          {isOwnProfile && (pendingImages.length > 0 || rejectedImages.length > 0) && (
-            <section className="profile-page__review-strip" aria-label="作品安全检测状态">
-              <span><Clock3 size={16} />检测中作品 <strong>{pendingImages.length}</strong></span>
-              <span><CircleAlert size={16} />未通过作品 <strong>{rejectedImages.length}</strong></span>
-              <button type="button" onClick={() => setActiveTab('works')}>查看全部</button>
-            </section>
-          )}
           {renderGallery()}
         </section>
 
         <aside className="profile-page__side" aria-label="主页补充信息">
-          {isOwnProfile && (
-            <section className="profile-page__side-card profile-page__side-card--review">
-              <h2>安全检测</h2>
-              {profileReview ? (
-                <article className={`profile-page__review-note ${reviewTone(profileReview.status)}`}>
-                  <span>{profileReview.status === 'REJECTED' ? <CircleAlert size={16} /> : profileReview.status === 'PUBLISHED' ? <ShieldCheck size={16} /> : <Clock3 size={16} />}</span>
-                  <div>
-                    <strong>资料{reviewLabel(profileReview.status)}</strong>
-                    <small>{profileReview.reviewReason || '最近一次资料保存已完成自动安全检测。'}</small>
-                  </div>
-                </article>
-              ) : <p>暂无资料检测记录。</p>}
-              {notifications.length ? (
-                <div className="profile-page__notification-list">
-                  {notifications.slice(0, 4).map((notification) => (
-                    <article key={notification.id}>
-                      <Bell size={14} />
-                      <span>
-                        <strong>{notification.title}</strong>
-                        {notification.content && <small>{notification.content}</small>}
-                        <em>{formatTime(notification.createdAt)}</em>
-                      </span>
-                    </article>
-                  ))}
-                </div>
-              ) : <p>图片和资料的安全检测结果会在这里通知你。</p>}
-            </section>
-          )}
-
           <section className="profile-page__side-card">
             <h2>关于我</h2>
             <p>{profile.bio || '用镜头记录生活的细节与美好，分享值得收藏的画面。'}</p>
@@ -411,6 +384,37 @@ export function ProfilePage() {
           </section>
         </aside>
       </main>
+
+      {socialDialog && (
+        <div className="profile-page__social-overlay" role="presentation" onClick={() => setSocialDialog(null)}>
+          <section className="profile-page__social-dialog" role="dialog" aria-modal="true" aria-label={socialDialog.kind === 'followers' ? '粉丝列表' : '关注列表'} onClick={(event) => event.stopPropagation()}>
+            <header>
+              <strong>{socialDialog.kind === 'followers' ? '粉丝' : '关注'}</strong>
+              <button type="button" aria-label="关闭" onClick={() => setSocialDialog(null)}><X size={18} /></button>
+            </header>
+            {socialDialog.loading ? (
+              <div className="profile-page__social-state"><Loader2 size={18} />正在加载...</div>
+            ) : socialDialog.error ? (
+              <div className="profile-page__social-state">{socialDialog.error}</div>
+            ) : socialDialog.users.length ? (
+              <div className="profile-page__social-list">
+                {socialDialog.users.map((user) => (
+                  <button key={user.id} type="button" onClick={() => openUserProfile(user)}>
+                    <img src={avatarUrl(user.avatarUrl)} alt="" />
+                    <span>
+                      <strong>{user.nickname}</strong>
+                      <small>@{user.username}</small>
+                      {user.bio && <em>{user.bio}</em>}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="profile-page__social-state">{socialDialog.kind === 'followers' ? '还没有粉丝。' : '还没有关注任何人。'}</div>
+            )}
+          </section>
+        </div>
+      )}
     </div>
   )
 }

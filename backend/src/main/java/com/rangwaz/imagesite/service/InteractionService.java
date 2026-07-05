@@ -52,6 +52,33 @@ public interface InteractionService {
     List<ApiDtos.ImageView> likedImages(Long userId, int limit);
 
     /**
+     * Lists images favorited by a user.
+     *
+     * @param userId user id
+     * @param limit maximum rows
+     * @return favorite images
+     */
+    List<ApiDtos.ImageView> favoriteImages(Long userId, int limit);
+
+    /**
+     * Lists users followed by a user.
+     *
+     * @param userId user id
+     * @param limit maximum rows
+     * @return followed users
+     */
+    List<ApiDtos.UserSummary> following(Long userId, int limit);
+
+    /**
+     * Lists users following a user.
+     *
+     * @param userId user id
+     * @param limit maximum rows
+     * @return follower users
+     */
+    List<ApiDtos.UserSummary> followers(Long userId, int limit);
+
+    /**
      * Pages comments.
      *
      * @param postId post id

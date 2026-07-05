@@ -26,9 +26,9 @@ function isPublicPost(post: ImageView) {
 }
 
 function reviewLabel(status?: string) {
-  if (status === 'PENDING_REVIEW') return '检测中'
-  if (status === 'REJECTED') return '检测未通过'
-  return '检测中'
+  if (status === 'PENDING_REVIEW') return '待处理'
+  if (status === 'REJECTED') return '未通过'
+  return '待处理'
 }
 
 function reviewTone(status?: string) {
@@ -133,7 +133,7 @@ export function PostCard({ post, onLikeChange, onOpen }: PostCardProps) {
             <Heart size={13} />
             {countText(likeCount)}
           </button>
-        ) : <span className="feed-card__review-text">{post.reviewReason || '安全检测通过后公开展示'}</span>}
+        ) : <span className="feed-card__review-text">{post.reviewReason || '暂未公开'}</span>}
       </footer>
     </article>
   )

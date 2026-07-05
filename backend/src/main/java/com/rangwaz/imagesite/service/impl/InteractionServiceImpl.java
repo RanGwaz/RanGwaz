@@ -130,6 +130,31 @@ public class InteractionServiceImpl implements InteractionService {
         return imageService.toViews(interactionMapper.findActiveImages(userId, LIKE, safeLimit), "liked");
     }
 
+    @Override
+    public List<ApiDtos.ImageView> favoriteImages(Long userId, int limit) {
+        if (userMapper.findById(userId) == null) throw new BusinessException("USER_NOT_FOUND", "用户不存在");
+        int safeLimit = Math.max(1, Math.min(limit, 100));
+        return imageService.toViews(interactionMapper.findActiveImages(userId, FAVORITE, safeLimit), "favorites");
+    }
+
+    @Override
+    public List<ApiDtos.UserSummary> following(Long userId, int limit) {
+        if (userMapper.findById(userId) == null) throw new BusinessException("USER_NOT_FOUND", "用户不存在");
+        int safeLimit = Math.max(1, Math.min(limit, 100));
+        return followMapper.findFollowing(userId, safeLimit).stream()
+                .map(userService::toSummary)
+                .toList();
+    }
+
+    @Override
+    public List<ApiDtos.UserSummary> followers(Long userId, int limit) {
+        if (userMapper.findById(userId) == null) throw new BusinessException("USER_NOT_FOUND", "用户不存在");
+        int safeLimit = Math.max(1, Math.min(limit, 100));
+        return followMapper.findFollowers(userId, safeLimit).stream()
+                .map(userService::toSummary)
+                .toList();
+    }
+
     /**
      * Pages comments.
      *

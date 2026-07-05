@@ -37,6 +37,12 @@ public class ContentSafetyService {
     private static final Pattern ENGLISH_EXPLICIT_PATTERN = Pattern.compile(
             "(?iu)(^|[^\\p{L}\\p{N}])(sex|porn|porno|xxx|hentai|nude|naked|onlyfans|blowjob|handjob|anal|pussy|penis|vagina|boobs|cum)([^\\p{L}\\p{N}]|$)"
     );
+    private static final List<String> PROFILE_BLOCKED_COMPACT_TERMS = BLOCKED_COMPACT_TERMS.stream()
+            .filter(term -> !"xxx".equals(term))
+            .toList();
+    private static final Pattern PROFILE_ENGLISH_EXPLICIT_PATTERN = Pattern.compile(
+            "(?iu)(^|[^\\p{L}\\p{N}])(sex|porn|porno|hentai|nude|naked|onlyfans|blowjob|handjob|anal|pussy|penis|vagina|boobs|cum)([^\\p{L}\\p{N}]|$)"
+    );
 
     private final ContentSafetyProperties properties;
     private final ImageModerationClient imageModerationClient;
@@ -80,6 +86,19 @@ public class ContentSafetyService {
     }
 
     /**
+     * Throws a stable business error when public profile text is unsafe.
+     *
+     * @param nickname profile nickname
+     * @param bio profile bio
+     */
+    public void requireSafeProfileText(String nickname, String bio) {
+        SafetyDecision decision = checkProfileText(nickname, bio);
+        if (!decision.allowed()) {
+            throw new BusinessException("UNSAFE_CONTENT", "资料内容不符合要求");
+        }
+    }
+
+    /**
      * Throws a stable business error when an uploaded image is unsafe.
      *
      * @param image decoded upload image
@@ -89,15 +108,20 @@ public class ContentSafetyService {
     }
 
     /**
-     * Throws a stable business error when an uploaded image is unsafe. Cloud moderation runs first when configured.
+     * Throws a stable business error when an uploaded image is unsafe. Configured model/cloud moderation is the primary
+     * authority; the lightweight local rule is only a fallback when no external image moderation is enabled.
      *
      * @param image decoded upload image
      * @param originalBytes original encoded image bytes
      * @param contentType upload content type
      */
     public void requireSafeImage(BufferedImage image, byte[] originalBytes, String contentType) {
+        if (!properties.isEnabled()) return;
+        if (properties.getCloud().isEnabled()) {
+            requireCloudSafeImage(originalBytes, contentType);
+            return;
+        }
         requireLocalSafeImage(image);
-        requireCloudSafeImage(originalBytes, contentType);
     }
 
     /**
@@ -155,15 +179,31 @@ public class ContentSafetyService {
      * @return decision
      */
     public SafetyDecision checkText(String text) {
+        return checkTextAgainstRules(text, ENGLISH_EXPLICIT_PATTERN, BLOCKED_COMPACT_TERMS);
+    }
+
+    /**
+     * Checks profile text with less aggressive English placeholder handling.
+     *
+     * @param nickname profile nickname
+     * @param bio profile bio
+     * @return decision
+     */
+    public SafetyDecision checkProfileText(String nickname, String bio) {
+        String text = String.join(" ", List.of(nickname == null ? "" : nickname, bio == null ? "" : bio));
+        return checkTextAgainstRules(text, PROFILE_ENGLISH_EXPLICIT_PATTERN, PROFILE_BLOCKED_COMPACT_TERMS);
+    }
+
+    private SafetyDecision checkTextAgainstRules(String text, Pattern explicitPattern, List<String> compactTerms) {
         if (!properties.isEnabled() || !properties.getText().isEnabled() || !StringUtils.hasText(text)) {
             return SafetyDecision.allow();
         }
         String normalized = normalize(text);
         String compact = compact(normalized);
-        if (ENGLISH_EXPLICIT_PATTERN.matcher(normalized).find()) {
+        if (explicitPattern.matcher(normalized).find()) {
             return SafetyDecision.block("explicit-text");
         }
-        for (String term : BLOCKED_COMPACT_TERMS) {
+        for (String term : compactTerms) {
             if (compact.contains(term)) {
                 return SafetyDecision.block("blocked-term");
             }

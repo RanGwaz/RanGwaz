@@ -210,4 +210,6 @@ export interface UserStats {
   imageCount: number
   followingCount: number
   followerCount: number
+  likedCount: number
+  favoriteCount: number
 }

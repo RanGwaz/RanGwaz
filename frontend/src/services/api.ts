@@ -181,6 +181,15 @@ export const api = {
   userLikedImages(userId: number, limit = 12) {
     return request<ImageView[]>(`/users/${userId}/liked-images?limit=${limit}`)
   },
+  userFavoriteImages(userId: number, limit = 30) {
+    return request<ImageView[]>(`/users/${userId}/favorite-images?limit=${limit}`)
+  },
+  userFollowing(userId: number, limit = 50) {
+    return request<UserSummary[]>(`/users/${userId}/following?limit=${limit}`)
+  },
+  userFollowers(userId: number, limit = 50) {
+    return request<UserSummary[]>(`/users/${userId}/followers?limit=${limit}`)
+  },
   search(keyword: string) {
     return request<SearchResult>(`/search?keyword=${encodeURIComponent(keyword)}`)
   },

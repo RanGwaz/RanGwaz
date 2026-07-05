@@ -118,6 +118,45 @@ public class UserController {
     }
 
     /**
+     * Lists images favorited by a user.
+     *
+     * @param userId user id
+     * @param limit maximum rows
+     * @return favorite image list
+     */
+    @GetMapping("/{userId}/favorite-images")
+    public ApiResponse<List<ApiDtos.ImageView>> favoriteImages(@PathVariable Long userId,
+                                                               @RequestParam(defaultValue = "30") int limit) {
+        return ApiResponse.ok(interactionService.favoriteImages(userId, limit));
+    }
+
+    /**
+     * Lists users followed by a user.
+     *
+     * @param userId user id
+     * @param limit maximum rows
+     * @return followed users
+     */
+    @GetMapping("/{userId}/following")
+    public ApiResponse<List<ApiDtos.UserSummary>> following(@PathVariable Long userId,
+                                                            @RequestParam(defaultValue = "50") int limit) {
+        return ApiResponse.ok(interactionService.following(userId, limit));
+    }
+
+    /**
+     * Lists users following a user.
+     *
+     * @param userId user id
+     * @param limit maximum rows
+     * @return follower users
+     */
+    @GetMapping("/{userId}/followers")
+    public ApiResponse<List<ApiDtos.UserSummary>> followers(@PathVariable Long userId,
+                                                            @RequestParam(defaultValue = "50") int limit) {
+        return ApiResponse.ok(interactionService.followers(userId, limit));
+    }
+
+    /**
      * Updates the current user's profile.
      *
      * @param authorization authorization header

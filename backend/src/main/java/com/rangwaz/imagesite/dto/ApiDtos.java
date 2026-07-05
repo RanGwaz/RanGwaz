@@ -240,7 +240,7 @@ public final class ApiDtos {
     /**
      * User statistics response.
      */
-    public record UserStats(long imageCount, long followingCount, long followerCount) {
+    public record UserStats(long imageCount, long followingCount, long followerCount, long likedCount, long favoriteCount) {
     }
 
     /**

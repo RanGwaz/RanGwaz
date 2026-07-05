@@ -1,10 +1,13 @@
 package com.rangwaz.imagesite.mapper;
 
+import com.rangwaz.imagesite.entity.UserEntity;
 import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+
+import java.util.List;
 
 /**
  * Mapper for user follow relationships.
@@ -57,4 +60,38 @@ public interface FollowMapper {
      */
     @Select("SELECT COUNT(*) FROM follows WHERE followee_id=#{userId}")
     long countFollowers(@Param("userId") Long userId);
+
+    /**
+     * Lists users followed by a user.
+     *
+     * @param userId user id
+     * @param limit maximum rows
+     * @return followed users
+     */
+    @Select("""
+            SELECT u.*
+            FROM follows f
+            JOIN app_users u ON u.id=f.followee_id
+            WHERE f.follower_id=#{userId}
+            ORDER BY f.created_at DESC,f.followee_id DESC
+            LIMIT #{limit}
+            """)
+    List<UserEntity> findFollowing(@Param("userId") Long userId, @Param("limit") int limit);
+
+    /**
+     * Lists users following a user.
+     *
+     * @param userId user id
+     * @param limit maximum rows
+     * @return follower users
+     */
+    @Select("""
+            SELECT u.*
+            FROM follows f
+            JOIN app_users u ON u.id=f.follower_id
+            WHERE f.followee_id=#{userId}
+            ORDER BY f.created_at DESC,f.follower_id DESC
+            LIMIT #{limit}
+            """)
+    List<UserEntity> findFollowers(@Param("userId") Long userId, @Param("limit") int limit);
 }

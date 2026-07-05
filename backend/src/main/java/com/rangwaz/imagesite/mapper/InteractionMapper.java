@@ -28,6 +28,19 @@ public interface InteractionMapper {
     int countActive(@Param("userId") Long userId, @Param("imageId") Long imageId, @Param("type") String type);
 
     /**
+     * Counts active interactions by type.
+     *
+     * @param userId user id
+     * @param type interaction type
+     * @return active count
+     */
+    @Select("""
+            SELECT COUNT(*) FROM user_interactions
+            WHERE user_id=#{userId} AND interaction_type=#{type} AND active=1
+            """)
+    long countActiveByType(@Param("userId") Long userId, @Param("type") String type);
+
+    /**
      * Upserts interaction state.
      *
      * @param userId user id
