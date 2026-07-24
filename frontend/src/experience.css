@@ -1,0 +1,369 @@
+/* Focused experience layer for feed, profile, profile editing, and publishing. */
+.feed-page,
+.profile-page,
+.profile-edit-page,
+.publish-page {
+  color: var(--text, #171717);
+}
+
+.feed-page__main {
+  max-width: 1680px;
+  margin: 0 auto;
+}
+
+.feed-card {
+  contain: layout paint style;
+  content-visibility: auto;
+  contain-intrinsic-size: 280px 360px;
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 1px 0 rgba(15, 23, 42, .04);
+}
+
+.feed-card__media {
+  overflow: hidden;
+  border-radius: 18px;
+  background: #f2f3f5;
+}
+
+.feed-card__body {
+  min-height: 38px;
+  padding: 9px 4px 2px;
+}
+
+.profile-page {
+  width: min(1180px, 100%);
+  margin: 0 auto;
+  padding: 24px clamp(16px, 2.5vw, 30px) 64px;
+}
+
+.profile-page__head {
+  overflow: hidden;
+  border: 1px solid rgba(17, 24, 39, .08);
+  border-radius: 28px;
+  background: #fff;
+  box-shadow: 0 22px 60px rgba(15, 23, 42, .08);
+}
+
+.profile-page__cover {
+  height: clamp(210px, 29vw, 340px);
+}
+
+.profile-page__identity {
+  grid-template-columns: 132px minmax(0, 1fr) auto;
+  gap: 22px;
+  align-items: end;
+  margin-top: -58px;
+  padding: 0 clamp(20px, 3vw, 36px) 28px;
+}
+
+.profile-page__avatar {
+  width: 124px;
+  height: 124px;
+  border-width: 5px;
+}
+
+.profile-page__identity h1 {
+  letter-spacing: -.035em;
+}
+
+.profile-page__tabs {
+  position: sticky;
+  top: 72px;
+  z-index: 5;
+  margin-top: 24px;
+  padding: 8px;
+  border: 1px solid rgba(17, 24, 39, .07);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, .92);
+  box-shadow: 0 10px 30px rgba(15, 23, 42, .05);
+  backdrop-filter: blur(16px);
+}
+
+.profile-edit-page {
+  width: min(1180px, 100%);
+  margin: 0 auto;
+  padding: 20px clamp(14px, 2.5vw, 30px) 60px;
+}
+
+.profile-edit-page__topbar {
+  position: sticky;
+  top: 12px;
+  z-index: 12;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 18px;
+  margin-bottom: 20px;
+  padding: 12px 14px;
+  border: 1px solid rgba(17, 24, 39, .08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, .94);
+  box-shadow: 0 12px 34px rgba(15, 23, 42, .08);
+  backdrop-filter: blur(16px);
+}
+
+.profile-edit-page__commands {
+  justify-self: end;
+}
+
+.profile-edit-page__workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(340px, .85fr);
+  gap: 22px;
+  align-items: start;
+}
+
+.profile-edit-page__preview-panel,
+.profile-edit-page__editor-panel {
+  overflow: hidden;
+  border: 1px solid rgba(17, 24, 39, .08);
+  border-radius: 24px;
+  background: #fff;
+  box-shadow: 0 18px 50px rgba(15, 23, 42, .07);
+}
+
+.profile-edit-page__editor-panel {
+  position: sticky;
+  top: 94px;
+}
+
+.profile-edit-page__cover-stage {
+  min-height: 300px;
+}
+
+.profile-edit-page__cover-stage > img {
+  min-height: 300px;
+  object-fit: cover;
+}
+
+.profile-edit-page__profile-card {
+  padding: 0 30px 30px;
+}
+
+.profile-edit-page__section {
+  padding: 24px;
+}
+
+.profile-edit-page__field input,
+.profile-edit-page__field textarea {
+  border-radius: 14px;
+  background: #f7f7f8;
+}
+
+.publish-page--simple {
+  width: min(1180px, 100%);
+  margin: 0 auto;
+  padding: 20px clamp(14px, 2.5vw, 30px) 72px;
+}
+
+.publish-simple {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(330px, .75fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.publish-simple__top,
+.publish-simple__bottom {
+  grid-column: 1 / -1;
+}
+
+.publish-simple__top {
+  position: sticky;
+  top: 12px;
+  z-index: 10;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid rgba(17, 24, 39, .08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, .94);
+  box-shadow: 0 12px 34px rgba(15, 23, 42, .08);
+  backdrop-filter: blur(16px);
+}
+
+.publish-simple__top h1 {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: -.025em;
+}
+
+.publish-simple__top > span {
+  justify-self: end;
+}
+
+.publish-simple__panel {
+  border: 1px solid rgba(17, 24, 39, .08);
+  border-radius: 24px;
+  background: #fff;
+  box-shadow: 0 18px 50px rgba(15, 23, 42, .06);
+}
+
+.publish-simple__panel--drop {
+  grid-row: span 2;
+  min-height: 520px;
+  padding: 20px;
+}
+
+.publish-simple__drop-copy {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  margin-bottom: 18px;
+  padding: 18px;
+  border: 1px dashed rgba(17, 24, 39, .18);
+  border-radius: 18px;
+  background: linear-gradient(135deg, #f8f9fb, #fff);
+}
+
+.publish-simple__drop-copy > svg {
+  color: var(--accent, #e60023);
+}
+
+.publish-simple__drop-copy h2,
+.publish-simple__drop-copy p {
+  margin: 0;
+}
+
+.publish-simple__drop-copy h2 {
+  font-size: 17px;
+}
+
+.publish-simple__drop-copy p {
+  margin-top: 4px;
+  color: #737984;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.publish-simple__drop-copy > span {
+  color: #8a909b;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.publish-simple__uploads {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.publish-simple__uploads article,
+.publish-simple__uploads > label {
+  min-height: 150px;
+  border-radius: 16px;
+}
+
+.publish-simple__fields,
+.publish-simple__tags {
+  padding: 22px;
+}
+
+.publish-simple__fields {
+  display: grid;
+  gap: 12px;
+}
+
+.publish-simple__fields input,
+.publish-simple__fields textarea {
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  background: #f6f7f8;
+  transition: border-color .18s ease, box-shadow .18s ease, background .18s ease;
+}
+
+.publish-simple__fields input:focus,
+.publish-simple__fields textarea:focus {
+  border-color: rgba(230, 0, 35, .3);
+  background: #fff;
+  box-shadow: 0 0 0 4px rgba(230, 0, 35, .08);
+  outline: none;
+}
+
+.publish-simple__field-meta {
+  display: flex;
+  justify-content: space-between;
+  color: #989da6;
+  font-size: 11px;
+}
+
+.publish-simple__bottom {
+  position: sticky;
+  bottom: 14px;
+  z-index: 9;
+  border: 1px solid rgba(17, 24, 39, .08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, .95);
+  box-shadow: 0 14px 40px rgba(15, 23, 42, .12);
+  backdrop-filter: blur(16px);
+}
+
+@media (max-width: 900px) {
+  .profile-edit-page__workspace,
+  .publish-simple {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-edit-page__editor-panel {
+    position: static;
+  }
+
+  .publish-simple__panel--drop {
+    grid-row: auto;
+    min-height: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .profile-page,
+  .profile-edit-page,
+  .publish-page--simple {
+    padding-inline: 10px;
+  }
+
+  .profile-page__head,
+  .profile-edit-page__preview-panel,
+  .profile-edit-page__editor-panel,
+  .publish-simple__panel {
+    border-radius: 18px;
+  }
+
+  .profile-page__identity {
+    grid-template-columns: 82px minmax(0, 1fr);
+    margin-top: -38px;
+    padding: 0 16px 20px;
+  }
+
+  .profile-page__avatar {
+    width: 78px;
+    height: 78px;
+  }
+
+  .profile-edit-page__topbar,
+  .publish-simple__top {
+    top: 6px;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .profile-edit-page__title span,
+  .profile-edit-page__commands button:not(.is-primary),
+  .publish-simple__top > span {
+    display: none;
+  }
+
+  .publish-simple__uploads {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .publish-simple__drop-copy {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .publish-simple__drop-copy > span {
+    display: none;
+  }
+}

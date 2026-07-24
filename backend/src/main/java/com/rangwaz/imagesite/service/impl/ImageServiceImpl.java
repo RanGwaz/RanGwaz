@@ -318,6 +318,27 @@ public class ImageServiceImpl implements ImageService {
                               String locationLabel) {
         behaviorEventPublisher.publish(userId, visitorId, postId, type, scene, position, duration, latitude, longitude, locationLabel);
     }
+    public void trackBehavior(Long userId,
+                              String visitorId,
+                              Long postId,
+                              String type,
+                              String scene,
+                              Integer position,
+                              Integer duration,
+                              Double latitude,
+                              Double longitude,
+                              String locationLabel,
+                              String decisionId,
+                              String eventId,
+                              String source,
+                              Double score,
+                              LocalDateTime occurredAt) {
+        behaviorEventPublisher.publish(
+                userId, visitorId, postId, type, scene, position, duration,
+                latitude, longitude, locationLabel, decisionId, eventId, source, score, occurredAt
+        );
+    }
+
 
     private ApiDtos.ImageView toView(ImageEntity image,
                                     String reason,

@@ -141,4 +141,9 @@ public interface InteractionService {
      * @param request batch behavior request
      */
     void behaviors(Long userId, String visitorId, ApiDtos.BehaviorBatchRequest request);
+    /**
+     * Batch-loads current user's interaction states.
+     */
+    java.util.Map<Long, ApiDtos.ImageInteractionStatus> statuses(Long userId, List<Long> postIds);
+
 }

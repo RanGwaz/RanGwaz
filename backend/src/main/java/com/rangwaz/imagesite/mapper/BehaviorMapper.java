@@ -14,13 +14,41 @@ import java.util.List;
 @Mapper
 public interface BehaviorMapper {
     /**
+     * Checks whether an actor has recent positive history for personalization.
+     */
+    @Select("""
+            <script>
+            SELECT EXISTS(
+              SELECT 1
+              FROM user_behaviors
+              WHERE
+                <choose>
+                  <when test="userId != null">user_id=#{userId}</when>
+                  <otherwise>visitor_id=#{visitorId}</otherwise>
+                </choose>
+                AND behavior_type IN ('favorite','like','comment','share','click','view')
+                AND created_at >= DATE_SUB(NOW(), INTERVAL 60 DAY)
+              LIMIT 1
+            )
+            </script>
+            """)
+    int hasRecentPositiveBehavior(@Param("userId") Long userId,
+                                  @Param("visitorId") String visitorId);
+
+    /**
      * Inserts a behavior event.
      *
      * @param behavior behavior entity
      */
     @Insert("""
-            INSERT INTO user_behaviors(user_id,visitor_id,image_id,behavior_type,scene,position_no,duration_ms)
-            VALUES(#{userId},#{visitorId},#{imageId},#{behaviorType},#{scene},#{positionNo},#{durationMs})
+            INSERT IGNORE INTO user_behaviors(
+              user_id,visitor_id,image_id,behavior_type,scene,position_no,duration_ms,
+              decision_id,event_id,source,score,created_at
+            )
+            VALUES(
+              #{userId},#{visitorId},#{imageId},#{behaviorType},#{scene},#{positionNo},#{durationMs},
+              #{decisionId},#{eventId},#{source},#{score},COALESCE(#{occurredAt},NOW())
+            )
             """)
     void insert(UserBehaviorEntity behavior);
 
@@ -35,15 +63,25 @@ public interface BehaviorMapper {
      * @param source recommendation source
      */
     @Insert("""
-            INSERT INTO feed_impressions(user_id,visitor_id,image_id,scene,position_no,source)
-            VALUES(#{userId},#{visitorId},#{imageId},#{scene},#{positionNo},#{source})
+            INSERT IGNORE INTO feed_impressions(
+              user_id,visitor_id,image_id,scene,position_no,source,score,
+              decision_id,event_id,occurred_at
+            )
+            VALUES(
+              #{userId},#{visitorId},#{imageId},#{scene},#{positionNo},#{source},#{score},
+              #{decisionId},#{eventId},COALESCE(#{occurredAt},NOW())
+            )
             """)
     void insertFeedImpression(@Param("userId") Long userId,
                               @Param("visitorId") String visitorId,
                               @Param("imageId") Long imageId,
                               @Param("scene") String scene,
                               @Param("positionNo") Integer positionNo,
-                              @Param("source") String source);
+                              @Param("source") String source,
+                              @Param("score") Double score,
+                              @Param("decisionId") String decisionId,
+                              @Param("eventId") String eventId,
+                              @Param("occurredAt") java.time.LocalDateTime occurredAt);
 
     /**
      * Finds recent positive behavior seed images for vector personalization.

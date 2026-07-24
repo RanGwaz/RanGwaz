@@ -1,10 +1,12 @@
 /** Home feed page with masonry layout and infinite scroll. */
 import { RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useAuth } from '../AuthContext'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { MasonryGrid } from '../components/MasonryGrid'
 import { api } from '../services/api'
 import type { ImageView } from '../types'
+import { SearchPage } from './SearchPage'
 import {
   clearFeedSession,
   readFeedSession,
@@ -17,11 +19,16 @@ import {
 } from '../utils/feedSession'
 import { getVisitorId } from '../utils/visitorIdentity'
 
-const pageSize = 30
+const pageSize = 24
 
 function createRefreshSeed() {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID()
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+function localOccurredAt() {
+  const now = new Date()
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 23)
 }
 
 function isBrowserReload() {
@@ -29,7 +36,7 @@ function isBrowserReload() {
   return navigation?.type === 'reload'
 }
 
-function uniqueIds(ids: number[], limit = 320) {
+function uniqueIds(ids: number[], limit = 180) {
   const seen = new Set<number>()
   return ids.filter((id) => {
     if (!Number.isFinite(id) || id <= 0 || seen.has(id)) return false
@@ -39,6 +46,7 @@ function uniqueIds(ids: number[], limit = 320) {
 }
 
 export function FeedPage() {
+  const auth = useAuth()
   const initialSessionRef = useRef(isBrowserReload() ? null : readFeedSession())
   const visitorIdRef = useRef(getVisitorId())
   const feedSessionIdRef = useRef(initialSessionRef.current?.feedSessionId ?? createRefreshSeed())
@@ -55,9 +63,58 @@ export function FeedPage() {
   const loadingRef = useRef(false)
   const requestedPagesRef = useRef<Set<number>>(new Set())
   const loadedImageIdsRef = useRef<Set<number>>(new Set(initialSessionRef.current?.images.map((image) => image.id) ?? []))
+  const impressionIdsRef = useRef<Set<string>>(new Set())
+  const impressionQueueRef = useRef<Array<{
+    imageId: number
+    behaviorType: string
+    scene: string
+    position?: number
+    decisionId: string
+    eventId: string
+    source: string
+    occurredAt: string
+  }>>([])
+  const impressionTimerRef = useRef<number | null>(null)
   const navigate = useNavigate()
+  const [params] = useSearchParams()
+  const searchKeyword = params.get('q')?.trim() || ''
 
   const hasMore = loadedOnce && !exhausted
+
+  const flushImpressions = useCallback(() => {
+    if (impressionTimerRef.current !== null) window.clearTimeout(impressionTimerRef.current)
+    impressionTimerRef.current = null
+    const events = impressionQueueRef.current.splice(0)
+    if (events.length === 0) return
+    void api.trackBehaviors(events, visitorIdRef.current).catch(() => undefined)
+  }, [])
+
+  const queueImpression = useCallback((image: ImageView) => {
+    const decisionId = image.recommendationDecisionId
+    if (!decisionId) return
+    const eventId = `${decisionId}:${image.id}`
+    if (impressionIdsRef.current.has(eventId)) return
+    impressionIdsRef.current.add(eventId)
+    impressionQueueRef.current.push({
+      imageId: image.id,
+      behaviorType: 'impression',
+      scene: 'home',
+      position: image.recommendationPosition,
+      decisionId,
+      eventId,
+      source: image.recommendationReason || 'home',
+      occurredAt: localOccurredAt(),
+    })
+    if (impressionQueueRef.current.length >= 12) {
+      flushImpressions()
+      return
+    }
+    if (impressionTimerRef.current === null) {
+      impressionTimerRef.current = window.setTimeout(flushImpressions, 500)
+    }
+  }, [flushImpressions])
+
+  useEffect(() => () => flushImpressions(), [flushImpressions])
 
   const loadPage = useCallback(async (targetPage: number, reset = false) => {
     if (loadingRef.current) return
@@ -71,31 +128,39 @@ export function FeedPage() {
     try {
       const excludeIds = targetPage === 1
         ? uniqueIds([...readRecentInteractedIds(), ...readRecentFeedIds()])
-        : uniqueIds(Array.from(loadedImageIdsRef.current), 360)
+        : uniqueIds(Array.from(loadedImageIdsRef.current), 240)
       const response = await api.homeFeed(targetPage, pageSize, refreshSeedRef.current, feedSessionIdRef.current, visitorIdRef.current, excludeIds)
+      const decisionId = createRefreshSeed()
+      const pageRecords = response.records.map((image, index) => ({
+        ...image,
+        recommendationDecisionId: decisionId,
+        recommendationPosition: (targetPage - 1) * pageSize + index + 1,
+      }))
       setTotal(response.total)
       setPage(targetPage + 1)
       setLoadedOnce(true)
-      setExhausted(response.records.length === 0)
+      setExhausted(pageRecords.length === 0)
 
-      void api.trackBehaviors(response.records.map((image, index) => ({
-        imageId: image.id,
-        behaviorType: 'impression',
-        scene: 'home',
-        position: (targetPage - 1) * pageSize + index + 1,
-      })), visitorIdRef.current).catch(() => undefined)
-
-      if (response.records.length > 0) {
-        rememberRecentFeedIds(response.records.map((image) => image.id))
+      if (pageRecords.length > 0) {
+        rememberRecentFeedIds(pageRecords.map((image) => image.id))
       }
 
       setImages((current) => {
         const base = reset ? [] : current
         const seen = new Set(base.map((image) => image.id))
-        const next = [...base, ...response.records.filter((image) => !seen.has(image.id))]
+        const next = [...base, ...pageRecords.filter((image) => !seen.has(image.id))]
         loadedImageIdsRef.current = new Set(next.map((image) => image.id))
+
         return next
       })
+      if (auth.user && pageRecords.length > 0) {
+        void api.interactionStatuses(pageRecords.map((image) => image.id)).then((states) => {
+          setImages((current) => current.map((image) => {
+            const state = states[String(image.id)]
+            return state ? { ...image, likedByMe: state.liked } : image
+          }))
+        }).catch(() => undefined)
+      }
     } catch (reason) {
       requestedPagesRef.current.delete(targetPage)
       setLoadedOnce(true)
@@ -104,11 +169,12 @@ export function FeedPage() {
       loadingRef.current = false
       setLoading(false)
     }
-  }, [])
+  }, [auth.user?.id])
 
   useEffect(() => {
+    if (searchKeyword) return
     if (!initialSessionRef.current) void loadPage(1, true)
-  }, [loadPage])
+  }, [loadPage, searchKeyword])
 
   useEffect(() => {
     writeFeedSession({ feedSessionId: feedSessionIdRef.current, images, page, total, refreshSeed: refreshSeedRef.current, loadedOnce, exhausted, scrollY: window.scrollY })
@@ -144,6 +210,7 @@ export function FeedPage() {
   }, [images.length])
 
   useEffect(() => {
+    if (searchKeyword) return
     const target = sentinelRef.current
     if (!target) return
     const observer = new IntersectionObserver((entries) => {
@@ -151,7 +218,7 @@ export function FeedPage() {
     }, { rootMargin: '560px 0px' })
     observer.observe(target)
     return () => observer.disconnect()
-  }, [hasMore, loadPage, page])
+  }, [hasMore, loadPage, page, searchKeyword])
 
   function openImage(image: ImageView) {
     const position = images.findIndex((item) => item.id === image.id) + 1
@@ -169,6 +236,10 @@ export function FeedPage() {
     initialSessionRef.current = null
     restoredScrollRef.current = false
     loadedImageIdsRef.current = new Set()
+    impressionIdsRef.current.clear()
+    impressionQueueRef.current = []
+    if (impressionTimerRef.current !== null) window.clearTimeout(impressionTimerRef.current)
+    impressionTimerRef.current = null
     setImages([])
     setTotal(0)
     setPage(1)
@@ -178,6 +249,8 @@ export function FeedPage() {
     void loadPage(1, true)
   }
 
+  if (searchKeyword) return <SearchPage />
+
   return (
     <div className="feed-page">
       <main className="feed-page__main">
@@ -185,6 +258,7 @@ export function FeedPage() {
           posts={images}
           loading={loading && images.length === 0}
           emptyLabel={loading ? '正在加载图片...' : '还没有图片'}
+          onImpression={queueImpression}
           onOpen={openImage}
         />
         {error && (

@@ -75,4 +75,44 @@ public interface InteractionMapper {
             LIMIT #{limit}
             """)
     List<ImageEntity> findActiveImages(@Param("userId") Long userId, @Param("type") String type, @Param("limit") int limit);
+    /**
+     * Batch-loads active like and favorite states for feed cards.
+     */
+    @Select("""
+            <script>
+            SELECT image_id AS imageId, interaction_type AS interactionType
+            FROM user_interactions
+            WHERE user_id=#{userId}
+              AND active=1
+              AND interaction_type IN ('LIKE','FAVORITE')
+              AND image_id IN
+              <foreach collection="imageIds" item="imageId" open="(" separator="," close=")">
+                #{imageId}
+              </foreach>
+            </script>
+            """)
+    List<InteractionStateRow> findActiveStates(@Param("userId") Long userId,
+                                               @Param("imageIds") List<Long> imageIds);
+
+    class InteractionStateRow {
+        private Long imageId;
+        private String interactionType;
+
+        public Long getImageId() {
+            return imageId;
+        }
+
+        public void setImageId(Long imageId) {
+            this.imageId = imageId;
+        }
+
+        public String getInteractionType() {
+            return interactionType;
+        }
+
+        public void setInteractionType(String interactionType) {
+            this.interactionType = interactionType;
+        }
+    }
+
 }

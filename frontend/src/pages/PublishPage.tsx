@@ -10,7 +10,10 @@ const DRAFT_KEY = 'rangwaz-image-draft'
 const MAX_ASSETS = 9
 const MAX_TAGS = 12
 
+const MAX_ASSET_SIZE = 20 * 1024 * 1024
+
 interface PublishDraft {
+  assets?: UploadResponse[]
   content?: string
   selectedTags?: string[]
   title?: string
@@ -76,15 +79,16 @@ export function PublishPage() {
       setTitle(draft.title || '')
       setContent(draft.content || '')
       setSelectedTags(draft.selectedTags || [])
+      setAssets(Array.isArray(draft.assets) ? draft.assets.slice(0, MAX_ASSETS) : [])
     } catch {
       localStorage.removeItem(DRAFT_KEY)
     }
   }, [])
 
   useEffect(() => {
-    const draft: PublishDraft = { content, selectedTags, title }
+    const draft: PublishDraft = { assets, content, selectedTags, title }
     localStorage.setItem(DRAFT_KEY, JSON.stringify(draft))
-  }, [content, selectedTags, title])
+  }, [assets, content, selectedTags, title])
 
   function addTags(raw: string) {
     const labels = uniqueLabels(raw.split(/[\s,，]+/))
@@ -115,12 +119,22 @@ export function PublishPage() {
   }
 
   async function uploadFiles(files: File[]) {
-    const candidates = files.filter((file) => file.type.startsWith('image/')).slice(0, Math.max(0, MAX_ASSETS - assets.length))
+    const available = Math.max(0, MAX_ASSETS - assets.length)
+    const imageFiles = files.filter((file) => file.type.startsWith('image/'))
+    if (imageFiles.some((file) => file.size > MAX_ASSET_SIZE)) {
+      setError('\u5355\u5f20\u56fe\u7247\u4e0d\u80fd\u8d85\u8fc7 20MB')
+      return
+    }
+    const candidates = imageFiles.slice(0, available)
     if (!candidates.length) return
     setUploading(true)
     setError('')
     try {
-      const uploaded = await Promise.all(candidates.map((file) => api.uploadImage(file)))
+      const uploaded: UploadResponse[] = []
+      for (let index = 0; index < candidates.length; index += 3) {
+        const batch = await Promise.all(candidates.slice(index, index + 3).map((file) => api.uploadImage(file)))
+        uploaded.push(...batch)
+      }
       setAssets((current) => [...current, ...uploaded].slice(0, MAX_ASSETS))
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '图片上传失败')
@@ -222,6 +236,14 @@ export function PublishPage() {
           onDragOver={overDropZone}
           onDrop={dropFiles}
         >
+          <div className="publish-simple__drop-copy">
+            <ImagePlus size={30} />
+            <div>
+              <h2>{assets.length ? '\u7ee7\u7eed\u6dfb\u52a0\u753b\u9762' : '\u4ece\u4e00\u5f20\u597d\u56fe\u5f00\u59cb'}</h2>
+              <p>{'\u62d6\u653e\u56fe\u7247\u5230\u8fd9\u91cc\uff0c\u6216\u70b9\u51fb\u4e0a\u4f20\u3002\u9996\u5f20\u56fe\u7247\u5c06\u4f5c\u4e3a\u5c01\u9762\u3002'}</p>
+            </div>
+            <span>{assets.length}/{MAX_ASSETS}</span>
+          </div>
           <div className="publish-simple__uploads">
             {assets.map((asset, index) => (
               <article key={`${asset.objectKey}-${index}`}>
@@ -245,6 +267,10 @@ export function PublishPage() {
         <section className="publish-simple__panel publish-simple__fields">
           <input value={title} maxLength={80} onChange={(event) => setTitle(event.target.value)} placeholder="标题" />
           <textarea value={content} maxLength={5000} onChange={(event) => setContent(event.target.value)} placeholder="描述" />
+          <div className="publish-simple__field-meta">
+            <span>{'\u6807\u9898'} {title.length}/80</span>
+            <span>{'\u63cf\u8ff0'} {content.length}/5000</span>
+          </div>
         </section>
 
         <section className="publish-simple__panel publish-simple__tags">

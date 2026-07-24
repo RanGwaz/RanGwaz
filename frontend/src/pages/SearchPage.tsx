@@ -12,16 +12,22 @@ export function SearchPage() {
   const keyword = params.get('q') || ''
   const [result, setResult] = useState<SearchResult>({ users: [], images: [], topics: [], related: [] })
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
   const related = result.related ?? []
 
   useEffect(() => {
     if (!keyword.trim()) {
       setResult({ users: [], images: [], topics: [], related: [] })
       setLoading(false)
+      setError('')
       return
     }
     setLoading(true)
-    api.search(keyword).then(setResult).finally(() => setLoading(false))
+    setError('')
+    api.search(keyword)
+      .then(setResult)
+      .catch((reason) => setError(reason instanceof Error ? reason.message : '搜索失败'))
+      .finally(() => setLoading(false))
   }, [keyword])
 
   function openImage(target: ImageView) {
@@ -30,13 +36,18 @@ export function SearchPage() {
   }
 
   function pickRelated(item: SearchSuggestionItem) {
-    navigate(`/discover?q=${encodeURIComponent(item.keyword)}`)
+    navigate(`/home?q=${encodeURIComponent(item.keyword)}`)
   }
 
   return (
     <div className="search-page">
       <main className="search-page__body">
+        <section className="search-page__summary">
+          <span>搜索</span>
+          <strong>{keyword}</strong>
+        </section>
         {loading && <section className="search-page__state">正在搜索...</section>}
+        {!loading && error && <section className="search-page__state">{error}</section>}
         {!loading && related.length > 0 && (
           <section className="search-page__section search-page__section--plain">
             <div className="search-page__chips">
@@ -53,7 +64,7 @@ export function SearchPage() {
             <h2>标签</h2>
             <div className="search-page__topic-row">
               {result.topics.map((topic) => (
-                <button key={topic.id} type="button" onClick={() => navigate(`/discover?q=${encodeURIComponent(topic.name)}`)}>
+                <button key={topic.id} type="button" onClick={() => navigate(`/home?q=${encodeURIComponent(topic.name)}`)}>
                   <strong>#{topic.name}</strong>
                   <span>{countText(topic.postCount)} 张图片</span>
                 </button>
@@ -80,6 +91,9 @@ export function SearchPage() {
             <h2>图片</h2>
             <MasonryGrid posts={result.images} onOpen={openImage} />
           </section>
+        )}
+        {!loading && !error && keyword.trim() && !result.images.length && !result.users.length && !result.topics.length && (
+          <section className="search-page__state">没有找到相关内容</section>
         )}
       </main>
     </div>

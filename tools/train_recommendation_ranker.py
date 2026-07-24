@@ -17,7 +17,7 @@ import pymysql
 from recommendation_model_service import FEATURE_NAMES
 
 BASE_DIR = Path(__file__).resolve().parent
-MODEL_DIR = BASE_DIR / "models" / "recommendation"
+MODEL_DIR = Path(os.environ.get("VIBELO_RECOMMENDATION_MODEL_DIR", BASE_DIR / "models" / "recommendation"))
 
 
 def connect() -> pymysql.connections.Connection:
@@ -101,6 +101,7 @@ def behavior_samples(limit: int, days: int) -> Tuple[List[List[float]], List[flo
     sql = """
         SELECT
           fi.user_id,
+          fi.visitor_id,
           fi.image_id,
           fi.position_no,
           fi.source,
@@ -131,14 +132,19 @@ def behavior_samples(limit: int, days: int) -> Tuple[List[List[float]], List[flo
         JOIN images i ON i.id=fi.image_id
         LEFT JOIN user_behaviors ub
           ON ub.image_id=fi.image_id
-         AND (ub.user_id <=> fi.user_id)
-         AND ub.created_at >= fi.created_at
-         AND ub.created_at < DATE_ADD(fi.created_at, INTERVAL 24 HOUR)
+         AND (
+           (fi.user_id IS NOT NULL AND ub.user_id=fi.user_id)
+           OR (fi.user_id IS NULL AND fi.visitor_id IS NOT NULL
+               AND ub.user_id IS NULL AND ub.visitor_id=fi.visitor_id)
+         )
+         AND ub.created_at >= COALESCE(fi.occurred_at,fi.created_at)
+         AND ub.created_at < DATE_ADD(COALESCE(fi.occurred_at,fi.created_at), INTERVAL 24 HOUR)
          AND ub.behavior_type IN ('favorite','like','comment','share','click','view')
-        WHERE fi.created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+        WHERE COALESCE(fi.occurred_at,fi.created_at) >= DATE_SUB(NOW(), INTERVAL %s DAY)
+          AND COALESCE(fi.occurred_at,fi.created_at) < DATE_SUB(NOW(), INTERVAL 24 HOUR)
           AND i.status='PUBLISHED'
         GROUP BY fi.id
-        ORDER BY fi.id DESC
+        ORDER BY COALESCE(fi.occurred_at,fi.created_at) ASC,fi.id ASC
         LIMIT %s
     """
     with connect() as conn:
@@ -211,7 +217,7 @@ def train(x: List[List[float]], y: List[float], mode: str) -> Dict[str, Any]:
     except ImportError as exc:
         raise SystemExit("Install recommendation requirements first: pip install -r tools/requirements_recommendation.txt") from exc
 
-    x_train, x_valid, y_train, y_valid = train_test_split(x, y, test_size=0.15, random_state=42)
+    x_train, x_valid, y_train, y_valid = train_test_split(x, y, test_size=0.15, shuffle=False)
     model = HistGradientBoostingRegressor(
         max_iter=220,
         learning_rate=0.045,

@@ -61,6 +61,13 @@ management:
       exposure:
         include: health,info,metrics
 app:
+  features:
+    publishing-enabled: ${APP_FEATURE_PUBLISHING_ENABLED:false}
+  web:
+    allowed-origin-patterns: ${APP_WEB_ALLOWED_ORIGIN_PATTERNS:http://localhost:*,http://127.0.0.1:*}
+  auth:
+    token-secret: ${APP_AUTH_TOKEN_SECRET:dev-only-change-this-token-secret-before-public-deployment}
+    token-ttl-seconds: ${APP_AUTH_TOKEN_TTL_SECONDS:86400}
   upload-root: storage/uploads
   public-upload-prefix: /uploads
   recommendation:

@@ -254,7 +254,12 @@ public final class ApiDtos {
                                   String visitorId,
                                   Double latitude,
                                   Double longitude,
-                                  String locationLabel) {
+                                  String locationLabel,
+                                  String decisionId,
+                                  String eventId,
+                                  String source,
+                                  Double score,
+                                  LocalDateTime occurredAt) {
     }
 
     /**

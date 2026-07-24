@@ -1,5 +1,5 @@
 /** Top navigation shell for the image feed. */
-import { ChevronDown, LogIn, LogOut, Moon, Plus, Search, Sun, User } from 'lucide-react'
+import { Check, ChevronDown, LogIn, LogOut, Monitor, Moon, Search, Sun, User } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties, FormEvent, PropsWithChildren } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -32,12 +32,14 @@ function saveRecentSearches(items: SearchSuggestionItem[]) {
 export function AppShell({ children }: PropsWithChildren) {
   const [keyword, setKeyword] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
+  const [themeMenuOpen, setThemeMenuOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchAnchor, setSearchAnchor] = useState(DEFAULT_SEARCH_ANCHOR)
   const [suggestions, setSuggestions] = useState<SearchSuggestionResponse>(EMPTY_SUGGESTIONS)
   const [suggestionsLoading, setSuggestionsLoading] = useState(false)
   const [recentSearches, setRecentSearches] = useState<SearchSuggestionItem[]>(() => loadRecentSearches())
   const menuRef = useRef<HTMLDivElement | null>(null)
+  const themeRef = useRef<HTMLDivElement | null>(null)
   const searchRef = useRef<HTMLFormElement | null>(null)
   const searchPanelRef = useRef<HTMLDivElement | null>(null)
   const navigate = useNavigate()
@@ -63,6 +65,7 @@ export function AppShell({ children }: PropsWithChildren) {
   useEffect(() => {
     const close = (event: MouseEvent) => {
       if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false)
+      if (!themeRef.current?.contains(event.target as Node)) setThemeMenuOpen(false)
       if (!searchRef.current?.contains(event.target as Node) && !searchPanelRef.current?.contains(event.target as Node)) {
         setSearchOpen(false)
       }
@@ -72,7 +75,10 @@ export function AppShell({ children }: PropsWithChildren) {
   }, [])
 
   useEffect(() => {
-    if (location.pathname !== '/discover') return
+    if (location.pathname !== '/home') {
+      setKeyword('')
+      return
+    }
     const params = new URLSearchParams(location.search)
     setKeyword(params.get('q') || '')
   }, [location.pathname, location.search])
@@ -128,7 +134,7 @@ export function AppShell({ children }: PropsWithChildren) {
     saveRecentSearches(nextRecent)
     setKeyword(q)
     setSearchOpen(false)
-    navigate(`/discover?q=${encodeURIComponent(q)}`)
+    navigate(`/home?q=${encodeURIComponent(q)}`)
   }
 
   function clearRecentSearches() {
@@ -152,15 +158,36 @@ export function AppShell({ children }: PropsWithChildren) {
           />
         </form>
         <div className="app-shell__actions">
-          <button
-            className="app-shell__icon-btn"
-            type="button"
-            onClick={theme.toggleTheme}
-            aria-label={theme.resolvedTheme === 'dark' ? '切换浅色主题' : '切换深色主题'}
-            title={theme.resolvedTheme === 'dark' ? '浅色主题' : '深色主题'}
-          >
-            {theme.resolvedTheme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
-          </button>
+          <div className="app-shell__theme" ref={themeRef}>
+            <button
+              className="app-shell__icon-btn"
+              type="button"
+              onClick={() => setThemeMenuOpen((value) => !value)}
+              aria-label="主题设置"
+              title="主题设置"
+            >
+              {theme.resolvedTheme === 'dark' ? <Moon size={18} /> : <Sun size={18} />}
+            </button>
+            {themeMenuOpen && (
+              <div className="app-shell__theme-menu" role="menu" aria-label="主题设置">
+                <button className={theme.mode === 'light' ? 'is-active' : undefined} type="button" onClick={() => { theme.setMode('light'); setThemeMenuOpen(false) }}>
+                  <Sun size={16} />
+                  浅色
+                  {theme.mode === 'light' && <Check size={15} />}
+                </button>
+                <button className={theme.mode === 'dark' ? 'is-active' : undefined} type="button" onClick={() => { theme.setMode('dark'); setThemeMenuOpen(false) }}>
+                  <Moon size={16} />
+                  深色
+                  {theme.mode === 'dark' && <Check size={15} />}
+                </button>
+                <button className={theme.mode === 'system' ? 'is-active' : undefined} type="button" onClick={() => { theme.setMode('system'); setThemeMenuOpen(false) }}>
+                  <Monitor size={16} />
+                  跟随系统
+                  {theme.mode === 'system' && <Check size={15} />}
+                </button>
+              </div>
+            )}
+          </div>
           <div className="app-shell__account" ref={menuRef}>
             {auth.user ? (
               <>
@@ -171,7 +198,6 @@ export function AppShell({ children }: PropsWithChildren) {
                 {menuOpen && (
                   <nav className="app-shell__account-menu" aria-label="账户菜单">
                     <button type="button" onClick={() => openAuthed('/profile')}><User size={17} />个人主页</button>
-                    <button type="button" onClick={() => openAuthed('/publish')}><Plus size={17} />发布图片</button>
                     <button type="button" onClick={() => { setMenuOpen(false); void auth.logout() }}><LogOut size={17} />退出登录</button>
                   </nav>
                 )}

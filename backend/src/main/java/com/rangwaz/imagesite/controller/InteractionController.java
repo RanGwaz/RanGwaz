@@ -115,4 +115,14 @@ public class InteractionController {
                                                     @Valid @RequestBody ApiDtos.CreateCommentRequest request) {
         return ApiResponse.ok(interactionService.comment(authContext.requireUserId(authorization), imageId, request));
     }
+    /**
+     * Gets interaction state for a page of feed cards in one request.
+     */
+    @GetMapping("/images/status")
+    public ApiResponse<java.util.Map<Long, ApiDtos.ImageInteractionStatus>> statuses(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestParam java.util.List<Long> imageIds) {
+        return ApiResponse.ok(interactionService.statuses(authContext.requireUserId(authorization), imageIds));
+    }
+
 }

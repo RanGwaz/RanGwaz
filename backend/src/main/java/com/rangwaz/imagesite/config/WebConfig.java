@@ -15,6 +15,7 @@ import java.nio.file.Path;
 public class WebConfig implements WebMvcConfigurer {
     private final String uploadRoot;
     private final String publicUploadPrefix;
+    private final String[] allowedOriginPatterns;
 
     /**
      * Creates the web configuration.
@@ -23,9 +24,17 @@ public class WebConfig implements WebMvcConfigurer {
      * @param publicUploadPrefix public upload URL prefix
      */
     public WebConfig(@Value("${app.upload-root}") String uploadRoot,
-                     @Value("${app.public-upload-prefix}") String publicUploadPrefix) {
+                     @Value("${app.public-upload-prefix}") String publicUploadPrefix,
+                     @Value("${app.web.allowed-origin-patterns}") String allowedOriginPatterns) {
         this.uploadRoot = uploadRoot;
         this.publicUploadPrefix = publicUploadPrefix;
+        String[] configuredPatterns = java.util.Arrays.stream(allowedOriginPatterns.split(","))
+                .map(String::trim)
+                .filter(pattern -> !pattern.isBlank())
+                .toArray(String[]::new);
+        this.allowedOriginPatterns = configuredPatterns.length == 0
+                ? new String[]{"http://localhost:*", "http://127.0.0.1:*"}
+                : configuredPatterns;
     }
 
     /**
@@ -36,7 +45,7 @@ public class WebConfig implements WebMvcConfigurer {
     @Override
     public void addCorsMappings(CorsRegistry registry) {
         registry.addMapping("/**")
-                .allowedOrigins("http://localhost:5173", "http://127.0.0.1:5173")
+                .allowedOriginPatterns(allowedOriginPatterns)
                 .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
                 .allowedHeaders("*")
                 .exposedHeaders("Authorization")

@@ -76,6 +76,8 @@ export interface ImageView {
   shareCount?: number
   viewCount: number
   recommendationReason?: string
+  recommendationDecisionId?: string
+  recommendationPosition?: number
   createdAt: string
   status?: string
   reviewReason?: string

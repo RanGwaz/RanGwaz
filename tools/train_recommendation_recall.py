@@ -1,11 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""Train Vibelo sequence-aware recall weights from real behavior logs.
+"""Tune the heuristic fallback recall weights from behavior logs.
 
-The online recall service already uses image vectors. This script trains the
-lightweight user-tower part: behavior weights, time decay, and duration boost
-used to combine a user's recent interacted image vectors into one interest
-vector.
+This compatibility tool searches behavior, time-decay, and duration weights
+used to combine recent image vectors. It does not train a neural user tower or
+item tower. Use ``train_two_tower_recall.py`` for the learned recall model.
 """
 
 from __future__ import annotations
@@ -25,7 +24,7 @@ import numpy as np
 import pymysql
 
 BASE_DIR = Path(__file__).resolve().parent
-MODEL_DIR = BASE_DIR / "models" / "recommendation"
+MODEL_DIR = Path(os.environ.get("VIBELO_RECOMMENDATION_MODEL_DIR", BASE_DIR / "models" / "recommendation"))
 RECALL_METADATA_PATH = MODEL_DIR / "recall_metadata.json"
 
 MILVUS_HOST = os.environ.get("VIBELO_MILVUS_HOST", "127.0.0.1")
@@ -379,7 +378,12 @@ def write_metadata(metadata: Dict[str, Any], dry_run: bool) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train Vibelo sequence-aware recall weights.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Tune Vibelo heuristic fallback recall weights; this is not neural "
+            "two-tower model training."
+        )
+    )
     parser.add_argument("--mode", choices=["auto", "behavior", "bootstrap"], default="auto")
     parser.add_argument("--days", type=int, default=60)
     parser.add_argument("--limit", type=int, default=300000)

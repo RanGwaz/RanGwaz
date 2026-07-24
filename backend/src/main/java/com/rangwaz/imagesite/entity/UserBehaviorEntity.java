@@ -14,4 +14,9 @@ public class UserBehaviorEntity {
     private String scene;
     private Integer positionNo;
     private Integer durationMs;
+    private String decisionId;
+    private String eventId;
+    private String source;
+    private Double score;
+    private java.time.LocalDateTime occurredAt;
 }

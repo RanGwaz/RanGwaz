@@ -256,7 +256,12 @@ public class InteractionServiceImpl implements InteractionService {
                 request.duration(),
                 cleanCoordinate(request.latitude()),
                 cleanCoordinate(request.longitude()),
-                cleanLocationLabel(request.locationLabel())
+                cleanLocationLabel(request.locationLabel()),
+                request.decisionId(),
+                request.eventId(),
+                request.source(),
+                request.score(),
+                request.occurredAt()
         );
     }
 
@@ -314,4 +319,27 @@ public class InteractionServiceImpl implements InteractionService {
                 comment.getCreatedAt()
         );
     }
+    /**
+     * Batch-loads card interaction state with one database query.
+     */
+    @Override
+    public java.util.Map<Long, ApiDtos.ImageInteractionStatus> statuses(Long userId, List<Long> postIds) {
+        List<Long> safeIds = postIds == null ? List.of() : postIds.stream()
+                .filter(id -> id != null && id > 0)
+                .distinct()
+                .limit(100)
+                .toList();
+        java.util.Map<Long, ApiDtos.ImageInteractionStatus> states = new java.util.LinkedHashMap<>();
+        safeIds.forEach(id -> states.put(id, new ApiDtos.ImageInteractionStatus(false, false)));
+        if (safeIds.isEmpty()) return states;
+        for (InteractionMapper.InteractionStateRow row : interactionMapper.findActiveStates(userId, safeIds)) {
+            ApiDtos.ImageInteractionStatus current = states.get(row.getImageId());
+            if (current == null) continue;
+            boolean liked = current.liked() || LIKE.equals(row.getInteractionType());
+            boolean favorited = current.favorited() || FAVORITE.equals(row.getInteractionType());
+            states.put(row.getImageId(), new ApiDtos.ImageInteractionStatus(liked, favorited));
+        }
+        return states;
+    }
+
 }

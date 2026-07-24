@@ -1,12 +1,13 @@
 /** Masonry feed card for image posts. */
 import { Heart } from 'lucide-react'
-import { KeyboardEvent, MouseEvent, useEffect, useState } from 'react'
+import { KeyboardEvent, MouseEvent, useEffect, useRef, useState } from 'react'
 import { useAuth } from '../AuthContext'
 import { api } from '../services/api'
 import type { ImageView } from '../types'
 import { aspectRatio, countText, imageThumbnail, preloadImageOriginal } from '../utils/format'
 
 interface PostCardProps {
+  onImpression?: (post: ImageView) => void
   onLikeChange?: (post: ImageView, liked: boolean, likeCount: number) => void
   post: ImageView
   onOpen: (post: ImageView) => void
@@ -35,33 +36,36 @@ function reviewTone(status?: string) {
   return status === 'REJECTED' ? 'is-rejected' : 'is-pending'
 }
 
-export function PostCard({ post, onLikeChange, onOpen }: PostCardProps) {
+export function PostCard({ post, onImpression, onLikeChange, onOpen }: PostCardProps) {
   const auth = useAuth()
   const title = cleanCardTitle(post.title)
   const publicPost = isPublicPost(post)
   const [liked, setLiked] = useState(Boolean(post.likedByMe))
   const [likeCount, setLikeCount] = useState(post.likeCount)
   const [likeBusy, setLikeBusy] = useState(false)
+  const cardRef = useRef<HTMLElement | null>(null)
+  const impressionTrackedRef = useRef<number | null>(null)
 
   useEffect(() => {
-    setLiked(Boolean(post.likedByMe))
+    setLiked(Boolean(auth.user && post.likedByMe))
     setLikeCount(post.likeCount)
     setLikeBusy(false)
-  }, [post.id, post.likedByMe, post.likeCount])
-
+  }, [auth.user?.id, post.id, post.likedByMe, post.likeCount])
   useEffect(() => {
-    if (!auth.user) {
-      setLiked(false)
-      return
-    }
-    let cancelled = false
-    api.interactionStatus(post.id).then((status) => {
-      if (!cancelled) setLiked(status.liked)
-    }).catch(() => undefined)
-    return () => {
-      cancelled = true
-    }
-  }, [auth.user?.id, post.id])
+    const target = cardRef.current
+    if (!target || !publicPost || !onImpression || impressionTrackedRef.current === post.id) return
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting && entry.intersectionRatio >= 0.55)) return
+      impressionTrackedRef.current = post.id
+      onImpression(post)
+      observer.disconnect()
+    }, { threshold: [0.55] })
+    observer.observe(target)
+    return () => observer.disconnect()
+  }, [onImpression, post, publicPost])
+
+
+  // Feed and profile pages hydrate interaction state in one batch request.
 
   function warmDetailImage() {
     if (!publicPost) return
@@ -101,13 +105,12 @@ export function PostCard({ post, onLikeChange, onOpen }: PostCardProps) {
 
   return (
     <article
+      ref={cardRef}
       className={publicPost ? 'feed-card' : 'feed-card feed-card--review'}
       tabIndex={0}
       onClick={openCard}
-      onFocus={warmDetailImage}
       onKeyDown={handleKeyDown}
       onPointerDown={warmDetailImage}
-      onPointerEnter={warmDetailImage}
     >
       <div className="feed-card__media">
         <img

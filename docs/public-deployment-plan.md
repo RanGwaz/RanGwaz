@@ -1,6 +1,6 @@
 # Vibelo 公网部署方案
 
-> 适用日期：2026-06-20  
+> 适用日期：2026-07-05  
 > 目标：先用一套成本可控、能收集真实用户行为数据的公网部署，把图片资源从服务器磁盘迁到对象存储；后续再逐步升级数据库、消息队列和推荐服务。
 
 ## 结论
@@ -22,6 +22,8 @@
 - Milvus：第一版可以单机 standalone。它存的是向量索引，不是原图，不需要 GPU。
 - Python 推荐服务：`vector_recall_service.py` 和 `recommendation_model_service.py` 跑 CPU 即可。
 
+公网首发阶段先做功能收口：页面只保留首页主入口，发现页和发布页不对外展示；发布接口默认关闭；上传接口必须登录后才能调用。第一版重点是稳定浏览、搜索、登录、点赞、收藏、评论、关注和行为数据收集，发布功能等公网稳定后再逐步开放。
+
 ## 当前系统拆解
 
 当前项目主要由这些组件组成：
@@ -39,6 +41,8 @@
 | 向量召回 | Python FastAPI `8091` | 同机内网监听，不直接暴露公网 |
 | 模型排序 | Python FastAPI `8092` | 默认关闭或灰度开启，不直接暴露公网 |
 | 打标签/向量化 | 本地脚本 | 继续在本地跑，产物同步到云端数据库和 Milvus |
+| 公网发布功能 | 已做功能开关 | 默认关闭 `POST /images`，后续确认审核、限流、风控后再打开 |
+| 媒体上传 | 登录后可上传 | 当前用于头像和背景图，不允许匿名调用 |
 
 ## 推荐架构
 
@@ -65,6 +69,28 @@ flowchart LR
 - 后端只负责签名上传、写数据库、鉴权、推荐、行为收集。
 - 数据库、Redis、Kafka、Milvus 都只监听内网或 `127.0.0.1`，不要开公网端口。
 - GPU 不放在云服务器上。打标签和向量化继续本地跑，或者未来另开临时 GPU 机器跑批处理。
+
+## 当前公网首发收口状态
+
+当前代码已经按首发公网策略做了收口：
+
+- 主导航只保留首页。
+- `/discover` 和 `/publish` 会重定向到 `/home`。
+- 顶部搜索仍保留，搜索结果展示在 `/home?q=关键词`，不再单独暴露发现页。
+- 账户菜单、左侧栏、个人资料页里的发布按钮已隐藏。
+- 后端 `POST /images` 默认关闭，未开启时返回“发布功能暂未开放”。
+- 后端 `/media/upload` 必须携带登录态，避免匿名上传。
+- 主题切换支持浅色、深色、跟随系统，属于前端本地偏好，不依赖后端。
+- 前端请求支持 `VITE_API_BASE`，公网推荐构建时设为 `/api`。
+
+如果以后要恢复用户发布，至少先补齐这些前置条件：
+
+1. 上传和发布限流。
+2. 图片和文字安全审核稳定可用。
+3. 发布后的审核状态、失败原因和用户通知链路完整。
+4. 对象存储写入和 CDN 图片地址已经稳定。
+5. 管理端或自动化审核后台能追踪异常内容。
+6. 再把 `APP_FEATURE_PUBLISHING_ENABLED` 改成 `true`，并恢复前端发布入口。
 
 ## 服务器规格建议
 
@@ -304,12 +330,22 @@ server {
 }
 ```
 
-注意：当前前端请求是 `/feed`、`/images`、`/auth` 这种根路径，不是 `/api/feed`。上线前有两种选择：
+当前前端已经支持通过 `VITE_API_BASE` 统一 API 前缀。公网推荐使用 `/api`，这样 Nginx 只需要代理 `/api/**`，前端静态路由和后端接口边界更清楚。
 
-1. Nginx 把 `/feed`、`/images`、`/auth` 等路径都代理给后端。
-2. 改前端 API base 为 `/api`，统一代理 `/api/**`。
+前端公网构建时设置：
 
-推荐第二种，长期更干净。
+```bash
+VITE_API_BASE=/api npm run build
+```
+
+如果用 PowerShell：
+
+```powershell
+$env:VITE_API_BASE="/api"
+npm run build
+```
+
+本地开发可以不设置 `VITE_API_BASE`，前端仍会按根路径请求后端。
 
 ## 环境变量和配置
 
@@ -330,6 +366,8 @@ spring:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:127.0.0.1:9092}
 
 app:
+  features:
+    publishing-enabled: ${APP_FEATURE_PUBLISHING_ENABLED:false}
   recommendation:
     vector-service-url: ${VECTOR_SERVICE_URL:http://127.0.0.1:8091}
     model-service-url: ${MODEL_SERVICE_URL:http://127.0.0.1:8092}
@@ -341,6 +379,23 @@ app:
       bucket: ${OBJECT_STORAGE_BUCKET}
       object-url-prefix: ${OBJECT_PUBLIC_URL_PREFIX}
 ```
+
+首发公网建议明确设置：
+
+```bash
+APP_FEATURE_PUBLISHING_ENABLED=false
+CONTENT_SAFETY_CLOUD_ENABLED=true
+CONTENT_SAFETY_CLOUD_PROVIDER=local-model
+CONTENT_SAFETY_MODEL_URL=http://127.0.0.1:8093/moderate/image
+```
+
+短信如果要真实发送，关闭 mock：
+
+```bash
+APP_SMS_MOCK=false
+```
+
+如果前端和后端使用同一个域名，并通过 `/api` 反向代理，一般不需要额外开放 CORS。只有前端和后端分域名部署时，才需要把公网前端域名加入后端 CORS 白名单。
 
 ## 数据迁移步骤
 
@@ -388,8 +443,18 @@ SELECT COUNT(*) FROM user_behaviors;
 ```bash
 cd frontend
 npm ci
+export VITE_API_BASE=/api
 npm run build
 rsync -av dist/ /opt/vibelo/frontend/dist/
+```
+
+PowerShell 构建方式：
+
+```powershell
+cd frontend
+npm ci
+$env:VITE_API_BASE="/api"
+npm run build
 ```
 
 ### 5. 后端发布
@@ -412,6 +477,8 @@ java -jar target/image-site-backend-0.0.1-SNAPSHOT.jar
 - 所有数据库和对象存储密钥使用环境变量或云 Secret，不提交到 Git。
 - Swagger UI 公网关闭或加访问限制。
 - 管理后台、MinIO console、Milvus 端口不要暴露公网。
+- `APP_FEATURE_PUBLISHING_ENABLED` 首发阶段保持 `false`。
+- `/media/upload` 必须保持登录鉴权，不能匿名开放。
 - 上传接口限制文件大小、类型、频率。
 - 登录、短信、上传、评论、行为上报加限流。
 - 对象存储 bucket 不直接全公开原图，至少通过 CDN 域名和防盗链控制。
@@ -434,9 +501,11 @@ java -jar target/image-site-backend-0.0.1-SNAPSHOT.jar
 - MySQL 连接数、慢查询、磁盘。
 - Spring Boot `/actuator/health`。
 - 首页 `/feed` 响应时间。
+- 搜索 `/search` 响应时间和错误率。
 - 图片 404 数量。
 - 行为写入数量：`feed_impressions`、`user_behaviors` 每小时增量。
 - Milvus recall 服务 `/health`。
+- 本地图片审核服务 `8093` 可用性。
 - OSS/CDN 流量和 4xx/5xx。
 
 ## 推荐实施顺序
@@ -446,9 +515,11 @@ java -jar target/image-site-backend-0.0.1-SNAPSHOT.jar
 必须先完成：
 
 - 媒体存储抽象化，支持 OSS/COS/S3。
-- 前端 API base 统一成 `/api`。
-- 生产 profile：`application-prod.yml` 或全环境变量配置。
+- 前端 API base 已支持 `VITE_API_BASE`，公网构建设为 `/api`。
+- 生产配置文件：`application-prod.yml` 或全环境变量配置。
 - 关闭公网 Swagger 或加鉴权。
+- 发布入口已隐藏，发布接口默认关闭。
+- 上传接口已要求登录。
 
 ### 第 1 步：搭云资源
 
@@ -477,12 +548,18 @@ java -jar target/image-site-backend-0.0.1-SNAPSHOT.jar
 检查：
 
 - 首页能加载。
+- 左侧导航只显示首页。
 - 详情页能打开。
+- `/discover` 和 `/publish` 会回到首页。
+- 顶部搜索能在首页展示结果。
 - 图片 URL 走 CDN/OSS。
 - 登录正常。
 - 点赞、收藏、评论正常。
+- 关注、粉丝、关注列表正常。
 - `user_behaviors` 有新增。
 - `/feed` 不重复爆同一批图片。
+- 未开启发布时，直接调用 `POST /images` 返回“发布功能暂未开放”。
+- 未登录调用 `/media/upload` 会被拒绝。
 - 关掉 `8091/8092` 时后端能降级。
 
 ## 成本判断

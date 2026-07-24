@@ -6,7 +6,7 @@ import { BrandLogo } from './BrandLogo'
 
 const AUTH_SMS_COOLDOWN_KEY = 'vibelo-auth-sms-cooldown'
 
-type AuthMode = 'password' | 'code' | 'register'
+type AuthMode = 'password' | 'code'
 
 function normalizePhoneInput(value: string) {
   const digits = value.replace(/\D/g, '')
@@ -16,11 +16,6 @@ function normalizePhoneInput(value: string) {
 
 function isValidPhone(value: string) {
   return /^1[3-9]\d{9}$/.test(value)
-}
-
-function isUsablePassword(value: string) {
-  const password = value.trim()
-  return password.length >= 6 && password.length <= 64
 }
 
 function readCooldown(phone: string) {
@@ -50,35 +45,23 @@ function rememberCooldown(phone: string, seconds: number) {
 
 export function AuthModal() {
   const auth = useAuth()
-  const [mode, setMode] = useState<AuthMode>('password')
+  const [mode, setMode] = useState<AuthMode>('code')
   const [phone, setPhone] = useState('')
   const [password, setPassword] = useState('')
   const [smsCode, setSmsCode] = useState('')
-  const [codePassword, setCodePassword] = useState('')
-  const [codePasswordConfirm, setCodePasswordConfirm] = useState('')
   const [showPassword, setShowPassword] = useState(false)
-  const [showCodePassword, setShowCodePassword] = useState(false)
   const [mockCode, setMockCode] = useState('')
   const [cooldown, setCooldown] = useState(0)
-  const [smsStatus, setSmsStatus] = useState<{ phone: string; registered: boolean } | null>(null)
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [sendingCode, setSendingCode] = useState(false)
 
   const cleanPhone = normalizePhoneInput(phone)
-  const currentSmsStatus = smsStatus?.phone === cleanPhone ? smsStatus : null
-  const registerPassword = codePassword.trim()
-  const registerPasswordConfirm = codePasswordConfirm.trim()
-  const isRegisterMode = mode === 'register'
   const canSubmit = useMemo(() => {
     if (submitting || !isValidPhone(cleanPhone)) return false
     if (mode === 'password') return password.trim().length > 0
-    if (!/^\d{4,8}$/.test(smsCode.trim())) return false
-    if (mode === 'register') {
-      return isUsablePassword(codePassword) && codePassword.trim() === codePasswordConfirm.trim() && currentSmsStatus?.registered !== true
-    }
-    return true
-  }, [cleanPhone, codePassword, codePasswordConfirm, currentSmsStatus?.registered, mode, password, smsCode, submitting])
+    return /^\d{4,8}$/.test(smsCode.trim())
+  }, [cleanPhone, mode, password, smsCode, submitting])
 
   useEffect(() => {
     setCooldown(readCooldown(cleanPhone))
@@ -92,22 +75,15 @@ export function AuthModal() {
 
   if (!auth.authOpen) return null
 
-  const title = mode === 'password' ? '密码登录' : mode === 'register' ? '注册账号' : '验证码登录'
+  const title = mode === 'password' ? '密码登录' : '手机号登录'
   const subtitle = mode === 'password'
-    ? '用手机号和密码登录，少发一次短信。'
-    : mode === 'register'
-      ? '先设置密码，再获取验证码完成注册。'
-      : '已注册手机号可直接用验证码登录。'
+    ? '使用已设置的密码登录。'
+    : '未注册手机号验证成功后会自动创建账号。'
 
   function switchMode(nextMode: AuthMode) {
     setMode(nextMode)
     setError('')
     setMockCode('')
-  }
-
-  function validateRegisterPassword() {
-    if (!isUsablePassword(registerPassword)) throw new Error('请设置 6-64 位密码')
-    if (registerPassword !== registerPasswordConfirm) throw new Error('两次输入的密码不一致')
   }
 
   async function sendCode() {
@@ -116,14 +92,6 @@ export function AuthModal() {
     if (!isValidPhone(cleanPhone)) {
       setError('请输入有效的中国大陆手机号')
       return
-    }
-    if (isRegisterMode) {
-      try {
-        validateRegisterPassword()
-      } catch (reason) {
-        setError(reason instanceof Error ? reason.message : '请先设置密码')
-        return
-      }
     }
     const left = readCooldown(cleanPhone)
     if (left > 0) {
@@ -137,16 +105,8 @@ export function AuthModal() {
       const seconds = Math.max(1, response.cooldownSeconds || 60)
       rememberCooldown(cleanPhone, seconds)
       setCooldown(seconds)
-      setSmsStatus({ phone: cleanPhone, registered: response.registered })
       setMockCode(response.mockCode || '')
       if (response.mockCode) setSmsCode(response.mockCode)
-      if (response.registered && isRegisterMode) {
-        setError('该手机号已注册，请直接登录或使用验证码登录')
-      }
-      if (!response.registered && mode === 'code') {
-        setMode('register')
-        setError('该手机号未注册，请设置密码后完成注册')
-      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '验证码发送失败')
     } finally {
@@ -163,16 +123,7 @@ export function AuthModal() {
       if (mode === 'password') {
         if (!password.trim()) throw new Error('请输入密码')
         await auth.loginWithPhonePassword(cleanPhone, password.trim())
-      } else if (mode === 'register') {
-        if (currentSmsStatus?.registered === true) throw new Error('该手机号已注册，请直接登录')
-        validateRegisterPassword()
-        if (!/^\d{4,8}$/.test(smsCode.trim())) throw new Error('请输入正确验证码')
-        await auth.loginWithPhone(cleanPhone, smsCode.trim(), registerPassword, registerPasswordConfirm)
       } else {
-        if (currentSmsStatus?.registered === false) {
-          setMode('register')
-          throw new Error('该手机号未注册，请设置密码后完成注册')
-        }
         if (!/^\d{4,8}$/.test(smsCode.trim())) throw new Error('请输入正确验证码')
         await auth.loginWithPhone(cleanPhone, smsCode.trim())
       }
@@ -208,9 +159,6 @@ export function AuthModal() {
           </button>
           <button type="button" className={mode === 'code' ? 'is-active' : undefined} onClick={() => switchMode('code')}>
             验证码登录
-          </button>
-          <button type="button" className={mode === 'register' ? 'is-active' : undefined} onClick={() => switchMode('register')}>
-            注册账号
           </button>
         </div>
 
@@ -257,56 +205,6 @@ export function AuthModal() {
             </label>
           )}
 
-          {isRegisterMode && (
-            <>
-              <label className="auth-modal__field">
-                <span>设置密码</span>
-                <div className="auth-modal__password-control">
-                  <KeyRound size={18} />
-                  <input
-                    value={codePassword}
-                    onChange={(event) => setCodePassword(event.target.value.slice(0, 64))}
-                    placeholder="请输入 6 位以上密码"
-                    type={showCodePassword ? 'text' : 'password'}
-                    autoComplete="new-password"
-                    maxLength={64}
-                  />
-                  <button
-                    className="auth-modal__visibility"
-                    type="button"
-                    onClick={() => setShowCodePassword((value) => !value)}
-                    aria-label={showCodePassword ? '隐藏密码' : '显示密码'}
-                  >
-                    {showCodePassword ? <EyeOff size={17} /> : <Eye size={17} />}
-                  </button>
-                </div>
-              </label>
-
-              <label className="auth-modal__field">
-                <span>确认密码</span>
-                <div className="auth-modal__password-control">
-                  <KeyRound size={18} />
-                  <input
-                    value={codePasswordConfirm}
-                    onChange={(event) => setCodePasswordConfirm(event.target.value.slice(0, 64))}
-                    placeholder="请再次输入密码"
-                    type={showCodePassword ? 'text' : 'password'}
-                    autoComplete="new-password"
-                    maxLength={64}
-                  />
-                  <button
-                    className="auth-modal__visibility"
-                    type="button"
-                    onClick={() => setShowCodePassword((value) => !value)}
-                    aria-label={showCodePassword ? '隐藏密码' : '显示密码'}
-                  >
-                    {showCodePassword ? <EyeOff size={17} /> : <Eye size={17} />}
-                  </button>
-                </div>
-              </label>
-            </>
-          )}
-
           {mode !== 'password' && (
             <label className="auth-modal__field">
               <span>验证码</span>
@@ -332,17 +230,12 @@ export function AuthModal() {
             没有密码或忘记密码？用验证码登录
           </button>
         )}
-        {mode === 'register' && (
-          <button className="auth-modal__secondary" type="button" onClick={() => switchMode('password')}>
-            已有账号？用密码登录
-          </button>
-        )}
         {mockCode && <p className="auth-modal__hint">本地验证码：{mockCode}</p>}
         {error && <p className="auth-modal__error">{error}</p>}
 
         <button className="auth-modal__submit" type="submit" disabled={!canSubmit}>
           {submitting && <Loader2 size={17} />}
-          {mode === 'register' ? '注册并登录' : '登录'}
+          登录
         </button>
       </form>
     </div>

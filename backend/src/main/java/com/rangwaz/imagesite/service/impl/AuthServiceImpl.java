@@ -1,26 +1,23 @@
 package com.rangwaz.imagesite.service.impl;
 
 import com.rangwaz.imagesite.common.auth.PasswordHasher;
+import com.rangwaz.imagesite.common.auth.AuthTokenCodec;
 import com.rangwaz.imagesite.common.exception.BusinessException;
 import com.rangwaz.imagesite.dto.ApiDtos;
 import com.rangwaz.imagesite.entity.UserEntity;
 import com.rangwaz.imagesite.mapper.UserMapper;
 import com.rangwaz.imagesite.service.AuthService;
+import com.rangwaz.imagesite.service.SmsChallengeStore;
 import com.rangwaz.imagesite.service.SmsSender;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
-import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.time.Duration;
-import java.time.Instant;
-import java.util.Base64;
-import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
 /**
@@ -28,15 +25,14 @@ import java.util.regex.Pattern;
  */
 @Service
 public class AuthServiceImpl implements AuthService {
-    private static final long TOKEN_TTL_SECONDS = 86_400L;
     private static final Pattern MAINLAND_PHONE = Pattern.compile("^1[3-9]\\d{9}$");
 
     private final UserMapper userMapper;
     private final UserServiceImpl userService;
     private final Optional<SmsSender> smsSender;
+    private final AuthTokenCodec tokenCodec;
+    private final SmsChallengeStore smsChallengeStore;
     private final SecureRandom random = new SecureRandom();
-    private final Map<String, SmsChallenge> smsChallenges = new ConcurrentHashMap<>();
-    private final Map<String, Object> smsLocks = new ConcurrentHashMap<>();
 
     @Value("${app.sms.mock:true}")
     private boolean smsMock;
@@ -59,10 +55,14 @@ public class AuthServiceImpl implements AuthService {
      */
     public AuthServiceImpl(UserMapper userMapper,
                            UserServiceImpl userService,
-                           ObjectProvider<SmsSender> smsSenderProvider) {
+                           ObjectProvider<SmsSender> smsSenderProvider,
+                           AuthTokenCodec tokenCodec,
+                           SmsChallengeStore smsChallengeStore) {
         this.userMapper = userMapper;
         this.userService = userService;
         this.smsSender = Optional.ofNullable(smsSenderProvider.getIfAvailable());
+        this.tokenCodec = tokenCodec;
+        this.smsChallengeStore = smsChallengeStore;
     }
 
     /**
@@ -113,16 +113,14 @@ public class AuthServiceImpl implements AuthService {
     @Override
     public ApiDtos.SmsCodeResponse sendSmsCode(ApiDtos.SendSmsCodeRequest request) {
         String phone = normalizePhone(request.phone());
-        Object lock = smsLocks.computeIfAbsent(phone, ignored -> new Object());
-        synchronized (lock) {
-            boolean registered = userMapper.findByPhone(phone) != null;
-            long now = Instant.now().getEpochSecond();
-            SmsChallenge existing = smsChallenges.get(phone);
-            if (existing != null && existing.sentAt() + smsCooldownSeconds > now) {
-                long retryAfter = existing.sentAt() + smsCooldownSeconds - now;
-                throw new BusinessException("SMS_TOO_FREQUENT", "验证码发送太频繁，请 " + retryAfter + " 秒后再试");
-            }
-            String code = newSmsCode();
+        Duration cooldown = Duration.ofSeconds(smsCooldownSeconds);
+        if (!smsChallengeStore.reserveSend(phone, cooldown)) {
+            long retryAfter = smsChallengeStore.retryAfterSeconds(phone, smsCooldownSeconds);
+            throw new BusinessException("SMS_TOO_FREQUENT", "验证码发送太频繁，请 " + retryAfter + " 秒后再试");
+        }
+        boolean registered = userMapper.findByPhone(phone) != null;
+        String code = newSmsCode();
+        try {
             if (smsMock) {
                 System.out.println("[SMS mock] " + phone + " code=" + code);
             } else {
@@ -130,9 +128,12 @@ public class AuthServiceImpl implements AuthService {
                         new BusinessException("SMS_PROVIDER_NOT_CONFIGURED", "真实短信服务尚未启用，请先配置短信发送适配器"));
                 sender.sendVerificationCode(phone, code, Duration.ofSeconds(smsCodeTtlSeconds), request.scene());
             }
-            smsChallenges.put(phone, new SmsChallenge(code, now + smsCodeTtlSeconds, now, 0));
-            return new ApiDtos.SmsCodeResponse(true, smsMock ? code : null, smsCodeTtlSeconds, smsCooldownSeconds, registered);
+            smsChallengeStore.save(phone, code, Duration.ofSeconds(smsCodeTtlSeconds));
+        } catch (RuntimeException exception) {
+            smsChallengeStore.releaseSend(phone);
+            throw exception;
         }
+        return new ApiDtos.SmsCodeResponse(true, smsMock ? code : null, smsCodeTtlSeconds, smsCooldownSeconds, registered);
     }
 
     /**
@@ -147,12 +148,11 @@ public class AuthServiceImpl implements AuthService {
         assertSmsCode(phone, request.code());
         UserEntity user = userMapper.findByPhone(phone);
         if (user == null) {
-            String password = requireMatchingPassword(request.password(), request.passwordConfirm());
+            String password = optionalMatchingPassword(request.password(), request.passwordConfirm());
             user = createPhoneUser(phone, password);
         } else {
             user = maybeUpdatePassword(user, request.password(), request.passwordConfirm());
         }
-        smsChallenges.remove(phone);
         return tokenResponse(user);
     }
 
@@ -180,19 +180,7 @@ public class AuthServiceImpl implements AuthService {
      */
     @Override
     public Optional<Long> resolveUserId(String authorization) {
-        if (authorization == null || !authorization.startsWith("Bearer ")) return Optional.empty();
-        String token = authorization.substring("Bearer ".length()).trim();
-        try {
-            String raw = new String(Base64.getUrlDecoder().decode(token), StandardCharsets.UTF_8);
-            String[] parts = raw.split(":");
-            if (parts.length < 3) return Optional.empty();
-            long userId = Long.parseLong(parts[0]);
-            long expiresAt = Long.parseLong(parts[1]);
-            if (expiresAt < Instant.now().getEpochSecond()) return Optional.empty();
-            return Optional.of(userId);
-        } catch (RuntimeException exception) {
-            return Optional.empty();
-        }
+        return tokenCodec.resolve(authorization);
     }
 
     /**
@@ -203,14 +191,12 @@ public class AuthServiceImpl implements AuthService {
      */
     @Override
     public ApiDtos.AuthTokenResponse me(Long userId) {
-        return new ApiDtos.AuthTokenResponse("", "Bearer", TOKEN_TTL_SECONDS, userService.findSummary(userId));
+        return new ApiDtos.AuthTokenResponse("", "Bearer", tokenCodec.ttlSeconds(), userService.findSummary(userId));
     }
 
     private ApiDtos.AuthTokenResponse tokenResponse(UserEntity user) {
-        long expiresAt = Instant.now().plusSeconds(TOKEN_TTL_SECONDS).getEpochSecond();
-        String raw = user.getId() + ":" + expiresAt + ":" + UUID.randomUUID();
-        String token = Base64.getUrlEncoder().withoutPadding().encodeToString(raw.getBytes(StandardCharsets.UTF_8));
-        return new ApiDtos.AuthTokenResponse(token, "Bearer", TOKEN_TTL_SECONDS, userService.toSummary(user));
+        AuthTokenCodec.IssuedToken token = tokenCodec.issue(user.getId());
+        return new ApiDtos.AuthTokenResponse(token.value(), "Bearer", token.expiresInSeconds(), userService.toSummary(user));
     }
 
     private String normalizePhone(String rawPhone) {
@@ -231,19 +217,14 @@ public class AuthServiceImpl implements AuthService {
 
     private void assertSmsCode(String phone, String rawCode) {
         String code = rawCode == null ? "" : rawCode.trim();
-        SmsChallenge challenge = smsChallenges.get(phone);
-        long now = Instant.now().getEpochSecond();
-        if (challenge == null || challenge.expiresAt() < now) {
-            smsChallenges.remove(phone);
+        long result = smsChallengeStore.verifyAndConsume(phone, code, 5);
+        if (result == -2) {
             throw new BusinessException("SMS_CODE_EXPIRED", "验证码已过期，请重新获取");
         }
-        if (!challenge.code().equals(code)) {
-            int attempts = challenge.attempts() + 1;
-            if (attempts >= 5) {
-                smsChallenges.remove(phone);
-                throw new BusinessException("BAD_SMS_CODE_LOCKED", "验证码错误次数过多，请重新获取");
-            }
-            smsChallenges.put(phone, new SmsChallenge(challenge.code(), challenge.expiresAt(), challenge.sentAt(), attempts));
+        if (result == -1) {
+            throw new BusinessException("BAD_SMS_CODE_LOCKED", "验证码错误次数过多，请重新获取");
+        }
+        if (result == 0) {
             throw new BusinessException("BAD_SMS_CODE", "验证码错误");
         }
     }
@@ -294,6 +275,16 @@ public class AuthServiceImpl implements AuthService {
         }
         return user;
     }
+    private String optionalMatchingPassword(String rawPassword, String rawPasswordConfirm) {
+        String password = rawPassword == null ? "" : rawPassword.trim();
+        String confirmation = rawPasswordConfirm == null ? "" : rawPasswordConfirm.trim();
+        if (password.isEmpty() && confirmation.isEmpty()) {
+            return UUID.randomUUID() + "-" + UUID.randomUUID();
+        }
+        return requireMatchingPassword(password, confirmation);
+    }
+
+
 
     private String uniquePhoneUsername(String phone) {
         String digits = phone.replaceAll("\\D", "");
@@ -306,6 +297,4 @@ public class AuthServiceImpl implements AuthService {
         return username;
     }
 
-    private record SmsChallenge(String code, long expiresAt, long sentAt, int attempts) {
-    }
 }

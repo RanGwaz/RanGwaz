@@ -13,7 +13,6 @@ import {
   MapPin,
   MessageCircle,
   MoreHorizontal,
-  Plus,
   UserPlus,
   X,
 } from 'lucide-react'
@@ -110,6 +109,9 @@ export function ProfilePage() {
   const [layoutMode, setLayoutMode] = useState<LayoutMode>('grid')
   const [clientIp, setClientIp] = useState('')
   const [socialDialog, setSocialDialog] = useState<SocialDialog | null>(null)
+  const [likedLoadedFor, setLikedLoadedFor] = useState<number | null>(null)
+  const [favoritesLoadedFor, setFavoritesLoadedFor] = useState<number | null>(null)
+  const [galleryLoading, setGalleryLoading] = useState(false)
 
   const topTags = useMemo(() => collectTags(images), [images])
   const workCount = stats?.imageCount ?? images.length
@@ -137,23 +139,53 @@ export function ProfilePage() {
     setLoading(true)
     setError('')
     setSocialDialog(null)
+    setLikedImages([])
+    setFavoriteImages([])
+    setLikedLoadedFor(null)
+    setFavoritesLoadedFor(null)
     Promise.all([
       api.profile(targetId),
       api.userStats(targetId),
       api.userImages(targetId, 60),
-      api.userLikedImages(targetId, 100),
-      api.userFavoriteImages(targetId, 100),
-    ]).then(([user, userStats, userImages, userLikedImages, userFavoriteImages]) => {
+    ]).then(([user, userStats, userImages]) => {
       setProfile(user)
       setStats(userStats)
       setImages(userImages)
-      setLikedImages(userLikedImages.map((image) => (auth.user?.id === targetId ? { ...image, likedByMe: true } : image)))
-      setFavoriteImages(userFavoriteImages)
+      if (auth.user && userImages.length > 0) {
+        void api.interactionStatuses(userImages.map((image) => image.id)).then((states) => {
+          setImages((current) => current.map((image) => {
+            const state = states[String(image.id)]
+            return state ? { ...image, likedByMe: state.liked } : image
+          }))
+        }).catch(() => undefined)
+      }
       if (auth.user && auth.user.id !== targetId) {
         api.followStatus(targetId).then((status) => setFollowing(status.following)).catch(() => undefined)
       }
     }).catch((reason) => setError(reason instanceof Error ? reason.message : '主页加载失败')).finally(() => setLoading(false))
   }, [auth.ready, auth.user?.id, isOwnProfile, targetId])
+
+  useEffect(() => {
+    if (!targetId || activeTab === 'works') return
+    const likesTab = activeTab === 'likes'
+    if (likesTab ? likedLoadedFor === targetId : favoritesLoadedFor === targetId) return
+    setGalleryLoading(true)
+    const request = likesTab
+      ? api.userLikedImages(targetId, 100)
+      : api.userFavoriteImages(targetId, 100)
+    request.then((records) => {
+      if (likesTab) {
+        setLikedImages(records.map((image) => (auth.user?.id === targetId ? { ...image, likedByMe: true } : image)))
+        setLikedLoadedFor(targetId)
+      } else {
+        setFavoriteImages(records)
+        setFavoritesLoadedFor(targetId)
+      }
+    }).catch((reason) => {
+      setError(reason instanceof Error ? reason.message : '\u5217\u8868\u52a0\u8f7d\u5931\u8d25')
+    }).finally(() => setGalleryLoading(false))
+  }, [activeTab, auth.user?.id, favoritesLoadedFor, likedLoadedFor, targetId])
+
 
   async function toggleFollow() {
     if (!profile) return
@@ -244,7 +276,7 @@ export function ProfilePage() {
       )
     }
 
-    return <MasonryGrid posts={displayImages} emptyLabel={emptyLabel} onLikeChange={syncLikeChange} onOpen={openImage} />
+    return <MasonryGrid posts={displayImages} loading={loading || galleryLoading} emptyLabel={emptyLabel} onLikeChange={syncLikeChange} onOpen={openImage} />
   }
 
   if (loading) {
@@ -297,7 +329,6 @@ export function ProfilePage() {
             {isOwnProfile ? (
               <>
                 <button type="button" onClick={() => navigate('/profile/edit')}><Edit3 size={16} />编辑资料</button>
-                <button className="is-primary" type="button" onClick={() => navigate('/publish')}><Plus size={16} />发布</button>
                 <button type="button" onClick={() => void logoutAndGoHome()}><LogOut size={16} />退出</button>
               </>
             ) : (

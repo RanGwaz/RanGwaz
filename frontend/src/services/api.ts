@@ -24,6 +24,7 @@ import type {
 import { getVisitorId } from '../utils/visitorIdentity'
 
 const TOKEN_KEY = 'rangwaz-token'
+const API_BASE = (import.meta.env.VITE_API_BASE || '').replace(/\/$/, '')
 
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY) || ''
@@ -42,13 +43,18 @@ function nonJsonMessage(path: string, response: Response, text: string) {
   return `接口 ${path} 返回了非 JSON 内容：${preview || response.statusText || '空响应'}`
 }
 
+function apiPath(path: string) {
+  if (!API_BASE) return path
+  return `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`
+}
+
 async function request<T>(path: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers)
   const token = getToken()
   if (token) headers.set('Authorization', `Bearer ${token}`)
   if (!(init.body instanceof FormData) && init.body !== undefined) headers.set('Content-Type', 'application/json')
 
-  const response = await fetch(path, { ...init, headers })
+  const response = await fetch(apiPath(path), { ...init, headers })
   const text = await response.text()
   let parsed: unknown
   let payload: ApiResponse<T>
@@ -103,7 +109,7 @@ export const api = {
     if (refreshSeed) query.set('refreshSeed', refreshSeed)
     if (feedSessionId) query.set('feedSessionId', feedSessionId)
     if (visitorId) query.set('visitorId', visitorId)
-    excludeIds.slice(0, 360).forEach((id) => query.append('excludeIds', String(id)))
+    excludeIds.slice(0, 240).forEach((id) => query.append('excludeIds', String(id)))
     return request<PageResponse<ImageView>>(`/feed?${query.toString()}`)
   },
   similarImages(imageId: number, page = 1, size = 24) {
@@ -121,7 +127,19 @@ export const api = {
     if (visitorId) query.set('visitorId', visitorId)
     return request<void>(`/images/${imageId}/click?${query.toString()}`, { method: 'POST' })
   },
-  trackBehaviors(events: Array<{ imageId: number; behaviorType: string; scene?: string; position?: number; duration?: number; visitorId?: string }>, visitorId = getVisitorId()) {
+  trackBehaviors(events: Array<{
+    imageId: number
+    behaviorType: string
+    scene?: string
+    position?: number
+    duration?: number
+    visitorId?: string
+    decisionId?: string
+    eventId?: string
+    source?: string
+    score?: number
+    occurredAt?: string
+  }>, visitorId = getVisitorId()) {
     if (events.length === 0) return Promise.resolve()
     return request<void>('/behaviors/batch', { method: 'POST', body: JSON.stringify({ visitorId, events }) })
   },
@@ -148,6 +166,14 @@ export const api = {
   comment(imageId: number, content: string, parentCommentId?: number) {
     return request<CommentView>(`/interactions/images/${imageId}/comments`, { method: 'POST', body: JSON.stringify({ content, parentCommentId }) })
   },
+  interactionStatuses(imageIds: number[]) {
+    const query = new URLSearchParams()
+    Array.from(new Set(imageIds.filter((id) => Number.isFinite(id) && id > 0)))
+      .slice(0, 100)
+      .forEach((id) => query.append('imageIds', String(id)))
+    return request<Record<string, ImageInteractionStatus>>(`/interactions/images/status?${query.toString()}`)
+  },
+
   interactionStatus(imageId: number) {
     return request<ImageInteractionStatus>(`/interactions/images/${imageId}/status`)
   },

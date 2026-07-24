@@ -167,11 +167,22 @@ collection: vibelo_image_vectors_siglip2_base_p224_d512
 
 首页走推荐召回和排序，详情页周围数据优先走当前图片的向量相似召回，再用标签、分类、比例和热度做辅助排序。
 
-更多数据处理和推荐链路说明见：
+### 学习型双塔召回
 
-```text
-docs/data-labeling-and-vectorization.md
+`tools/train_two_tower_recall.py` 会从真实 next-positive 行为训练序列用户塔与共享图片投影，并生成版本化 candidate。`tools/publish_two_tower_index.py` 负责构建、校验 learned Milvus collection，再把 candidate promote 为 current。数据不足或模型异常时，在线服务自动回退到现有多兴趣 SigLIP 召回。
+
+`tools/train_recommendation_recall.py` 仅调优启发式 fallback 的行为权重，不是神经召回模型训练脚本。
+
+生产训练、建索引和切流可使用带安全门禁的一键流水线：
+
+```powershell
+.\tools\run_two_tower_pipeline.ps1 `
+  -ModelDir "D:\vibelo-data\recommendation-models"
 ```
+
+完整的训练门禁、candidate/current/previous、dry-run、定时任务、健康检查和回滚命令见 [推荐模型训练与发布](docs/训练模型文档.md)，公网部署见 [公网运行清单](docs/public-runtime.md)。
+
+更多数据处理和向量化说明见 [数据标注与向量化](docs/data-labeling-and-vectorization.md)。
 
 ## 手机号登录与短信
 
@@ -183,7 +194,79 @@ docs/data-labeling-and-vectorization.md
 docs/sms-login.md
 ```
 
-```java
-Set-Location "H:\桌面\一坨屎\RanGwaz"
-.\tools\.venv\Scripts\python.exe tools\vectorize_images.py
+## 图片安全审核服务
+
+当前本地开发默认推荐使用本地轻量审核服务，不需要公网域名。上传图片时后端会先做本地像素启发式检查，再按配置调用审核服务；审核失败会直接拒绝上传，审核通过后才写入 MinIO。作品发布和资料更新不走人工审核。
+
+安装依赖：
+
+```powershell
+python -m pip install fastapi uvicorn pillow
+```
+
+启动审核服务：
+
+```powershell
+.\tools\run_image_moderation_service.ps1
+```
+
+健康检查：
+
+```text
+http://127.0.0.1:8093/health
+```
+
+后端启用本地审核服务：
+
+```powershell
+$env:CONTENT_SAFETY_CLOUD_ENABLED="true"
+$env:CONTENT_SAFETY_CLOUD_PROVIDER="local-model"
+$env:CONTENT_SAFETY_MODEL_URL="http://127.0.0.1:8093/moderate/image"
+cd backend
+mvn spring-boot:run
+```
+
+默认 `heuristic` 模式只依赖 Pillow，适合本地快速挡明显裸露、血腥风险：
+
+```powershell
+$env:VIBELO_IMAGE_MODERATION_MODE="heuristic"
+.\tools\run_image_moderation_service.ps1
+```
+
+如果本机已安装 Ollama 和视觉模型，可以切到开源视觉模型辅助判断：
+
+```powershell
+$env:VIBELO_IMAGE_MODERATION_MODE="ollama"
+$env:VIBELO_IMAGE_MODERATION_MODEL="qwen3-vl:8b"
+.\tools\run_image_moderation_service.ps1
+```
+
+常见日志说明：
+
+- `GET / 200 OK`：浏览器打开审核服务根路径，正常。
+- `GET /favicon.ico 404`：浏览器找图标，忽略。
+- `Unsupported upgrade request`：旧版后端 HTTP 客户端或浏览器扩展可能触发；后端已强制本地审核请求走 HTTP/1.1。
+- `missing imageBase64`：审核服务没有收到图片字段，通常是后端没重启到最新代码，或请求不是从后端上传链路发出。
+
+如果以后使用阿里云内容安全，要求阿里云能访问图片公网地址或使用 OSS 对象方式。没有公网域名时不要切 `aliyun`，继续使用 `local-model`。
+
+```powershell
+$env:CONTENT_SAFETY_CLOUD_PROVIDER="aliyun"
+$env:APP_STORAGE_MINIO_OBJECT_URL_PREFIX="https://你的域名/media/object"
+```
+
+## 大文件和本地结果文件
+
+以下运行结果文件只保留在本地，不要提交到 Git：
+
+```text
+tools/cloud_label_results.jsonl
+tools/auto_label_results.jsonl
+tools/import_results.jsonl
+```
+
+`.gitignore` 已忽略这些文件；如果某个文件已经被 Git 跟踪，需要先从索引移除：
+
+```powershell
+git rm --cached tools/cloud_label_results.jsonl
 ```

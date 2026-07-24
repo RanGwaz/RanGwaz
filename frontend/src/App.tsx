@@ -8,8 +8,6 @@ import { DetailPage } from './pages/DetailPage'
 import { FeedPage } from './pages/FeedPage'
 import { ProfileEditPage } from './pages/ProfileEditPage'
 import { ProfilePage } from './pages/ProfilePage'
-import { PublishPage } from './pages/PublishPage'
-import { SearchPage } from './pages/SearchPage'
 import { ThemeProvider } from './ThemeContext'
 
 export function App() {
@@ -24,8 +22,8 @@ export function App() {
             <Route path="/" element={<Navigate to="/home" replace />} />
             <Route path="/home" element={<FeedPage />} />
             <Route path="/image/:id" element={<DetailPage />} />
-            <Route path="/discover" element={<SearchPage />} />
-            <Route path="/publish" element={<PublishPage />} />
+            <Route path="/discover" element={<Navigate to="/home" replace />} />
+            <Route path="/publish" element={<Navigate to="/home" replace />} />
             <Route path="/profile" element={<ProfilePage />} />
             <Route path="/profile/edit" element={<ProfileEditPage />} />
             <Route path="/profile/:id" element={<ProfilePage />} />

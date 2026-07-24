@@ -76,6 +76,25 @@ public class BehaviorEventPublisher {
                         Double latitude,
                         Double longitude,
                         String locationLabel) {
+        publish(userId, visitorId, imageId, behaviorType, scene, position, duration,
+                latitude, longitude, locationLabel, null, null, null, null, null);
+    }
+
+    public void publish(Long userId,
+                        String visitorId,
+                        Long imageId,
+                        String behaviorType,
+                        String scene,
+                        Integer position,
+                        Integer duration,
+                        Double latitude,
+                        Double longitude,
+                        String locationLabel,
+                        String decisionId,
+                        String eventId,
+                        String source,
+                        Double score,
+                        LocalDateTime occurredAt) {
         if (imageId == null) return;
         BehaviorEvent event = new BehaviorEvent(
                 userId,
@@ -88,7 +107,11 @@ public class BehaviorEventPublisher {
                 cleanCoordinate(latitude),
                 cleanCoordinate(longitude),
                 cleanLabel(locationLabel),
-                LocalDateTime.now()
+                cleanKey(decisionId),
+                cleanKey(eventId),
+                cleanSource(source),
+                cleanScore(score),
+                cleanOccurredAt(occurredAt)
         );
         try {
             String payload = objectMapper.writeValueAsString(event);
@@ -101,6 +124,29 @@ public class BehaviorEventPublisher {
         } catch (JsonProcessingException ex) {
             log.warn("Failed to serialize behavior event imageId={} type={}", imageId, behaviorType, ex);
         }
+    }
+
+    private String cleanKey(String value) {
+        if (!StringUtils.hasText(value)) return null;
+        String cleaned = value.trim();
+        return cleaned.length() > 64 ? cleaned.substring(0, 64) : cleaned;
+    }
+
+    private String cleanSource(String value) {
+        if (!StringUtils.hasText(value)) return null;
+        String cleaned = value.trim();
+        return cleaned.length() > 48 ? cleaned.substring(0, 48) : cleaned;
+    }
+
+    private Double cleanScore(Double value) {
+        if (value == null || !Double.isFinite(value)) return null;
+        return Math.max(-10D, Math.min(10D, value));
+    }
+
+    private LocalDateTime cleanOccurredAt(LocalDateTime value) {
+        LocalDateTime now = LocalDateTime.now();
+        if (value == null || value.isBefore(now.minusDays(1)) || value.isAfter(now.plusMinutes(5))) return now;
+        return value;
     }
 
     private String cleanVisitorId(String visitorId) {

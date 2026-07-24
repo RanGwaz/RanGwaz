@@ -2,9 +2,11 @@ package com.rangwaz.imagesite.controller;
 
 import com.rangwaz.imagesite.common.api.ApiResponse;
 import com.rangwaz.imagesite.common.auth.AuthContext;
+import com.rangwaz.imagesite.common.exception.BusinessException;
 import com.rangwaz.imagesite.dto.ApiDtos;
 import com.rangwaz.imagesite.service.ImageService;
 import jakarta.validation.Valid;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -22,6 +24,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class ImageController {
     private final ImageService imageService;
     private final AuthContext authContext;
+    private final boolean publishingEnabled;
 
     /**
      * Creates the image controller.
@@ -29,9 +32,12 @@ public class ImageController {
      * @param imageService image content service
      * @param authContext auth context
      */
-    public ImageController(ImageService imageService, AuthContext authContext) {
+    public ImageController(ImageService imageService,
+                           AuthContext authContext,
+                           @Value("${app.features.publishing-enabled:false}") boolean publishingEnabled) {
         this.imageService = imageService;
         this.authContext = authContext;
+        this.publishingEnabled = publishingEnabled;
     }
 
     /**
@@ -44,6 +50,9 @@ public class ImageController {
     @PostMapping
     public ApiResponse<ApiDtos.ImageView> create(@RequestHeader(value = "Authorization", required = false) String authorization,
                                                 @Valid @RequestBody ApiDtos.CreateImageRequest request) {
+        if (!publishingEnabled) {
+            throw new BusinessException("PUBLISHING_DISABLED", "发布功能暂未开放");
+        }
         return ApiResponse.ok(imageService.create(authContext.requireUserId(authorization), request));
     }
 

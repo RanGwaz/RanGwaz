@@ -33,9 +33,9 @@ import java.util.Set;
 @Service
 public class FeedServiceImpl implements FeedService {
     private static final int MAX_RECALL_CANDIDATES = 240;
-    private static final int ANONYMOUS_FIRST_PAGE_POOL_SIZE = 300;
-    private static final int MAX_CLIENT_EXCLUDE_IDS = 420;
-    private static final int RECENT_HOME_EXCLUDE_LIMIT = 1200;
+    private static final int ANONYMOUS_FIRST_PAGE_POOL_SIZE = 180;
+    private static final int MAX_CLIENT_EXCLUDE_IDS = 240;
+    private static final int RECENT_HOME_EXCLUDE_LIMIT = 400;
     private static final int HOME_RECALL_MULTIPLIER = 2;
     private static final int SIMILAR_RECALL_MULTIPLIER = 4;
     private static final double ROUTE_VECTOR_WEIGHT = 0.38;
@@ -110,7 +110,9 @@ public class FeedServiceImpl implements FeedService {
         String profileVisitorId = userId == null ? cleanVisitorId(visitorId) : null;
         boolean hasProfileKey = userId != null || profileVisitorId != null;
         boolean firstAnonymousPage = userId == null && safePage == 1;
-        if (firstAnonymousPage) {
+        boolean hasPersonalizationHistory = userId != null
+                || (profileVisitorId != null && behaviorMapper.hasRecentPositiveBehavior(null, profileVisitorId) > 0);
+        if (firstAnonymousPage && !hasPersonalizationHistory) {
             List<ImageEntity> images = rankAnonymousFirstPage(
                     recommendationMapper.selectColdStart(0, firstPagePoolSize(safeSize)),
                     cleanedRefreshSeed,
@@ -120,13 +122,13 @@ public class FeedServiceImpl implements FeedService {
             var records = imageService.toViews(images, "cold-start-refresh");
             return new PageResponse<>(records, totalEstimate(offset, safeSize, records.size()), safePage, safeSize);
         }
-        if (hasProfileKey && !firstAnonymousPage) {
+        if (hasProfileKey) {
             List<UserEvent> recentEvents = behaviorMapper.findRecentBehaviorSequence(userId, profileVisitorId, 120).stream()
                     .filter(row -> row.getImageId() != null)
                     .map(row -> new UserEvent(row.getImageId(), row.getBehaviorType(), row.getDurationMs(), row.getAgeHours()))
                     .toList();
             List<Long> seedImageIds = behaviorMapper.findRecentPositiveImageIds(userId, profileVisitorId, 40);
-            if (userId != null && !recentEvents.isEmpty()) {
+            if (!recentEvents.isEmpty() || !seedImageIds.isEmpty()) {
                 List<VectorHit> vectorHits = vectorRecallClient.feed(
                         userId,
                         recentEvents,
@@ -158,7 +160,7 @@ public class FeedServiceImpl implements FeedService {
                 requestId(feedSessionId, userId, safePage),
                 cleanedRefreshSeed,
                 explorationWeight(userId, profileVisitorId),
-                !firstAnonymousPage);
+                !firstAnonymousPage || hasPersonalizationHistory);
         List<ImageEntity> images = ranked.images();
         String reason = ranked.modelUsed()
                 ? "model-home"
@@ -230,12 +232,12 @@ public class FeedServiceImpl implements FeedService {
     }
 
     private double anonymousFirstPageScore(ImageEntity image, int rank, String refreshSeed, boolean recentlyShown) {
-        return rankDecay(rank) * 0.04
-                + engagementScore(image) * 0.08
-                + freshnessScore(image) * 0.06
-                + metadataQualityScore(image) * 0.02
-                + seedJitter(refreshSeed, image.getId()) * 0.52
-                - (recentlyShown ? 0.72 : 0);
+        return rankDecay(rank) * 0.34
+                + engagementScore(image) * 0.22
+                + freshnessScore(image) * 0.16
+                + metadataQualityScore(image) * 0.08
+                + seedJitter(refreshSeed, image.getId()) * 0.20
+                - (recentlyShown ? 1.0 : 0);
     }
 
     private void addVectorRecall(Map<Long, RecallScore> scores,

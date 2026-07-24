@@ -27,5 +27,9 @@ public record BehaviorEvent(Long userId,
                             Double latitude,
                             Double longitude,
                             String locationLabel,
+                            String decisionId,
+                            String eventId,
+                            String source,
+                            Double score,
                             LocalDateTime occurredAt) {
 }

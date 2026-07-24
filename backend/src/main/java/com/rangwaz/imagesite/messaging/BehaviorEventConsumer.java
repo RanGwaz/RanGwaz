@@ -68,10 +68,26 @@ public class BehaviorEventConsumer {
         behavior.setScene(scene);
         behavior.setPositionNo(event.position());
         behavior.setDurationMs(event.duration());
+        behavior.setDecisionId(event.decisionId());
+        behavior.setEventId(event.eventId());
+        behavior.setSource(event.source());
+        behavior.setScore(event.score());
+        behavior.setOccurredAt(event.occurredAt());
         try {
             behaviorMapper.insert(behavior);
             if ("impression".equalsIgnoreCase(type)) {
-                behaviorMapper.insertFeedImpression(event.userId(), event.visitorId(), event.imageId(), scene, event.position(), "kafka");
+                behaviorMapper.insertFeedImpression(
+                        event.userId(),
+                        event.visitorId(),
+                        event.imageId(),
+                        scene,
+                        event.position(),
+                        StringUtils.hasText(event.source()) ? event.source().trim() : scene,
+                        event.score(),
+                        event.decisionId(),
+                        event.eventId(),
+                        event.occurredAt()
+                );
             }
         } catch (DataIntegrityViolationException ex) {
             log.warn("Dropped behavior event with invalid relation imageId={} userId={}", event.imageId(), event.userId());
