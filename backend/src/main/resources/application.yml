@@ -1,24 +1,26 @@
 # Backend runtime configuration for local development.
 server:
-  port: 8080
+  port: ${SERVER_PORT:8080}
+  forward-headers-strategy: ${SERVER_FORWARD_HEADERS_STRATEGY:framework}
 spring:
   application:
     name: rangwaz-image-site
   datasource:
-    url: jdbc:mysql://localhost:3306/rangwaz_image_dev?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
-    username: rangwaz
-    password: rangwaz123
+    url: ${SPRING_DATASOURCE_URL:jdbc:mysql://localhost:3306/rangwaz_image_dev?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${SPRING_DATASOURCE_USERNAME:rangwaz}
+    password: ${SPRING_DATASOURCE_PASSWORD:rangwaz123}
     hikari:
-      maximum-pool-size: 12
-      minimum-idle: 2
+      maximum-pool-size: ${SPRING_DATASOURCE_MAX_POOL_SIZE:12}
+      minimum-idle: ${SPRING_DATASOURCE_MIN_IDLE:2}
   data:
     redis:
-      host: localhost
-      port: 6379
-      database: 0
-      timeout: 800ms
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+      timeout: ${REDIS_TIMEOUT:800ms}
   kafka:
-    bootstrap-servers: localhost:9092
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
@@ -53,7 +55,10 @@ mybatis:
     map-underscore-to-camel-case: true
   type-aliases-package: com.rangwaz.imagesite.entity
 springdoc:
+  api-docs:
+    enabled: ${SPRINGDOC_API_DOCS_ENABLED:true}
   swagger-ui:
+    enabled: ${SPRINGDOC_SWAGGER_UI_ENABLED:true}
     path: /swagger-ui.html
 management:
   endpoints:
@@ -71,23 +76,23 @@ app:
   upload-root: storage/uploads
   public-upload-prefix: /uploads
   recommendation:
-    vector-service-url: http://127.0.0.1:8091
-    vector-enabled: true
-    model-service-url: http://127.0.0.1:8092
-    model-recall-enabled: false
-    model-ranking-enabled: false
-    model-connect-timeout-ms: 800
-    model-read-timeout-ms: 1500
+    vector-service-url: ${VECTOR_SERVICE_URL:http://127.0.0.1:8091}
+    vector-enabled: ${VECTOR_ENABLED:true}
+    model-service-url: ${MODEL_SERVICE_URL:http://127.0.0.1:8092}
+    model-recall-enabled: ${MODEL_RECALL_ENABLED:false}
+    model-ranking-enabled: ${MODEL_RANKING_ENABLED:false}
+    model-connect-timeout-ms: ${MODEL_CONNECT_TIMEOUT_MS:800}
+    model-read-timeout-ms: ${MODEL_READ_TIMEOUT_MS:1500}
   behavior:
-    kafka-topic: vibelo.user-behaviors
+    kafka-topic: ${KAFKA_BEHAVIOR_TOPIC:vibelo.user-behaviors}
   moderation:
     review-token: ${APP_MODERATION_TOKEN:}
   # 号码认证服务短信认证配置
   sms:
-    mock: true
-    dev-code: ""
-    code-ttl-seconds: 300
-    cooldown-seconds: 60
+    mock: ${APP_SMS_MOCK:false}
+    dev-code: ${APP_SMS_DEV_CODE:}
+    code-ttl-seconds: ${APP_SMS_CODE_TTL_SECONDS:300}
+    cooldown-seconds: ${APP_SMS_COOLDOWN_SECONDS:60}
     provider: aliyun
     aliyun:
       endpoint: ${ALIYUN_PNVS_SMS_ENDPOINT:https://dypnsapi.aliyuncs.com/}
@@ -105,23 +110,25 @@ app:
       request-timeout-ms: ${ALIYUN_PNVS_SMS_REQUEST_TIMEOUT_MS:6000}
   storage:
     minio:
-      endpoint: http://localhost:9000
-      access-key: minioadmin
-      secret-key: minioadmin
-      bucket: rangwaz-media
+      endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+      access-key: ${MINIO_ACCESS_KEY:minioadmin}
+      secret-key: ${MINIO_SECRET_KEY:minioadmin}
+      bucket: ${MINIO_BUCKET:rangwaz-media}
       object-url-prefix: ${APP_STORAGE_MINIO_OBJECT_URL_PREFIX:/media/object}
   search:
-    elasticsearch-url: http://localhost:9200
-    index-name: rangwaz-images
+    elasticsearch-url: ${ELASTICSEARCH_URL:http://localhost:9200}
+    index-name: ${ELASTICSEARCH_INDEX_NAME:rangwaz-images}
     connect-timeout-ms: 800
     read-timeout-ms: 2500
     reindex-batch-size: 500
+    fail-fast-on-startup: ${ELASTICSEARCH_FAIL_FAST_ON_STARTUP:false}
+    index-retry-delay-ms: ${ELASTICSEARCH_INDEX_RETRY_DELAY_MS:30000}
   content-safety:
-    enabled: true
+    enabled: ${CONTENT_SAFETY_ENABLED:false}
     text:
-      enabled: true
+      enabled: ${CONTENT_SAFETY_TEXT_ENABLED:false}
     image:
-      enabled: true
+      enabled: ${CONTENT_SAFETY_IMAGE_ENABLED:false}
       sample-max-width: 160
       high-skin-ratio: 0.68
       high-largest-component-ratio: 0.40

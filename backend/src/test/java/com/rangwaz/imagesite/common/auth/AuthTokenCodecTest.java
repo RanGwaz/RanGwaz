@@ -1,6 +1,7 @@
 package com.rangwaz.imagesite.common.auth;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -11,6 +12,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AuthTokenCodecTest {
     private static final String SECRET = "test-secret-with-at-least-thirty-two-characters";
+
+    @Test
+    void springCreatesCodecFromConfiguredConstructor() {
+        new ApplicationContextRunner()
+                .withPropertyValues(
+                        "app.auth.token-secret=" + SECRET,
+                        "app.auth.token-ttl-seconds=3600"
+                )
+                .withBean(AuthTokenCodec.class)
+                .run(context -> {
+                    assertEquals(1, context.getBeansOfType(AuthTokenCodec.class).size());
+                    assertEquals(3600, context.getBean(AuthTokenCodec.class).ttlSeconds());
+                });
+    }
 
     @Test
     void signedTokenResolvesOriginalUser() {

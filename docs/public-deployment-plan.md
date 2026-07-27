@@ -516,7 +516,7 @@ java -jar target/image-site-backend-0.0.1-SNAPSHOT.jar
 
 - 媒体存储抽象化，支持 OSS/COS/S3。
 - 前端 API base 已支持 `VITE_API_BASE`，公网构建设为 `/api`。
-- 生产配置文件：`application-prod.yml` 或全环境变量配置。
+- 运行配置统一使用 `application.yml`，本地与公网差异全部通过环境变量覆盖。
 - 关闭公网 Swagger 或加鉴权。
 - 发布入口已隐藏，发布接口默认关闭。
 - 上传接口已要求登录。

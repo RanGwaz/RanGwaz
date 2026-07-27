@@ -6,21 +6,49 @@
 
 ```text
 APP_WEB_ALLOWED_ORIGIN_PATTERNS=https://www.example.com
-SPRING_PROFILES_ACTIVE=prod
 ```
 
-推荐将前端与接口部署为同源：浏览器访问 `https://www.example.com`，Nginx 把 `/api/**` 转发到 `127.0.0.1:8080`。前端构建时设置 `VITE_API_BASE=/api`。不要在生产环境使用 `*` 搭配凭证请求。
+项目只有 `application.yml` 一套运行配置，部署差异全部由环境变量覆盖，不再使用 `prod` profile。推荐将前端与接口部署为同源：浏览器访问 `https://www.example.com`，Nginx 把 `/api/**` 转发到后端池。前端构建时固定 `VITE_API_BASE=/api`。
 
 ## 首次上线
 
 1. 复制根目录的 `.env.public.example` 到服务器的密钥管理或未纳入 Git 的环境文件，替换全部 `replace_me`。
 2. `APP_AUTH_TOKEN_SECRET` 至少 32 个随机字符。升级后旧的无签名 token 会失效，用户重新登录一次即可。
-3. 真实短信参数必须完整；`prod` 配置会强制关闭模拟验证码。
+3. 真实短信参数必须完整；公网 Compose 显式设置 `APP_SMS_MOCK=false`。
 4. MySQL、Redis、Kafka、Milvus、MinIO、Elasticsearch 和 Python 内部服务只监听本机或内网，不开放公网端口。
 5. 为推荐模型准备持久化目录，并让训练、索引发布与在线服务共用同一个 `VIBELO_RECOMMENDATION_MODEL_DIR`。
-6. 启动推荐服务，确认 `GET http://127.0.0.1:8092/health` 中 Milvus 已就绪。
-7. 使用 `--spring.profiles.active=prod` 启动后端，再部署前端 `dist`。
+6. 推荐服务可以延后启用；首次上线保持 `VECTOR_ENABLED=false`、`MODEL_RECALL_ENABLED=false`，先由数据库 fallback 收集真实行为。
+7. 当前 7.1 GiB 首发服务器使用 `infra/docker-compose.public.yml` 启动 Nginx、单前端和单后端，不传任何 Spring profile。
 8. 对公网只开放 80/443；数据库和模型端口由安全组拒绝公网访问。
+
+## Nginx 网关与负载均衡
+
+`infra/nginx/gateway.conf` 定义唯一公网入口：
+
+- `/api/**` 代理到 `backend`，并透传真实 IP、协议和 request id。
+- `/api/auth/sms-code` 使用独立的每 IP 频率限制。
+- `/` 代理到无状态的 `frontend` 静态 SPA；Nginx upstream 保留以后水平扩容能力。
+- `/media/object/**` 与 `/uploads/**` 仅用于兼容已有数据库中的旧媒体 URL。
+- 数据库、中间件和后端没有公网端口；只有 `gateway` 映射 `PUBLIC_HTTP_PORT`。
+
+本地只做配置校验，不构建镜像：
+
+```powershell
+$env:MYSQL_ROOT_PASSWORD="validation-only"
+$env:MYSQL_PASSWORD="validation-only"
+$env:MINIO_ACCESS_KEY="validation-only"
+$env:MINIO_SECRET_KEY="validation-only"
+$env:APP_AUTH_TOKEN_SECRET="validation-only-token-secret-at-least-32-characters"
+docker compose -f infra/docker-compose.public.yml config --quiet
+```
+
+决定上线时再执行：
+
+```powershell
+Copy-Item .env.public.example .env.public
+# 编辑 .env.public，替换全部 replace_me
+docker compose --env-file .env.public -f infra/docker-compose.public.yml up -d --build
+```
 
 ## 推荐链路
 
@@ -108,4 +136,4 @@ Invoke-RestMethod http://127.0.0.1:8092/health | ConvertTo-Json -Depth 8
 - `feed_impressions` 能看到真实可视曝光，`event_id` 无重复。
 - 双塔已发布时，`POST /recall/home` 返回 `mode=trained-two-tower`、正确版本和 index collection。
 - 临时停止 learned collection 后，首页仍可通过 fallback 返回内容。
-- 发布、头像和背景图上传均要求登录，内容安全服务失败时生产环境拒绝发布。
+- 首发时前端 `/publish` 重定向首页，`POST /api/images` 返回 `PUBLISHING_DISABLED`，且无需启动图片检测服务。

@@ -26,6 +26,7 @@ tools/models/*
 # Environment overrides
 .env
 .env.local
+.env.public
 tools/cloud_label_config.local.ps1
 *.log
 

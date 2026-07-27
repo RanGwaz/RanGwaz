@@ -32,6 +32,62 @@ npm install
 npm run dev
 ```
 
+### 本地发布前验收（不构建镜像）
+
+修改完成后先在本机执行以下检查。当前阶段不要运行 `docker build`、`docker compose build` 或公网 Compose 的 `up --build`：
+
+```powershell
+cd backend
+mvn test
+
+cd ..\frontend
+npm run build
+
+cd ..
+$env:MYSQL_ROOT_PASSWORD="validation-only"
+$env:MYSQL_PASSWORD="validation-only"
+$env:MINIO_ACCESS_KEY="validation-only"
+$env:MINIO_SECRET_KEY="validation-only"
+$env:APP_AUTH_TOKEN_SECRET="validation-only-token-secret-at-least-32-characters"
+docker compose -f infra/docker-compose.public.yml config --quiet
+```
+
+上述最后一条只展开并校验部署配置，不会构建或启动镜像。本地功能联调继续使用 `infra/docker-compose.yml`、`mvn spring-boot:run` 和 `npm run dev`。
+
+## 公网单入口架构
+
+公网部署定义在 `infra/docker-compose.public.yml`，Nginx 是唯一对外入口：
+
+```mermaid
+flowchart LR
+  Browser["浏览器 / HTTPS 负载均衡"] --> Gateway["Nginx Gateway :80"]
+  Gateway -->|"/"| Frontend["frontend"]
+  Gateway -->|"/api/**"| Backend["backend"]
+  Gateway -->|旧媒体兼容路径| Backend
+  Backend --> Data["MySQL / Redis / Kafka / MinIO / Elasticsearch"]
+  Backend -.可选.-> Recall["向量/模型召回服务"]
+  Recall --> Milvus["Milvus"]
+```
+
+- 当前 7.1 GiB 首发服务器运行单前端、单后端；Nginx 仍是唯一入口并保留以后水平扩容能力。
+- `/api/**` 去掉 `/api` 前缀后进入 Spring Boot；验证码接口另有限流。
+- `/` 进入无状态的前端 Nginx 容器。
+- MySQL、Redis、Kafka、MinIO、Elasticsearch 和 Milvus 只在容器网络或 `127.0.0.1` 监听，不暴露公网。
+- `POST /images` 由 `APP_FEATURE_PUBLISHING_ENABLED=false` 强制拒绝，前端 `/publish` 永久重定向首页；当前不启动图片检测服务。
+- TLS 最快可放在云负载均衡/CDN，回源到此 Nginx 的 80 端口。公网安全组只开放 80/443。
+
+只有决定正式上线时才复制 `.env.public.example` 为未跟踪的 `.env.public`，填写密钥并构建：
+
+```powershell
+docker compose --env-file .env.public -f infra/docker-compose.public.yml up -d --build
+```
+
+当前工作阶段不要执行这条命令。
+
+完整的域名、TLS、数据迁移、首次发布、验收、更新与回滚步骤见 [公网部署与 Nginx 网关](docs/公网部署与Nginx网关.md)。
+
+公网目标系统是 Ubuntu Server 26.04 LTS 64 位。服务器必须先按手册安装 Docker、设置 `vm.max_map_count=1048576`、增加 4 GB 应急 Swap，并保持 `recommendation` profile 关闭。
+
 默认开发账号：
 
 ```text
@@ -180,13 +236,42 @@ collection: vibelo_image_vectors_siglip2_base_p224_d512
   -ModelDir "D:\vibelo-data\recommendation-models"
 ```
 
+#### 版本注册中心怎么运作
+
+`tools/two_tower_registry.py` 维护 `${VIBELO_RECOMMENDATION_MODEL_DIR}/two_tower/registry.json`，它不是模型文件，而是线上模型状态的唯一控制面：
+
+- `candidate`：训练完成且离线门禁通过，但尚未接流量的新版本。
+- `current`：在线模型服务唯一允许加载的版本。
+- `previous`：上一个稳定版本，供一键回滚。
+- 每个版本记录 checkpoint、manifest、SHA-256、向量维度、Milvus collection 与索引状态；加载前会重新校验，防止模型文件和索引串版本。
+- promote 时先把旧 `current` 移到 `previous`，再把 READY 的 `candidate` 切成 `current`。在线服务监听 registry 修改时间并热加载；失败时保留旧模型并回退到 SigLIP 多兴趣召回。
+
+#### 安全训练流水线怎么运作
+
+`tools/run_two_tower_pipeline.ps1` 是训练、发布、切流的串行闸门：
+
+1. 获取单实例锁，避免两个定时任务同时训练或发布。
+2. 用真实 next-positive 行为训练用户塔和共享图片投影。
+3. 检查至少 50 个有效 actor、500 条样本，以及 validation/test `Recall@50 >= 0.01`。
+4. 只把通过门禁的版本登记为 `candidate(PENDING)`，训练脚本不能直接覆盖 `current`。
+5. 调用 Milvus 发布器全量建新 collection，并完成 checksum、维度、实体数和向量范数校验。
+6. 只有索引状态变为 `READY` 才 promote；任一步失败都立即停止，线上 `current` 不变。
+
+当前真实行为不足时流水线失败是正常保护，不要降低阈值或用伪造数据绕过。网站先使用 fallback 上线收集曝光、点击、长浏览、点赞、收藏和评论，之后定时重跑即可。
+
+#### Milvus 发布器怎么运作
+
+`tools/publish_two_tower_index.py` 从原始 SigLIP 512 维 collection 读取所有已发布图片向量，经过候选版本的共享图片塔投影为 256 维，再创建一个带版本号的新 HNSW/COSINE collection。它不会原地覆盖当前 collection，也不会删除 registry 仍引用的 `current` 或 `previous`。
+
+发布器先支持 `--dry-run` 做只读预检；正式构建后校验模型 SHA、输入/输出维度、预期实体数、抽样 L2 范数和索引可加载性，再把 candidate 的索引标记为 `READY`。因此“训练成功”“索引构建成功”“正式切流”是三个分离的步骤，任何半成品都不会被在线服务读取。
+
 完整的训练门禁、candidate/current/previous、dry-run、定时任务、健康检查和回滚命令见 [推荐模型训练与发布](docs/训练模型文档.md)，公网部署见 [公网运行清单](docs/public-runtime.md)。
 
 更多数据处理和向量化说明见 [数据标注与向量化](docs/data-labeling-and-vectorization.md)。
 
 ## 手机号登录与短信
 
-前端登录弹窗已支持手机号验证码登录。开发环境默认使用本地 mock 验证码，不会真实发送短信。
+前端登录弹窗已支持手机号验证码登录。单一配置默认调用真实阿里云短信；本地需要固定验证码时显式设置 `APP_SMS_MOCK=true`。同时兼容 `ALIYUN_SMS_*` 与旧的 `ALIYUN_PNVS_SMS_*` 变量名。
 
 短信服务配置说明见：
 
@@ -194,9 +279,9 @@ collection: vibelo_image_vectors_siglip2_base_p224_d512
 docs/sms-login.md
 ```
 
-## 图片安全审核服务
+## 图片安全审核服务（首发暂不启用）
 
-当前本地开发默认推荐使用本地轻量审核服务，不需要公网域名。上传图片时后端会先做本地像素启发式检查，再按配置调用审核服务；审核失败会直接拒绝上传，审核通过后才写入 MinIO。作品发布和资料更新不走人工审核。
+首发阶段 `APP_FEATURE_PUBLISHING_ENABLED=false`、`CONTENT_SAFETY_ENABLED=false`，前端没有发布入口，后端拒绝创建图片内容，因此不需要启动 8093 图片检测服务。下面的配置只在以后重新开放用户发布时使用。
 
 安装依赖：
 

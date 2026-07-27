@@ -16,4 +16,6 @@ public class SearchProperties {
     private int connectTimeoutMs = 800;
     private int readTimeoutMs = 2500;
     private int reindexBatchSize = 500;
+    private boolean failFastOnStartup = false;
+    private long indexRetryDelayMs = 30000L;
 }

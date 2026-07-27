@@ -8,6 +8,8 @@ import com.rangwaz.imagesite.service.ElasticsearchSearchClient;
 import com.rangwaz.imagesite.service.SearchService;
 import com.rangwaz.imagesite.service.TopicService;
 import com.rangwaz.imagesite.service.UserService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -21,6 +23,7 @@ import java.util.Locale;
  */
 @Service
 public class SearchServiceImpl implements SearchService {
+    private static final Logger log = LoggerFactory.getLogger(SearchServiceImpl.class);
     private static final int SEARCH_IMAGE_LIMIT = 180;
     private static final int RELATED_LIMIT = 18;
 
@@ -99,15 +102,30 @@ public class SearchServiceImpl implements SearchService {
             return new ApiDtos.SearchResult(List.of(), List.of(), List.of(), List.of());
         }
         SearchQueryPlan plan = plan(trimmed);
-        List<Long> imageIds = searchClient.searchImageIds(plan.searchKeywords(), SEARCH_IMAGE_LIMIT);
-        var posts = imageIds.isEmpty()
-                ? List.<ApiDtos.ImageView>of()
-                : imageService.toViews(imageContentMapper.findPublishedByIds(imageIds), "search");
+        List<ApiDtos.ImageView> posts;
+        try {
+            List<Long> imageIds = searchClient.searchImageIds(plan.searchKeywords(), SEARCH_IMAGE_LIMIT);
+            posts = imageIds.isEmpty()
+                    ? List.of()
+                    : imageService.toViews(imageContentMapper.findPublishedByIds(imageIds), "search");
+        } catch (RuntimeException exception) {
+            log.warn("Elasticsearch image search failed; using MySQL metadata fallback", exception);
+            posts = imageService.toViews(
+                    imageContentMapper.search(trimmed, SEARCH_IMAGE_LIMIT),
+                    "search-fallback"
+            );
+            return new ApiDtos.SearchResult(
+                    userService.search(trimmed, 12),
+                    posts,
+                    topicService.search(trimmed, 12),
+                    relatedItems(plan, List.of())
+            );
+        }
         return new ApiDtos.SearchResult(
                 userService.search(trimmed, 12),
                 posts,
                 topicService.search(trimmed, 12),
-                relatedItems(plan, searchClient.suggestKeywords(plan.searchKeywords(), RELATED_LIMIT))
+                relatedItems(plan, suggestKeywords(plan.searchKeywords(), RELATED_LIMIT))
         );
     }
 
@@ -121,16 +139,25 @@ public class SearchServiceImpl implements SearchService {
     public ApiDtos.SearchSuggestionResponse suggestions(String keyword) {
         String trimmed = normalize(keyword);
         if (!StringUtils.hasText(trimmed)) {
-            return new ApiDtos.SearchSuggestionResponse(toSuggestionItems(searchClient.suggestKeywords(DEFAULT_IDEAS, 12)), List.of());
+            return new ApiDtos.SearchSuggestionResponse(toSuggestionItems(suggestKeywords(DEFAULT_IDEAS, 12)), List.of());
         }
         if (!contentSafetyService.allowsText(trimmed)) {
             return new ApiDtos.SearchSuggestionResponse(List.of(), List.of());
         }
         SearchQueryPlan plan = plan(trimmed);
         return new ApiDtos.SearchSuggestionResponse(
-                relatedItems(plan, searchClient.suggestKeywords(plan.searchKeywords(), 12)),
+                relatedItems(plan, suggestKeywords(plan.searchKeywords(), 12)),
                 List.of()
         );
+    }
+
+    private List<SearchSuggestionEntity> suggestKeywords(List<String> keywords, int limit) {
+        try {
+            return searchClient.suggestKeywords(keywords, limit);
+        } catch (RuntimeException exception) {
+            log.warn("Elasticsearch suggestions failed; using MySQL metadata fallback", exception);
+            return imageContentMapper.suggestByMetadata(keywords, limit);
+        }
     }
 
     private SearchQueryPlan plan(String keyword) {

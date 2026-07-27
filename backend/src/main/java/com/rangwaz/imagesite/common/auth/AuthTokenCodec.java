@@ -1,6 +1,7 @@
 package com.rangwaz.imagesite.common.auth;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import javax.crypto.Mac;
@@ -24,6 +25,7 @@ public class AuthTokenCodec {
     private final long ttlSeconds;
     private final Clock clock;
 
+    @Autowired
     public AuthTokenCodec(@Value("${app.auth.token-secret}") String secret,
                           @Value("${app.auth.token-ttl-seconds:86400}") long ttlSeconds) {
         this(secret, ttlSeconds, Clock.systemUTC());

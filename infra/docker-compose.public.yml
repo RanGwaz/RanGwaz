@@ -1,0 +1,331 @@
+name: vibelo-public
+
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "3"
+
+x-backend-common: &backend-common
+  build:
+    context: ../backend
+  restart: unless-stopped
+  init: true
+  mem_limit: 1024m
+  mem_reservation: 512m
+  pids_limit: 256
+  logging: *default-logging
+  environment: &backend-environment
+    SERVER_PORT: 8080
+    SPRING_DATASOURCE_URL: "jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-rangwaz_image_dev}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false"
+    SPRING_DATASOURCE_USERNAME: ${MYSQL_USER:-rangwaz}
+    SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env.public}
+    REDIS_HOST: redis
+    REDIS_PORT: 6379
+    KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    MINIO_ENDPOINT: http://minio:9000
+    MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?set MINIO_ACCESS_KEY in .env.public}
+    MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?set MINIO_SECRET_KEY in .env.public}
+    MINIO_BUCKET: ${MINIO_BUCKET:-rangwaz-media}
+    APP_STORAGE_MINIO_OBJECT_URL_PREFIX: /api/media/object
+    ELASTICSEARCH_URL: http://elasticsearch:9200
+    APP_WEB_ALLOWED_ORIGIN_PATTERNS: ${APP_WEB_ALLOWED_ORIGIN_PATTERNS:-http://localhost}
+    APP_AUTH_TOKEN_SECRET: ${APP_AUTH_TOKEN_SECRET:?set APP_AUTH_TOKEN_SECRET in .env.public}
+    APP_AUTH_TOKEN_TTL_SECONDS: ${APP_AUTH_TOKEN_TTL_SECONDS:-86400}
+    APP_FEATURE_PUBLISHING_ENABLED: "false"
+    CONTENT_SAFETY_ENABLED: "false"
+    CONTENT_SAFETY_TEXT_ENABLED: "false"
+    CONTENT_SAFETY_IMAGE_ENABLED: "false"
+    CONTENT_SAFETY_CLOUD_ENABLED: "false"
+    APP_SMS_MOCK: ${APP_SMS_MOCK:-false}
+    ALIYUN_SMS_ACCESS_KEY_ID: ${ALIYUN_SMS_ACCESS_KEY_ID:-}
+    ALIYUN_SMS_ACCESS_KEY_SECRET: ${ALIYUN_SMS_ACCESS_KEY_SECRET:-}
+    ALIYUN_SMS_SIGN_NAME: ${ALIYUN_SMS_SIGN_NAME:-}
+    ALIYUN_SMS_TEMPLATE_CODE: ${ALIYUN_SMS_TEMPLATE_CODE:-100001}
+    VECTOR_ENABLED: ${VECTOR_ENABLED:-false}
+    VECTOR_SERVICE_URL: ${VECTOR_SERVICE_URL:-http://host.docker.internal:8091}
+    MODEL_RECALL_ENABLED: ${MODEL_RECALL_ENABLED:-false}
+    MODEL_RANKING_ENABLED: ${MODEL_RANKING_ENABLED:-false}
+    MODEL_SERVICE_URL: ${MODEL_SERVICE_URL:-http://host.docker.internal:8092}
+    SPRINGDOC_API_DOCS_ENABLED: "false"
+    SPRINGDOC_SWAGGER_UI_ENABLED: "false"
+    MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info,metrics
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  depends_on:
+    mysql:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    kafka:
+      condition: service_healthy
+    elasticsearch:
+      condition: service_started
+    minio:
+      condition: service_started
+
+services:
+  gateway:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    init: true
+    mem_limit: 96m
+    mem_reservation: 32m
+    pids_limit: 100
+    logging: *default-logging
+    ports:
+      - "${PUBLIC_HTTP_PORT:-80}:80"
+    volumes:
+      - ./nginx/gateway.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1/gateway/health | grep -q '\"status\":\"UP\"'"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+
+  frontend:
+    build:
+      context: ../frontend
+      args:
+        VITE_API_BASE: /api
+    restart: unless-stopped
+    init: true
+    mem_limit: 96m
+    mem_reservation: 32m
+    pids_limit: 100
+    logging: *default-logging
+
+  backend:
+    <<: *backend-common
+
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    mem_limit: 768m
+    mem_reservation: 384m
+    pids_limit: 256
+    logging: *default-logging
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env.public}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-rangwaz_image_dev}
+      MYSQL_USER: ${MYSQL_USER:-rangwaz}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env.public}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --innodb-buffer-pool-size=256M
+      - --max-connections=100
+      - --binlog-expire-logs-seconds=259200
+    ports:
+      - "127.0.0.1:${MYSQL_HOST_PORT:-3306}:3306"
+    volumes:
+      - public-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    mem_limit: 192m
+    mem_reservation: 64m
+    pids_limit: 100
+    logging: *default-logging
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
+    volumes:
+      - public-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.14.3
+    restart: unless-stopped
+    mem_limit: 1536m
+    memswap_limit: 1536m
+    mem_reservation: 1024m
+    pids_limit: 4096
+    logging: *default-logging
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms768m -Xmx768m
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:${ELASTICSEARCH_HOST_PORT:-9200}:9200"
+    volumes:
+      - public-elasticsearch-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://127.0.0.1:9200/_cluster/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    restart: unless-stopped
+    mem_limit: 384m
+    mem_reservation: 192m
+    pids_limit: 256
+    logging: *default-logging
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      KAFKA_HEAP_OPTS: -Xms128m -Xmx256m
+    volumes:
+      - public-zookeeper-data:/var/lib/zookeeper/data
+      - public-zookeeper-log:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD-SHELL", "echo srvr | nc 127.0.0.1 2181 | grep Mode"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    restart: unless-stopped
+    mem_limit: 896m
+    mem_reservation: 512m
+    pids_limit: 512
+    logging: *default-logging
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+      KAFKA_LOG_RETENTION_HOURS: 72
+      KAFKA_LOG_RETENTION_BYTES: 1073741824
+      KAFKA_LOG_SEGMENT_BYTES: 268435456
+    volumes:
+      - public-kafka-data:/var/lib/kafka/data
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server 127.0.0.1:29092 --list >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    restart: unless-stopped
+    mem_limit: 512m
+    mem_reservation: 256m
+    pids_limit: 256
+    logging: *default-logging
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?set MINIO_ACCESS_KEY in .env.public}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?set MINIO_SECRET_KEY in .env.public}
+    command: server /data --console-address ":9001"
+    ports:
+      - "127.0.0.1:${MINIO_HOST_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_HOST_PORT:-9001}:9001"
+    volumes:
+      - public-minio-data:/data
+
+  milvus-etcd:
+    image: quay.io/coreos/etcd:v3.5.18
+    profiles: ["recommendation"]
+    restart: unless-stopped
+    mem_limit: 384m
+    mem_reservation: 192m
+    pids_limit: 256
+    logging: *default-logging
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    command:
+      - etcd
+      - -advertise-client-urls=http://127.0.0.1:2379
+      - -listen-client-urls
+      - http://0.0.0.0:2379
+      - --data-dir
+      - /etcd
+    volumes:
+      - public-milvus-etcd-data:/etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+
+  milvus-minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    profiles: ["recommendation"]
+    restart: unless-stopped
+    mem_limit: 384m
+    mem_reservation: 192m
+    pids_limit: 256
+    logging: *default-logging
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /minio_data --console-address ":9001"
+    volumes:
+      - public-milvus-minio-data:/minio_data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+
+  milvus-standalone:
+    image: milvusdb/milvus:v2.5.4
+    profiles: ["recommendation"]
+    restart: unless-stopped
+    mem_limit: 1536m
+    mem_reservation: 1024m
+    pids_limit: 1024
+    logging: *default-logging
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: milvus-etcd:2379
+      MINIO_ADDRESS: milvus-minio:9000
+    ports:
+      - "127.0.0.1:${MILVUS_HOST_PORT:-19530}:19530"
+      - "127.0.0.1:${MILVUS_HEALTH_HOST_PORT:-9091}:9091"
+    volumes:
+      - public-milvus-data:/var/lib/milvus
+    depends_on:
+      milvus-etcd:
+        condition: service_healthy
+      milvus-minio:
+        condition: service_healthy
+
+volumes:
+  public-mysql-data:
+  public-redis-data:
+  public-elasticsearch-data:
+  public-zookeeper-data:
+  public-zookeeper-log:
+  public-kafka-data:
+  public-minio-data:
+  public-milvus-etcd-data:
+  public-milvus-minio-data:
+  public-milvus-data:

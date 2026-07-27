@@ -146,9 +146,6 @@ export const api = {
   trackImageShare(imageId: number) {
     return request<void>(`/images/${imageId}/share`, { method: 'POST' })
   },
-  createImage(payload: unknown) {
-    return request<ImageView>('/images', { method: 'POST', body: JSON.stringify(payload) })
-  },
   uploadImage(file: File) {
     const form = new FormData()
     form.append('file', file)

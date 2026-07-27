@@ -53,10 +53,10 @@ public class AliyunSmsSender implements SmsSender {
     @Value("${app.sms.aliyun.access-key-secret:}")
     private String accessKeySecret;
 
-    @Value("${app.sms.aliyun.sign-name:}")
+    @Value("${ALIYUN_SMS_SIGN_NAME:${app.sms.aliyun.sign-name:}}")
     private String signName;
 
-    @Value("${app.sms.aliyun.template-code:}")
+    @Value("${ALIYUN_SMS_TEMPLATE_CODE:${app.sms.aliyun.template-code:}}")
     private String templateCode;
 
     @Value("${app.sms.aliyun.country-code:86}")
