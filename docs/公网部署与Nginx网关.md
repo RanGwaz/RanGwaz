@@ -461,14 +461,16 @@ mysql --protocol=TCP --connect-timeout=5 \
 
    ```bash
    bash ops/public/configure-rds-env.sh \
-     --allowed-origin 'https://你的正式域名' \
      --sms-sign-name '你的短信签名' \
      --sms-template-code '你的模板代码'
 
    sudo bash ops/public/preflight.sh
    ```
 
-   配置脚本只在终端静默读取密码和 AccessKey；预检只读，不构建、不拉取、不启动容器。存在任何 `[失败]` 时不要继续。
+   配置脚本会交互询问真实公网 origin；不能把“你的ECS公网IP”或
+   “你的正式域名”原样当成配置值。它只在终端静默读取密码和
+   AccessKey；预检只读，不构建、不拉取、不启动容器。存在任何 `[失败]`
+   时不要继续。
 
 4. 进入统一维护窗口，同时停止后端、数据库导入/标签/训练发布任务，以及所有上传、删除和其他 MinIO 写入方；从这一步开始一直冻结到第 7 步 MinIO 独立验证结束，确保数据库对象 key 与对象存储处于同一个一致性窗口。按 MySQL 迁移手册运行 `Export-MySqlSnapshot.ps1`，再用 `Test-MySql80Restore.ps1` 完成 MySQL 8.0.36 恢复演练。只有得到同一前缀的七个文件并出现 `*.restore-tested.json` 才允许上传。
 5. 把七个 MySQL 快照文件复制到 ECS 的 `/data/migration/mysql/`。确认 RDS 目标库仍严格为空，然后运行 `import-mysql-snapshot-to-rds.sh`。脚本会分别静默读取一次性迁移账号和 `vibelo_app` 密码，并在导入后比较表集合、逐表精确行数、Flyway 与所有数据库对象。

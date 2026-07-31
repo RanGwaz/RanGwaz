@@ -6,6 +6,8 @@ if [[ $- == *x* ]]; then
 fi
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+# shellcheck source=public-common.sh
+source "$SCRIPT_DIR/public-common.sh"
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd -P)
 ENV_FILE="$REPO_ROOT/.env.public"
 COMPOSE_FILE="$REPO_ROOT/infra/docker-compose.public.yml"
@@ -91,15 +93,7 @@ plain_from_raw() {
 }
 
 is_placeholder() {
-  local value=$1
-  local lower=${value,,}
-
-  case "$lower" in
-    '' | replace_me | replace_with_* | change_me | changeme | '<'*'>' | *example.com*)
-      return 0
-      ;;
-  esac
-  return 1
+  vibelo_is_placeholder "$1"
 }
 
 get_env_plain() {
@@ -203,6 +197,7 @@ if have_command containerd; then
         }
       ' <<<"$containerd_dump"
     )
+    containerd_root=$(vibelo_normalize_toml_string "$containerd_root")
     if [[ $containerd_root == "$EXPECTED_CONTAINERD_ROOT" ]]; then
       pass "containerd root 已迁移到 $EXPECTED_CONTAINERD_ROOT"
     else
@@ -325,9 +320,14 @@ if ((ENV_AVAILABLE == 1)); then
     RDS_TARGET_READY=0
   fi
 
-  check_required_env APP_WEB_ALLOWED_ORIGIN_PATTERNS '浏览器允许来源'
-  if get_env_plain APP_WEB_ALLOWED_ORIGIN_PATTERNS &&
-    ! is_placeholder "$ENV_PLAIN"; then
+  if ! get_env_plain APP_WEB_ALLOWED_ORIGIN_PATTERNS; then
+    fail '浏览器允许来源缺少变量 APP_WEB_ALLOWED_ORIGIN_PATTERNS'
+  elif vibelo_is_origin_placeholder "$ENV_PLAIN"; then
+    fail '浏览器允许来源仍是示例或占位符'
+  elif ! vibelo_is_valid_origin "$ENV_PLAIN"; then
+    fail '浏览器允许来源不是有效 origin；不能包含路径、query 或无效端口'
+  else
+    pass '浏览器允许来源已配置（不显示值）'
     if [[ $ENV_PLAIN == https://* ]]; then
       pass '浏览器允许来源使用 HTTPS'
     else

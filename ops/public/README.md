@@ -24,10 +24,14 @@ RDS 中应已存在：
 
 ```bash
 bash ops/public/configure-rds-env.sh \
-  --allowed-origin 'https://你的正式域名' \
   --sms-sign-name '你的短信签名' \
   --sms-template-code '你的模板代码'
 ```
+
+不传 `--allowed-origin` 时，脚本会要求交互输入浏览器真实访问
+地址，格式是 `http://<ECS真实公网IPv4>` 或 `https://<你的真实域名>`。必须换成
+你自己的公网 IP 或域名，不能把“你的ECS公网IP”等说明文字原样
+复制进配置。该值必须是 origin，不能带路径、query 或 fragment。
 
 脚本默认写入以下非秘密目标：
 
@@ -98,6 +102,12 @@ Compose 检查只解析配置，输出会被隐藏以免泄露秘密；它不会
 
 80/443 的检查是“上线前端口应空闲”。网关正式启动后再次运行该脚本，这两项会因
 网关正在监听而失败，这是预期现象。
+
+修改预检公共校验逻辑后，可运行不接触系统配置的回归测试：
+
+```bash
+bash ops/public/test-public-common.sh
+```
 
 ## 安全边界
 

@@ -10,6 +10,8 @@ fi
 umask 077
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+# shellcheck source=public-common.sh
+source "$SCRIPT_DIR/public-common.sh"
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd -P)
 EXAMPLE_FILE="$REPO_ROOT/.env.public.example"
 ENV_FILE="$REPO_ROOT/.env.public"
@@ -193,9 +195,10 @@ if [[ -n $PUBLIC_HTTP_PORT_OVERRIDE ]]; then
 fi
 if [[ -n $ALLOWED_ORIGIN_OVERRIDE ]]; then
   validate_single_line "允许来源" "$ALLOWED_ORIGIN_OVERRIDE"
-  [[ $ALLOWED_ORIGIN_OVERRIDE == http://* ||
-    $ALLOWED_ORIGIN_OVERRIDE == https://* ]] ||
-    die "允许来源必须以 http:// 或 https:// 开头"
+  ! vibelo_is_origin_placeholder "$ALLOWED_ORIGIN_OVERRIDE" ||
+    die "允许来源仍是占位符；请换成真实公网 IP 或域名"
+  vibelo_is_valid_origin "$ALLOWED_ORIGIN_OVERRIDE" ||
+    die "允许来源必须是包含真实公网 IP 或域名的完整 origin"
 fi
 if [[ -n $SMS_MOCK_OVERRIDE &&
   $SMS_MOCK_OVERRIDE != true &&
@@ -296,15 +299,7 @@ plain_from_raw() {
 }
 
 is_placeholder() {
-  local value=$1
-  local lower=${value,,}
-
-  case "$lower" in
-    '' | replace_me | replace_with_* | change_me | changeme | '<'*'>' | *example.com*)
-      return 0
-      ;;
-  esac
-  return 1
+  vibelo_is_placeholder "$1"
 }
 
 raw_is_usable_secret() {
@@ -373,7 +368,11 @@ prompt_plain_required() {
   if ((ENV_FOUND == 1)); then
     plain_from_raw "$ENV_RAW"
     if ! is_placeholder "$ENV_PLAIN"; then
-      return 0
+      if [[ $validator != origin ]] ||
+        { ! vibelo_is_origin_placeholder "$ENV_PLAIN" && vibelo_is_valid_origin "$ENV_PLAIN"; }; then
+        return 0
+      fi
+      note "$label 已配置但格式无效，请重新输入。"
     fi
   fi
 
@@ -386,8 +385,8 @@ prompt_plain_required() {
     validate_single_line "$label" "$input"
     case "$validator" in
       origin)
-        if [[ $input != http://* && $input != https://* ]]; then
-          note "$label 必须以 http:// 或 https:// 开头，请重新输入。"
+        if vibelo_is_origin_placeholder "$input" || ! vibelo_is_valid_origin "$input"; then
+          note "$label 必须是包含真实公网 IP 或域名的完整 origin。"
           continue
         fi
         ;;
