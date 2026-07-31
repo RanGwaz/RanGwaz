@@ -2,6 +2,8 @@
 
 > 适用日期：2026-07-05  
 > 目标：先用一套成本可控、能收集真实用户行为数据的公网部署，把图片资源从服务器磁盘迁到对象存储；后续再逐步升级数据库、消息队列和推荐服务。
+>
+> 2026-07-29 执行状态更新：RDS MySQL 和 160 GB ECS 数据盘已经购买。为了最快首发，当前先使用“RDS + 数据盘上的 MinIO + Nginx”，OSS/CDN 改为流量验证后的第二阶段；实际操作以 [公网部署与 Nginx 网关](./公网部署与Nginx网关.md) 为准。
 
 ## 结论
 
@@ -16,7 +18,7 @@
 - 图片访问：OSS 绑定 CDN 域名，前端直接加载 CDN 图片。
 - 后端：Spring Boot 单服务。
 - 前端：Vite 构建后的静态文件，由 Nginx 或对象存储静态站点托管。
-- 数据库：预算紧先 Docker MySQL；更稳则直接 RDS MySQL。
+- 数据库：已确定使用同 VPC 的 RDS MySQL 内网连接。
 - Redis：先 Docker Redis。
 - Kafka：第一版可继续 Docker 单节点，只开放内网；后续再换托管消息队列或改成数据库事件表。
 - Milvus：第一版可以单机 standalone。它存的是向量索引，不是原图，不需要 GPU。
@@ -32,7 +34,7 @@
 | --- | --- | --- |
 | 前端 | React + Vite | 构建成静态文件，Nginx 托管或对象存储静态托管 |
 | 后端 | Spring Boot + MyBatis | 云服务器 Docker 或 systemd 运行 |
-| MySQL | Docker MySQL 8.4 | 初期可同机，正式推广建议 RDS |
+| MySQL | 本地 Docker MySQL 8.4 | 公网已确定使用同 VPC 的 RDS MySQL |
 | Redis | Docker Redis | 初期同机即可 |
 | Kafka/Zookeeper | Docker 单节点 | 初期同机，仅内网；后续替换托管队列 |
 | 图片存储 | MinIO | 生产迁到 OSS/COS/S3/R2 |
@@ -204,14 +206,14 @@ images.thumbnail_url  -> https://img.your-domain.com/thumbs/...
 
 ### MySQL
 
-第一版可以同机 Docker MySQL，但必须满足：
+当前公网已经选择 RDS MySQL，Compose 内置 MySQL 只保留为 `local-database` 本地备用模式，不参与常规公网启动。若临时使用同机 Docker MySQL，至少必须满足：
 
 - 独立数据盘。
 - 每日备份。
 - 开启 binlog 或至少每日 `mysqldump`。
 - 只允许本机或内网访问，安全组不要开放 `3306` 到公网。
 
-更推荐生产直接用 RDS MySQL：
+生产使用 RDS MySQL：
 
 - 自动备份。
 - 故障恢复更简单。

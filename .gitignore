@@ -27,8 +27,13 @@ tools/models/*
 .env
 .env.local
 .env.public
+.env.public.tmp.*
+.env.public.edit.*
 tools/cloud_label_config.local.ps1
 *.log
+
+# Deployment migration runtime output
+minio-audit-*/
 
 # Dataset collector runtime output
 dataset/

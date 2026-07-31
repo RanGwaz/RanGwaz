@@ -12,14 +12,15 @@ APP_WEB_ALLOWED_ORIGIN_PATTERNS=https://www.example.com
 
 ## 首次上线
 
-1. 复制根目录的 `.env.public.example` 到服务器的密钥管理或未纳入 Git 的环境文件，替换全部 `replace_me`。
+1. 复制根目录的 `.env.public.example` 到服务器的密钥管理或未纳入 Git 的环境文件，填写 RDS、MinIO、令牌与短信等必填项。
 2. `APP_AUTH_TOKEN_SECRET` 至少 32 个随机字符。升级后旧的无签名 token 会失效，用户重新登录一次即可。
 3. 真实短信参数必须完整；公网 Compose 显式设置 `APP_SMS_MOCK=false`。
-4. MySQL、Redis、Kafka、Milvus、MinIO、Elasticsearch 和 Python 内部服务只监听本机或内网，不开放公网端口。
+4. 公网业务库使用同 VPC 的 RDS MySQL 内网地址，并只在白名单中放行 ECS 私网 IP；Redis、Kafka、Milvus、MinIO、Elasticsearch 和 Python 内部服务只监听本机或内网，不开放公网端口。
 5. 为推荐模型准备持久化目录，并让训练、索引发布与在线服务共用同一个 `VIBELO_RECOMMENDATION_MODEL_DIR`。
 6. 推荐服务可以延后启用；首次上线保持 `VECTOR_ENABLED=false`、`MODEL_RECALL_ENABLED=false`，先由数据库 fallback 收集真实行为。
-7. 当前 7.1 GiB 首发服务器使用 `infra/docker-compose.public.yml` 启动 Nginx、单前端和单后端，不传任何 Spring profile。
+7. 当前 7.1 GiB 首发服务器使用 `infra/docker-compose.public.yml` 启动 Nginx、单前端和单后端，不传任何 Spring profile；Compose 内置 MySQL 仅保留在 `local-database` 备用 profile 中，公网常规启动不启用它。
 8. 对公网只开放 80/443；数据库和模型端口由安全组拒绝公网访问。
+9. 160 GB 数据盘挂载到 `/data` 后，将 Docker `data-root` 迁到 `/data/docker`，并将 Docker 29 的 containerd 数据目录迁到 `/data/containerd`，不要让 MinIO、Elasticsearch 和镜像继续占用 40 GB 系统盘。
 
 ## Nginx 网关与负载均衡
 
@@ -34,8 +35,9 @@ APP_WEB_ALLOWED_ORIGIN_PATTERNS=https://www.example.com
 本地只做配置校验，不构建镜像：
 
 ```powershell
-$env:MYSQL_ROOT_PASSWORD="validation-only"
-$env:MYSQL_PASSWORD="validation-only"
+$env:SPRING_DATASOURCE_URL="jdbc:mysql://rds-internal.example:3306/rangwaz_image_dev?sslMode=PREFERRED"
+$env:SPRING_DATASOURCE_USERNAME="validation-only"
+$env:SPRING_DATASOURCE_PASSWORD="validation-only"
 $env:MINIO_ACCESS_KEY="validation-only"
 $env:MINIO_SECRET_KEY="validation-only"
 $env:APP_AUTH_TOKEN_SECRET="validation-only-token-secret-at-least-32-characters"
@@ -49,6 +51,8 @@ Copy-Item .env.public.example .env.public
 # 编辑 .env.public，替换全部 replace_me
 docker compose --env-file .env.public -f infra/docker-compose.public.yml up -d --build
 ```
+
+数据盘初始化、Docker 数据目录迁移、RDS 内网配置和 OSS/CDN 采购顺序见 [公网部署与 Nginx 网关](./公网部署与Nginx网关.md)。
 
 ## 推荐链路
 

@@ -1,12 +1,12 @@
 # RanGwaz / Vibelo
 
-RanGwaz 当前产品名是 Vibelo，目标是搭建一个类似 Pinterest 的图片内容与推荐系统平台。核心内容主表是 `images`，图片文件放 MinIO，业务数据放 MySQL，行为事件进入 Kafka，图片向量放 Milvus。
+RanGwaz 当前产品名是 Vibelo，目标是搭建一个类似 Pinterest 的图片内容与推荐系统平台。核心内容主表是 `images`，图片文件首发阶段放 MinIO，业务数据在本地开发时使用 MySQL、公网默认使用阿里云 RDS MySQL，行为事件进入 Kafka，图片向量放 Milvus。
 
 ## 当前架构
 
 - 前端：`frontend`，React + Vite。
 - 后端：`backend`，Spring Boot + MyBatis。
-- 中间件：MySQL、Redis、Kafka、MinIO、Milvus，统一由 `infra/docker-compose.yml` 启动。
+- 本地中间件：MySQL、Redis、Kafka、MinIO、Milvus，统一由 `infra/docker-compose.yml` 启动；公网 Compose 默认不启动 MySQL，而是连接 RDS 内网地址。
 - 数据工具：`tools/import_images.py` 导入授权图片，`tools/auto_label_images.py` 本地 GPU 打标签，`tools/vectorize_images.py` 本地 GPU 生成图片向量并写入 Milvus。
 
 ## 本地启动
@@ -44,8 +44,9 @@ cd ..\frontend
 npm run build
 
 cd ..
-$env:MYSQL_ROOT_PASSWORD="validation-only"
-$env:MYSQL_PASSWORD="validation-only"
+$env:SPRING_DATASOURCE_URL="jdbc:mysql://rds-internal.example:3306/rangwaz_image_dev?sslMode=PREFERRED"
+$env:SPRING_DATASOURCE_USERNAME="validation-only"
+$env:SPRING_DATASOURCE_PASSWORD="validation-only"
 $env:MINIO_ACCESS_KEY="validation-only"
 $env:MINIO_SECRET_KEY="validation-only"
 $env:APP_AUTH_TOKEN_SECRET="validation-only-token-secret-at-least-32-characters"
@@ -64,7 +65,8 @@ flowchart LR
   Gateway -->|"/"| Frontend["frontend"]
   Gateway -->|"/api/**"| Backend["backend"]
   Gateway -->|旧媒体兼容路径| Backend
-  Backend --> Data["MySQL / Redis / Kafka / MinIO / Elasticsearch"]
+  Backend --> RDS["RDS MySQL（VPC 内网）"]
+  Backend --> Data["Redis / Kafka / MinIO / Elasticsearch"]
   Backend -.可选.-> Recall["向量/模型召回服务"]
   Recall --> Milvus["Milvus"]
 ```
@@ -72,7 +74,7 @@ flowchart LR
 - 当前 7.1 GiB 首发服务器运行单前端、单后端；Nginx 仍是唯一入口并保留以后水平扩容能力。
 - `/api/**` 去掉 `/api` 前缀后进入 Spring Boot；验证码接口另有限流。
 - `/` 进入无状态的前端 Nginx 容器。
-- MySQL、Redis、Kafka、MinIO、Elasticsearch 和 Milvus 只在容器网络或 `127.0.0.1` 监听，不暴露公网。
+- RDS 只走 VPC 内网地址并仅放行 ECS 私网 IP；Redis、Kafka、MinIO、Elasticsearch 和 Milvus 只在容器网络或 `127.0.0.1` 监听，不暴露公网。
 - `POST /images` 由 `APP_FEATURE_PUBLISHING_ENABLED=false` 强制拒绝，前端 `/publish` 永久重定向首页；当前不启动图片检测服务。
 - TLS 最快可放在云负载均衡/CDN，回源到此 Nginx 的 80 端口。公网安全组只开放 80/443。
 
@@ -88,13 +90,23 @@ docker compose --env-file .env.public -f infra/docker-compose.public.yml up -d -
 
 公网目标系统是 Ubuntu Server 26.04 LTS 64 位。服务器必须先按手册安装 Docker、设置 `vm.max_map_count=1048576`、增加 4 GB 应急 Swap，并保持 `recommendation` profile 关闭。
 
+当前 160 GB ECS 数据盘应格式化并挂载到 `/data`，再把 Docker `data-root` 迁到 `/data/docker`、把 Docker 29 使用的 containerd 数据目录迁到 `/data/containerd`；这不会改变 40 GB 系统盘 `/` 的容量。首发可继续使用数据盘上的 MinIO，暂不强制购买 OSS/CDN；正式扩大图片流量时再迁移到 OSS，并用 CDN 分发静态图片。完整判断和安全操作顺序见 [公网部署与 Nginx 网关](docs/公网部署与Nginx网关.md)。
+
+上线操作已拆成三套可审计工具，优先按各目录中的 README 执行，不要手工拼接含密码的命令：
+
+- [ECS 环境配置与只读预检](ops/public/README.md)
+- [MySQL 8.4 → RDS MySQL 8.0.36 安全迁移](ops/migration/mysql/README.md)
+- [Windows MinIO → ECS MinIO 流式迁移与校验](ops/migration/minio/README.md)
+
+固定顺序是：挂载数据盘并迁移 Docker 数据目录 → 创建 `vibelo_app` 标准 RDS 账号 → 生成 `.env.public` 并预检 → 本机导出和 MySQL 8.0.36 恢复演练 → 导入空 RDS 并精确验收 → 启动目标 MinIO → 流式迁移并校验对象 → 最后才构建、启动前后端和 Nginx Gateway。
+
 默认开发账号：
 
 ```text
 mira / RanGwaz147..
 ```
 
-## 中间件端口
+## 本地开发中间件端口
 
 - MySQL：`localhost:3306`
 - Redis：`localhost:6379`

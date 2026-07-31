@@ -17,9 +17,9 @@ x-backend-common: &backend-common
   logging: *default-logging
   environment: &backend-environment
     SERVER_PORT: 8080
-    SPRING_DATASOURCE_URL: "jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-rangwaz_image_dev}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false"
-    SPRING_DATASOURCE_USERNAME: ${MYSQL_USER:-rangwaz}
-    SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env.public}
+    SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:?set SPRING_DATASOURCE_URL in .env.public}
+    SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:?set SPRING_DATASOURCE_USERNAME in .env.public}
+    SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:?set SPRING_DATASOURCE_PASSWORD in .env.public}
     REDIS_HOST: redis
     REDIS_PORT: 6379
     KAFKA_BOOTSTRAP_SERVERS: kafka:29092
@@ -53,8 +53,6 @@ x-backend-common: &backend-common
   extra_hosts:
     - "host.docker.internal:host-gateway"
   depends_on:
-    mysql:
-      condition: service_healthy
     redis:
       condition: service_healthy
     kafka:
@@ -62,7 +60,7 @@ x-backend-common: &backend-common
     elasticsearch:
       condition: service_started
     minio:
-      condition: service_started
+      condition: service_healthy
 
 services:
   gateway:
@@ -105,16 +103,17 @@ services:
 
   mysql:
     image: mysql:8.4
+    profiles: ["local-database"]
     restart: unless-stopped
     mem_limit: 768m
     mem_reservation: 384m
     pids_limit: 256
     logging: *default-logging
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env.public}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-rangwaz_image_dev}
       MYSQL_USER: ${MYSQL_USER:-rangwaz}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env.public}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-}
       TZ: Asia/Shanghai
     command:
       - --character-set-server=utf8mb4
@@ -246,6 +245,12 @@ services:
       - "127.0.0.1:${MINIO_CONSOLE_HOST_PORT:-9001}:9001"
     volumes:
       - public-minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
 
   milvus-etcd:
     image: quay.io/coreos/etcd:v3.5.18

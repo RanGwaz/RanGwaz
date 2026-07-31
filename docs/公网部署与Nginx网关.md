@@ -13,7 +13,7 @@
          /            \ /api/**
   frontend          backend
                         |
-      MySQL / Redis / Kafka / MinIO / Elasticsearch
+      RDS MySQL / Redis / Kafka / MinIO / Elasticsearch
                         |
           可选模型服务 / Milvus
 ```
@@ -83,7 +83,7 @@ MODEL_RANKING_ENABLED=false
 - 不启动 8093 图片检测服务。
 - 推荐先使用数据库冷启动/fallback，继续收集曝光、点击、停留、点赞、收藏和评论。
 - ES 启动慢或短暂故障不会再杀死后端；建索引会后台重试，搜索临时回退 MySQL。
-- MySQL、Redis 和 Kafka 首次健康后才启动后端，避免数据库初始化失败、验证码不可用或首批行为数据丢失。
+- 公网数据库使用同 VPC 的 RDS MySQL；上线前必须先验证内网地址、白名单和账号权限。Redis 和 Kafka 首次健康后才启动后端，避免验证码不可用或首批行为数据丢失。
 - Milvus 位于 Compose 的 `recommendation` profile，首次上线默认不启动，减少内存和启动时间。
 
 ## 5. 发布前本地验收
@@ -113,8 +113,9 @@ Invoke-RestMethod "http://127.0.0.1:8080/feed?page=1&pageSize=2"
 
 ```powershell
 cd ..
-$env:MYSQL_ROOT_PASSWORD="validation-only"
-$env:MYSQL_PASSWORD="validation-only"
+$env:SPRING_DATASOURCE_URL="jdbc:mysql://rds.invalid:3306/rangwaz_image_dev"
+$env:SPRING_DATASOURCE_USERNAME="validation-only"
+$env:SPRING_DATASOURCE_PASSWORD="validation-only"
 $env:MINIO_ACCESS_KEY="validation-only"
 $env:MINIO_SECRET_KEY="validation-only"
 $env:APP_AUTH_TOKEN_SECRET="validation-only-token-secret-at-least-32-characters"
@@ -184,7 +185,157 @@ sudo ss -lntp | grep -E ':(80|443)\s' || true
 
 Ubuntu 默认的 `overlay2`/ext4 组合可直接使用。若实际 `Backing Filesystem` 是 XFS，`Supports d_type` 必须为 `true`。
 
-### 6.2 Elasticsearch 与 Swap 前置配置
+### 6.2 初始化 160 GB 数据盘并挂载到 `/data`
+
+阿里云控制台购买并“挂载到 ECS”的数据盘是独立块设备，不会自动扩大系统盘。当前输出中：
+
+- `/dev/vda3` 仍是 40 GB 系统盘，挂载点是 `/`；
+- `/dev/vdb` 已被 ECS 识别，但 `FSTYPE` 和 `MOUNTPOINTS` 为空，说明它还没有可用文件系统和挂载点；
+- `df -hT /` 只统计 `/` 所在的 `/dev/vda3`，所以它保持 40 GB 是正常现象。数据盘挂载后应使用 `df -hT /data` 查看。
+
+格式化会清空目标设备。先执行以下**只读检查**，不要把设备名想当然地替换成其他磁盘：
+
+```bash
+lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS,MODEL,SERIAL
+wipefs -n /dev/vdb
+findmnt /dev/vdb || true
+blkid /dev/vdb || true
+```
+
+只有同时满足以下条件才继续：`/dev/vdb` 大小约为 160 GB、没有挂载点、`wipefs -n` 没有发现任何已有文件系统/分区签名，并且已在阿里云控制台再次确认它就是新购的空数据盘。只要看到已有签名或不能确认，立即停止，不能执行 `mkfs`。
+
+确认是空盘后，当前用途只需要一个文件系统，可以直接在整块盘上建立 ext4，无需再分多个分区：
+
+```bash
+apt update
+apt install -y e2fsprogs
+cp -a /etc/fstab "/etc/fstab.bak.$(date +%F-%H%M%S)"
+
+mkfs.ext4 -F -L vibelo-data /dev/vdb
+mkdir -p /data
+
+DATA_UUID="$(blkid -s UUID -o value /dev/vdb)"
+test -n "$DATA_UUID"
+grep -qF "UUID=$DATA_UUID " /etc/fstab || \
+  printf 'UUID=%s /data ext4 defaults,nofail 0 2\n' "$DATA_UUID" >> /etc/fstab
+
+systemctl daemon-reload
+mount -a
+findmnt /data
+df -hT /data
+lsblk -f
+```
+
+`findmnt /data` 必须显示来源为 `/dev/vdb`，`df -hT /data` 应显示约 149 GiB 的 ext4 可用总容量（云盘标称 GB 与 Linux 显示的 GiB 口径不同）。如果 `mount -a` 报错，先用备份恢复 `/etc/fstab`，不要继续迁移 Docker 数据。
+
+### 6.3 把 Docker 与 containerd 数据目录放到数据盘
+
+仅把项目源码放进 `/data` 不够。Docker 的命名卷、配置等数据默认在 `/var/lib/docker`；全新安装的 Docker Engine 29 默认启用 containerd image store，镜像内容和容器 snapshot 还会单独写入 `/var/lib/containerd`。Docker 的 `data-root` **不会自动迁移 containerd 的目录**，因此两个目录都必须放到数据盘。先检查现状：
+
+```bash
+docker info --format 'DockerRoot={{.DockerRootDir}} Driver={{.Driver}} DriverStatus={{json .DriverStatus}}'
+docker ps -a
+docker volume ls
+test -f /etc/docker/daemon.json && cat /etc/docker/daemon.json || \
+  echo "NO_DAEMON_JSON"
+test -f /etc/containerd/config.toml && cat /etc/containerd/config.toml || \
+  echo "NO_CONTAINERD_CONFIG"
+df -hT /data
+```
+
+如果 Docker 中还没有需要保留的容器、镜像和卷，可跳过对应的 `rsync`。如果已经有数据，先停止所有 Compose 项目，并在 Docker 与 containerd 完全停止后原样复制；不要边运行边复制：
+
+```bash
+apt install -y rsync jq
+systemctl stop docker docker.socket containerd
+mkdir -p /data/docker /data/containerd
+
+# 仅在源目录中已有需要保留的数据时执行
+test ! -d /var/lib/docker ||
+  rsync -aHAXx --numeric-ids /var/lib/docker/ /data/docker/
+test ! -d /var/lib/containerd ||
+  rsync -aHAXx --numeric-ids /var/lib/containerd/ /data/containerd/
+```
+
+若 `/etc/docker/daemon.json` 不存在，创建最小配置：
+
+```bash
+install -d -m 0755 /etc/docker
+printf '{\n  "data-root": "/data/docker"\n}\n' \
+  > /etc/docker/daemon.json
+```
+
+若该文件已经存在，不要覆盖其他 Docker 设置，使用 `jq` 合并 `data-root`：
+
+```bash
+tmp_json="$(mktemp)"
+jq '. + {"data-root":"/data/docker"}' /etc/docker/daemon.json > "$tmp_json" &&
+  jq empty "$tmp_json" &&
+  install -m 0644 "$tmp_json" /etc/docker/daemon.json &&
+  rm -f "$tmp_json"
+```
+
+containerd 使用 `/etc/containerd/config.toml` 顶层的 `root`。先备份现有文件；若文件存在，必须保留其中其他配置并只修改顶层 `root`，若不存在则创建最小配置：
+
+```bash
+install -d -m 0755 /etc/containerd
+test ! -f /etc/containerd/config.toml ||
+  cp -a /etc/containerd/config.toml \
+    "/etc/containerd/config.toml.bak.$(date +%F-%H%M%S)"
+
+if test -s /etc/containerd/config.toml; then
+  tmp_toml="$(mktemp)"
+  awk '
+    BEGIN { top = 1; written = 0 }
+    top && /^[[:space:]]*\[/ {
+      if (!written) print "root = \"/data/containerd\""
+      top = 0
+    }
+    top && /^[[:space:]]*root[[:space:]]*=/ {
+      if (!written) print "root = \"/data/containerd\""
+      written = 1
+      next
+    }
+    { print }
+    END {
+      if (top && !written) print "root = \"/data/containerd\""
+    }
+  ' /etc/containerd/config.toml > "$tmp_toml"
+  install -m 0644 "$tmp_toml" /etc/containerd/config.toml
+  rm -f "$tmp_toml"
+else
+  printf 'version = 2\nroot = "/data/containerd"\n' \
+    > /etc/containerd/config.toml
+fi
+```
+
+再让 Docker 和 containerd 明确依赖 `/data` 已成功挂载，避免重启后数据盘挂载失败时误把目录建到 40 GB 系统盘：
+
+```bash
+mkdir -p /etc/systemd/system/docker.service.d \
+  /etc/systemd/system/containerd.service.d
+cat > /etc/systemd/system/docker.service.d/data-root.conf <<'EOF'
+[Unit]
+RequiresMountsFor=/data
+EOF
+cat > /etc/systemd/system/containerd.service.d/data-root.conf <<'EOF'
+[Unit]
+RequiresMountsFor=/data
+EOF
+
+systemctl daemon-reload
+systemctl enable --now containerd docker
+docker info --format '{{.DockerRootDir}}'
+containerd config dump | grep -m1 '^root = '
+docker volume create vibelo-data-root-check
+docker volume inspect vibelo-data-root-check --format '{{.Mountpoint}}'
+docker volume rm vibelo-data-root-check
+df -hT / /data
+```
+
+最后一组检查必须显示 Docker Root Dir 为 `/data/docker`、containerd root 为 `/data/containerd`，测试卷路径也必须位于 `/data/docker`。已有 Docker 数据时，还要检查原容器、镜像和卷是否完整。验证项目正常运行并完成备份前，不要删除旧的 `/var/lib/docker` 或 `/var/lib/containerd`；也不要在同一数据盘上额外留一份 65.5 GiB 的 MinIO 临时副本。
+
+### 6.4 Elasticsearch 与 Swap 前置配置
 
 以 root 身份设置 Elasticsearch 所需的虚拟内存映射数量和较低的 Swap 积极度：
 
@@ -210,7 +361,7 @@ swapon --show
 
 看到约 4 GB Swap 后再继续。若任一步报错，不要重复执行 `fallocate` 覆盖一个已经启用的 swapfile。
 
-### 6.3 安全组与 HTTPS
+### 6.5 安全组与 HTTPS
 
 安全组建议：
 
@@ -238,7 +389,8 @@ chmod 600 .env.public
 
 至少替换：
 
-- `MYSQL_ROOT_PASSWORD`、`MYSQL_PASSWORD`
+- `SPRING_DATASOURCE_URL`：RDS MySQL 的内网地址、端口和数据库名
+- `SPRING_DATASOURCE_USERNAME`、`SPRING_DATASOURCE_PASSWORD`：RDS 业务账号；不要使用高权限管理账号
 - `MINIO_ACCESS_KEY`、`MINIO_SECRET_KEY`
 - `APP_AUTH_TOKEN_SECRET`：至少 32 个随机字符；以后扩容出的所有后端必须完全一致
 - `ALIYUN_SMS_ACCESS_KEY_ID`、`ALIYUN_SMS_ACCESS_KEY_SECRET`
@@ -247,24 +399,152 @@ chmod 600 .env.public
 
 `.env.public` 已被 `.gitignore` 排除，不要提交。项目不再使用 `application-prod.yml` 或 `SPRING_PROFILES_ACTIVE=prod`。
 
+### 7.1 RDS 同 VPC 内网配置
+
+公网部署默认使用已购买的 RDS MySQL，不再让 ECS 上的本地 MySQL 承担正式数据。按以下顺序配置：
+
+1. 确认 RDS 为 MySQL 8.0 或 8.4；现有 schema 使用 `utf8mb4_0900_ai_ci`，不能直接导入 MySQL 5.7。
+2. 确认 RDS 与 ECS 位于同一地域、同一 VPC，优先使用 RDS 控制台显示的**内网地址**，不申请或使用公网连接地址。
+3. 在 RDS 创建数据库 `rangwaz_image_dev`，字符集使用 `utf8mb4`；在 RDS“账号管理”中创建专用标准业务账号（建议 `vibelo_app`），并只授予该库读写（DDL + DML）权限。不要把高权限账号或 DMS 自动生成的 `dms_user_*` 安全托管账号写入应用配置。
+4. 在 RDS 白名单中加入 ECS 的私网 IP（通常使用 `/32` 精确授权），不要配置 `0.0.0.0/0`。ECS 私网 IP 可用 `hostname -I` 或阿里云控制台核对。
+5. 在 RDS 控制台启用 SSL 后，JDBC 使用 `sslMode=REQUIRED`；SSL 尚未启用时先使用 `sslMode=PREFERRED` 完成内网迁移与验证。
+6. `.env.public` 中只写内网连接信息，不把密码写进 Compose、Git 或文档。
+
+示例仅包含占位符：
+
+```dotenv
+SPRING_DATASOURCE_URL=jdbc:mysql://rm-xxxxxxxx.mysql.rds.aliyuncs.com:3306/rangwaz_image_dev?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&sslMode=PREFERRED
+SPRING_DATASOURCE_USERNAME=vibelo_app
+SPRING_DATASOURCE_PASSWORD=<RDS业务账号密码>
+```
+
+先从 ECS 验证 DNS、3306 连通性和账号权限，再启动后端：
+
+```bash
+getent hosts rm-xxxxxxxx.mysql.rds.aliyuncs.com
+timeout 5 bash -c '</dev/tcp/rm-xxxxxxxx.mysql.rds.aliyuncs.com/3306'
+
+apt update
+apt install -y default-mysql-client
+mysql --protocol=TCP --connect-timeout=5 \
+  -h rm-xxxxxxxx.mysql.rds.aliyuncs.com -P 3306 \
+  -u vibelo_app -p -e 'SELECT VERSION(), CURRENT_USER();'
+```
+
+命令中的地址和账号必须替换为控制台真实值；`-p` 会交互读取密码，不要把密码直接写在命令行中。如果 TCP 不通，依次核对地域/VPC、RDS 运行状态、内网地址和白名单，不要通过开放公网 3306 绕过问题。
+
+若 Compose 保留了本地 MySQL profile，它只用于临时开发或灾难排查；公网常规启动不要启用该 profile，也不需要设置 `MYSQL_ROOT_PASSWORD`。
+
 ## 8. 迁移现有数据
 
 公网 Compose 使用独立持久卷，不会自动读取本机开发 Compose 的卷。上线前至少迁移：
 
-1. MySQL：导出当前 `rangwaz_image_dev`，在服务器 MySQL 初始化后恢复。
+1. MySQL：导出当前 `rangwaz_image_dev`，再恢复到 RDS 的同名数据库；导入前先确认字符集、账号权限和备份。
 2. 业务 MinIO：同步 `rangwaz-media` bucket，数据库中的 object key 必须保持不变。
 3. Elasticsearch：可以不搬，后端启动后重新建立索引。
 4. Milvus：首次推荐服务关闭，可暂不搬；以后用原图向量脚本重建更稳妥。
 5. 推荐模型目录：以后启用双塔时再同步 `VIBELO_RECOMMENDATION_MODEL_DIR`。
 
+### 8.1 固定执行顺序
+
+仓库已经提供三套操作工具：
+
+- [`ops/public/README.md`](../ops/public/README.md)：安全生成 `.env.public`，并在 ECS 做只读预检。
+- [`ops/migration/mysql/README.md`](../ops/migration/mysql/README.md)：生成一致性快照、在本机 MySQL 8.0.36 完整恢复演练、导入空 RDS 并逐表精确验收。
+- [`ops/migration/minio/README.md`](../ops/migration/minio/README.md)：通过 SSH 回环隧道把本机 MinIO 直接流式同步到 ECS，并做全量 key/size 与分层 SHA256 抽样校验。
+
+必须按以下顺序执行：
+
+1. 在 ECS 完成第 6.2、6.3 节，确认 `/data`、Docker Root 和 containerd root 都已经落在 160 GB 数据盘。
+2. 在 RDS 控制台创建标准账号 `vibelo_app`，只授权 `rangwaz_image_dev` 读写；保留高权限账号仅用于一次性导入，不使用 `dms_user_*`。
+3. 拉取最新代码，在 ECS 仓库根目录执行：
+
+   ```bash
+   bash ops/public/configure-rds-env.sh \
+     --allowed-origin 'https://你的正式域名' \
+     --sms-sign-name '你的短信签名' \
+     --sms-template-code '你的模板代码'
+
+   sudo bash ops/public/preflight.sh
+   ```
+
+   配置脚本只在终端静默读取密码和 AccessKey；预检只读，不构建、不拉取、不启动容器。存在任何 `[失败]` 时不要继续。
+
+4. 进入统一维护窗口，同时停止后端、数据库导入/标签/训练发布任务，以及所有上传、删除和其他 MinIO 写入方；从这一步开始一直冻结到第 7 步 MinIO 独立验证结束，确保数据库对象 key 与对象存储处于同一个一致性窗口。按 MySQL 迁移手册运行 `Export-MySqlSnapshot.ps1`，再用 `Test-MySql80Restore.ps1` 完成 MySQL 8.0.36 恢复演练。只有得到同一前缀的七个文件并出现 `*.restore-tested.json` 才允许上传。
+5. 把七个 MySQL 快照文件复制到 ECS 的 `/data/migration/mysql/`。确认 RDS 目标库仍严格为空，然后运行 `import-mysql-snapshot-to-rds.sh`。脚本会分别静默读取一次性迁移账号和 `vibelo_app` 密码，并在导入后比较表集合、逐表精确行数、Flyway 与所有数据库对象。
+6. RDS 验收通过后，只启动 MinIO；这不会构建业务镜像：
+
+   ```bash
+   docker compose --env-file .env.public -f infra/docker-compose.public.yml \
+     up -d minio
+
+   docker compose --env-file .env.public -f infra/docker-compose.public.yml \
+     ps minio
+   ```
+
+7. 在 Windows 建立只监听 ECS `127.0.0.1:19090` 的 SSH 反向隧道。按 MinIO 迁移手册依次运行：
+
+   ```bash
+   bash ops/migration/minio/minio-migrate.sh --bucket rangwaz-media
+
+   bash ops/migration/minio/minio-validate.sh \
+     --bucket rangwaz-media \
+     --sample-count 1000 \
+     --audit-dir /root/minio-audit/validate-01
+   ```
+
+   不要在安全组开放 9000、9001 或 19090。只有源清单在迁移前后未变化、对象数和总字节完全相同、全量 key/size 无差异、SHA256 抽样零失败，才关闭隧道并进入应用发布。
+
+8. 保持后端停止，先保存 RDS 与 MinIO 验收日志。最后按第 9 节决定是否构建应用镜像并启动公网服务。
+
+RDS 目标库必须在导入前保持为空。MySQL DDL 无法整体回滚；导入开始后若失败，应重建或清空业务库并从同一快照重新执行，不能在半成品库上继续导入。Windows 源 MinIO 在公网读取验收、备份和稳定观察期结束前不要删除。
+
+### 8.2 当前数据量与磁盘门槛
+
+2026-07-28 本机只读盘点结果：
+
+- MySQL：`126,945` 张已发布图片、`1,670,881` 条图片标签关系、`8,609` 条行为；逻辑表约 `787 MiB`，数据卷约 `1.3 GiB`。
+- 业务 MinIO `rangwaz-media`：`317,076` 个对象，共 `70,349,795,919` 字节，约 `65.5 GiB`。
+- 40 GB 系统盘当前约有 `30 GiB` 可用，不能容纳完整 MinIO、Docker 镜像、构建缓存和 Elasticsearch 索引。
+- 新购 160 GB 数据盘在 ext4 格式化后约显示为 `149 GiB`；放入当前 `65.5 GiB` MinIO 对象后，理论上还剩约 `83 GiB`，尚未扣除文件系统预留、Docker 镜像、构建缓存、日志、Kafka 和 Elasticsearch 数据。
+
+结论是：160 GB 数据盘足够当前首发和一段时间的低增长运行，前提是按 6.2、6.3 节把它挂载到 `/data`，并同时迁移 Docker `data-root` 与 containerd 数据目录。RDS 已接管 MySQL 后，ECS 不再承担数据库数据盘压力；但当前容量不适合同时保留两份 65.5 GiB 媒体副本，也不适合在同机运行 Milvus 或模型训练。
+
+上线后给 `/data` 设置容量告警：使用率达到 70% 时评估增长，达到 80% 前必须扩容或迁移 OSS。全量迁移时直接从源 MinIO 流式同步到目标 MinIO，不要先在数据盘生成完整中间包。系统盘只保留操作系统、项目源码和少量系统日志。
+
 首次只启动数据服务时不构建项目镜像：
 
 ```bash
 docker compose --env-file .env.public -f infra/docker-compose.public.yml \
-  up -d mysql redis elasticsearch zookeeper kafka minio
+  up -d redis elasticsearch zookeeper kafka minio
 ```
 
-恢复 MySQL 和 MinIO 数据，确认无误后再启动应用。
+先把 MySQL 完整备份（包括表结构、业务数据和 `flyway_schema_history`）恢复到 RDS，并把 MinIO 数据直接同步到数据盘中的目标卷；确认 RDS 行数、MinIO 对象数和抽样图片都无误后再启动应用。当前 Flyway 迁移依赖已有基础表，不能把刚创建的空库直接交给后端自动初始化。
+
+### 8.3 是否现在购买 OSS 或 CDN
+
+阿里云的对象存储产品名是 **OSS**；“OBS”通常指其他云厂商的对象存储。云盘、OSS、CDN 解决的是三个不同问题：
+
+- 云盘是挂载给单台 ECS 使用的块存储；需要格式化、挂载，并由 ECS/MinIO 自己管理数据。
+- OSS 是托管对象存储，适合保存原图和缩略图，减少单台 ECS 或单块云盘故障带来的风险。
+- CDN 缓存 OSS 或 ECS 回源的图片和前端静态资源，减少跨地域延迟、ECS 出网带宽和源站请求压力；它不是永久存储。
+
+当前建议分三阶段执行：
+
+1. **最快首发：暂不购买 OSS/CDN。** 使用“RDS + 160 GB 数据盘 + 本机 MinIO + Nginx Gateway”，先完成数据迁移、HTTPS 和功能验收。当前已关闭图片发布，媒体增长有限，这条路线改动最少。
+2. **稳定运营：优先迁移 OSS。** 单 ECS 上的 MinIO 仍是单点。准备好对象存储适配层、私有 bucket、备份/校验和迁移脚本后，将 `rangwaz-media` 的 317,076 个对象迁入 OSS；保持数据库 object key 不变。迁移完成前不要删除 MinIO 数据。
+3. **有域名和实际流量后启用 CDN。** CDN 可以先回源当前 ECS/Nginx，也可以在 OSS 迁移后直接回源 OSS。中国内地加速通常还需要已备案域名。私有 OSS bucket 应配置私有回源鉴权或签名 URL，不能为了接 CDN 把全部图片意外改成公开读。
+
+如果现在直接购买 OSS/CDN，但应用仍只会访问 MinIO，它们不会自动生效；因此应先按当前首发路线上线，再把“存储适配、对象校验迁移、URL 切换与回滚、CDN 缓存规则”作为独立发布。OSS 按存储量、请求和流量计费，CDN 按流量或带宽计费，正式购买前再用实际图片访问量估算套餐。
+
+阿里云官方参考：
+
+- [Linux ECS 初始化不超过 2 TiB 的数据盘](https://help.aliyun.com/zh/ecs/user-guide/initialize-a-data-disk-whose-size-does-not-exceed-2-tib-on-a-linux-instance)
+- [ECS 与 RDS MySQL 连接和网络配置](https://help.aliyun.com/zh/rds/apsaradb-rds-for-mysql/connections-and-networks/)
+- [RDS MySQL 账号与权限](https://help.aliyun.com/en/rds/apsaradb-rds-for-mysql/account-or-permission/)
+- [DMS 注册实例与自动创建账号说明](https://help.aliyun.com/en/dms/getting-started/register-an-apsaradb-instance)
+- [OSS 使用 CDN 加速](https://help.aliyun.com/zh/oss/user-guide/cdn-acceleration)
+- [Docker 29 containerd image store 的数据目录](https://docs.docker.com/engine/storage/containerd/)
 
 ## 9. 首次构建与发布
 
