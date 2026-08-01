@@ -16,6 +16,11 @@ ECS 127.0.0.1:19090  ── mc mirror ──>  ECS 127.0.0.1:9000
 replication 方案。当前项目按对象 key 推断图片 Content-Type，因此对象读取不
 依赖源对象的 Content-Type 元数据。
 
+当前固定的 MinIO OSS 2025 版本只允许用于**严格回环隔离的迁移和临时首发**。
+它受 2026 年公开的签名绕过写入漏洞影响，9000/9001 绝不能暴露公网，Gateway
+也不能代理原始 S3 API；流量稳定后应迁移到阿里云 OSS 或受支持的已修复对象存储。
+详见 [GitHub 官方安全公告](https://github.com/minio/minio/security/advisories/GHSA-hv4r-mvr4-25vw)。
+
 ## 一、上线前硬门禁
 
 开始前必须同时满足：
@@ -24,38 +29,64 @@ replication 方案。当前项目按对象 key 推断图片 Content-Type，因�
    `http://127.0.0.1:9000`。
 2. 停止本地后端、上传任务和任何会写入 `rangwaz-media` 的程序；迁移和验证
    全程保持只读。仅“关闭图片发布页面”不等于已经冻结全部后台写入。
-3. ECS 目标 MinIO 正常，宿主机地址是 `http://127.0.0.1:9000`，其数据卷位于
-   `/data` 所在的 160 GB 数据盘。
+3. ECS 目标 MinIO 尚未存在旧容器或旧卷；通过本目录的准备/启动脚本创建后，
+   宿主机地址是 `http://127.0.0.1:9000`，数据卷位于 `/data/docker`。
 4. ECS 安全组只开放 SSH、HTTP、HTTPS；**不要开放 9000、9001 或 19090**。
-5. ECS 已安装最新官方 `mc`、`curl`、`python3`，并且 `mc mirror --help`
-   同时列出 `--max-workers`、`--summary`；过旧客户端会被脚本拒绝。`--md5`
-   在新版 `mc` 中可能是隐藏参数，因此不能靠帮助文本判断，但真实迁移命令仍会
-   使用它，若客户端不支持就会立即失败。
-6. 目标盘剩余空间足够。历史基线是 `317,076` 个对象、
-   `70,349,795,919` 字节；实际迁移以脚本新生成的精确清单为准。
+5. ECS 使用固定 `mc RELEASE.2025-08-13T08-35-41Z`、`curl`、`python3`；准备
+   脚本会校验二进制 SHA256 和平台，迁移脚本还会检查 `--max-workers`、
+   `--summary`。`--md5` 在该版本中是隐藏兼容参数，真实迁移时仍会使用。
+6. 迁移开始前 `/data` 至少还有 101 GiB 可用空间和 200 万可用 inode。历史
+   基线是 `317,076` 个对象、`70,349,795,919` 字节；实际以新清单为准。
 7. 源和目标的 Access Key/Secret Key 已准备好，但不要写进脚本、命令历史或
    Git 文件。
 
-Ubuntu x86_64 可从 MinIO 官方稳定下载地址安装最新 `mc`。先下载到临时文件，
-成功后再原子式安装，避免下载中断时破坏现有命令：
+当前 ECS 无法稳定访问 Docker Hub，因此使用已经在 Windows 本机按
+`linux/amd64` 导出并校验的两个固定离线文件：
+
+| 文件 | 字节数 | SHA256 |
+| --- | ---: | --- |
+| `minio-RELEASE.2025-04-22T22-12-26Z-linux-amd64.tar` | `64,023,552` | `c220e4e0ef61abe83a084fdc4942af30c9f00e539fabc63b619ef73f01429d0f` |
+| `mc-RELEASE.2025-08-13T08-35-41Z-linux-amd64` | `30,535,864` | `01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891` |
+
+把它们传到 ECS 的 `/data/migration/minio/` 后，从仓库根目录依次运行：
 
 ```bash
-MC_TMP=$(mktemp)
-curl --fail --location --retry 3 \
-  https://dl.min.io/client/mc/release/linux-amd64/mc \
-  --output "$MC_TMP"
-sudo install -m 0755 "$MC_TMP" /usr/local/bin/mc
-rm -f "$MC_TMP"
+cd /opt/vibelo
+chmod 700 /data/migration/minio
+chmod 600 /data/migration/minio/*
 
-mc --version
-mc mirror --help | grep -E -- '--max-workers|--summary'
+sudo bash ops/migration/minio/prepare-minio-target.sh
+sudo bash ops/migration/minio/start-minio-target.sh
 ```
 
-复制本目录到 ECS 后，先赋予两个 Bash 入口执行权限：
+`prepare-minio-target.sh` 校验外层文件 SHA256、包内 `linux/amd64` manifest、
+config 与所有 layer，再安装 `mc`、执行 `docker load`；它不会启动服务。
+`start-minio-target.sh` 只执行带 `--pull never --no-build --no-deps` 的 MinIO
+单服务启动，并验证只有 `minio` 在运行、9000/9001 仅绑定回环、实际卷是
+`vibelo-public_public-minio-data` 且落在 `/data/docker`。任一门禁失败都停止，
+不会自动删除已有容器或卷。
+
+如果首次启动已经创建容器/卷，但随后因健康检查或后置门禁失败，脚本会故意保留
+现场，下一次运行也会拒绝覆盖。此时不要执行 `docker rm` 或 `docker volume rm`，
+先保存以下只读诊断结果；尤其在 mirror 开始后绝不能删除目标卷：
 
 ```bash
-chmod 700 minio-migrate.sh minio-validate.sh
-chmod 600 minio-common.sh minio_manifest.py README.md
+docker compose --env-file .env.public -f infra/docker-compose.public.yml \
+  ps -a minio
+docker compose --env-file .env.public -f infra/docker-compose.public.yml \
+  logs --no-color --tail 200 minio
+docker inspect vibelo-public-minio-1
+docker volume inspect vibelo-public_public-minio-data
+ss -lntp | grep -E ':(9000|9001|19090)[[:space:]]' || true
+```
+
+根据日志判断是容器仍在启动、端口冲突、卷路径异常还是配置错误，再做单独恢复；
+不能为了让门禁通过而无条件删除现场。
+
+三个 Bash 入口的纯 fixture/mock 回归测试不会真实加载镜像或启动服务：
+
+```bash
+bash ops/migration/minio/test-minio-target-scripts.sh
 ```
 
 ## 二、建立仅回环可见的 SSH 反向隧道

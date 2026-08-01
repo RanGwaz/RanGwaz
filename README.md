@@ -75,7 +75,7 @@ flowchart LR
 - `/api/**` 去掉 `/api` 前缀后进入 Spring Boot；验证码接口另有限流。
 - `/` 进入无状态的前端 Nginx 容器。
 - RDS 只走 VPC 内网地址并仅放行 ECS 私网 IP；Redis、Kafka、MinIO、Elasticsearch 和 Milvus 只在容器网络或 `127.0.0.1` 监听，不暴露公网。
-- `POST /images` 由 `APP_FEATURE_PUBLISHING_ENABLED=false` 强制拒绝，前端 `/publish` 永久重定向首页；当前不启动图片检测服务。
+- `POST /images` 与 `POST /media/upload` 分别由 `APP_FEATURE_PUBLISHING_ENABLED=false`、`APP_FEATURE_MEDIA_UPLOAD_ENABLED=false` 强制拒绝；前端 `/publish` 永久重定向首页，个人资料页只保留昵称和简介编辑，当前不启动图片检测服务。
 - TLS 最快可放在云负载均衡/CDN，回源到此 Nginx 的 80 端口。公网安全组只开放 80/443。
 
 只有决定正式上线时才复制 `.env.public.example` 为未跟踪的 `.env.public`，填写密钥并构建：
@@ -293,7 +293,7 @@ docs/sms-login.md
 
 ## 图片安全审核服务（首发暂不启用）
 
-首发阶段 `APP_FEATURE_PUBLISHING_ENABLED=false`、`CONTENT_SAFETY_ENABLED=false`，前端没有发布入口，后端拒绝创建图片内容，因此不需要启动 8093 图片检测服务。下面的配置只在以后重新开放用户发布时使用。
+首发阶段 `APP_FEATURE_PUBLISHING_ENABLED=false`、`APP_FEATURE_MEDIA_UPLOAD_ENABLED=false`、`CONTENT_SAFETY_ENABLED=false`。前端没有发布入口或个人图片上传控件，后端同时拒绝创建图片内容和媒体上传，因此不需要启动 8093 图片检测服务。下面的配置只在以后重新开放用户图片写入时使用。
 
 安装依赖：
 

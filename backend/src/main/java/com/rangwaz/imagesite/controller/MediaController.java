@@ -2,10 +2,12 @@ package com.rangwaz.imagesite.controller;
 
 import com.rangwaz.imagesite.common.api.ApiResponse;
 import com.rangwaz.imagesite.common.auth.AuthContext;
+import com.rangwaz.imagesite.common.exception.BusinessException;
 import com.rangwaz.imagesite.dto.ApiDtos;
 import com.rangwaz.imagesite.service.MediaObject;
 import com.rangwaz.imagesite.service.MediaService;
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.CacheControl;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -27,16 +29,21 @@ import java.time.Duration;
 public class MediaController {
     private final MediaService mediaService;
     private final AuthContext authContext;
+    private final boolean mediaUploadEnabled;
 
     /**
      * Creates the media controller.
      *
      * @param mediaService media service
      * @param authContext auth context
+     * @param mediaUploadEnabled whether media uploads are enabled
      */
-    public MediaController(MediaService mediaService, AuthContext authContext) {
+    public MediaController(MediaService mediaService,
+                           AuthContext authContext,
+                           @Value("${app.features.media-upload-enabled:false}") boolean mediaUploadEnabled) {
         this.mediaService = mediaService;
         this.authContext = authContext;
+        this.mediaUploadEnabled = mediaUploadEnabled;
     }
 
     /**
@@ -49,6 +56,9 @@ public class MediaController {
     @PostMapping("/upload")
     public ApiResponse<ApiDtos.UploadResponse> upload(@RequestHeader(value = "Authorization", required = false) String authorization,
                                                       @RequestParam("file") MultipartFile file) {
+        if (!mediaUploadEnabled) {
+            throw new BusinessException("PUBLISHING_DISABLED", "图片上传功能暂未开放");
+        }
         authContext.requireUserId(authorization);
         return ApiResponse.ok(mediaService.upload(file));
     }

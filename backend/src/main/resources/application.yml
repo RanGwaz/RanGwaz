@@ -68,6 +68,7 @@ management:
 app:
   features:
     publishing-enabled: ${APP_FEATURE_PUBLISHING_ENABLED:false}
+    media-upload-enabled: ${APP_FEATURE_MEDIA_UPLOAD_ENABLED:false}
   web:
     allowed-origin-patterns: ${APP_WEB_ALLOWED_ORIGIN_PATTERNS:http://localhost:*,http://127.0.0.1:*}
   auth:

@@ -9,6 +9,7 @@ import { avatarUrl } from '../utils/format'
 
 const DEFAULT_PROFILE_BACKGROUND = '/default-background.jpg'
 const MAX_PROFILE_IMAGE_SIZE = 12 * 1024 * 1024
+const MEDIA_UPLOAD_ENABLED = import.meta.env.VITE_MEDIA_UPLOAD_ENABLED === 'true'
 
 interface ProfileDraft {
   avatarUrl: string
@@ -54,6 +55,11 @@ export function ProfileEditPage() {
   }, [auth.ready, auth.user?.id, navigate])
 
   async function uploadProfileImage(target: UploadTarget, event: ChangeEvent<HTMLInputElement>) {
+    if (!MEDIA_UPLOAD_ENABLED) {
+      event.target.value = ''
+      setError('首发阶段暂不开放头像和背景图片上传')
+      return
+    }
     const file = event.target.files?.[0]
     event.target.value = ''
     if (!file) return
@@ -152,20 +158,24 @@ export function ProfileEditPage() {
         <section className="profile-edit-page__preview-panel">
           <div className="profile-edit-page__cover-stage">
             <img src={draft.backgroundUrl || DEFAULT_PROFILE_BACKGROUND} alt="" />
-            <label className="profile-edit-page__cover-upload">
-              {backgroundUploading ? <Loader2 size={16} /> : <UploadCloud size={16} />}
-              更换背景
-              <input type="file" accept="image/*" onChange={(event) => void uploadProfileImage('background', event)} disabled={disabled} />
-            </label>
+            {MEDIA_UPLOAD_ENABLED && (
+              <label className="profile-edit-page__cover-upload">
+                {backgroundUploading ? <Loader2 size={16} /> : <UploadCloud size={16} />}
+                更换背景
+                <input type="file" accept="image/*" onChange={(event) => void uploadProfileImage('background', event)} disabled={disabled} />
+              </label>
+            )}
           </div>
 
           <div className="profile-edit-page__profile-card">
             <div className="profile-edit-page__avatar-shell">
               <img src={avatarUrl(draft.avatarUrl)} alt="" />
-              <label aria-label="更换头像">
-                {avatarUploading ? <Loader2 size={15} /> : <Camera size={15} />}
-                <input type="file" accept="image/*" onChange={(event) => void uploadProfileImage('avatar', event)} disabled={disabled} />
-              </label>
+              {MEDIA_UPLOAD_ENABLED && (
+                <label aria-label="更换头像">
+                  {avatarUploading ? <Loader2 size={15} /> : <Camera size={15} />}
+                  <input type="file" accept="image/*" onChange={(event) => void uploadProfileImage('avatar', event)} disabled={disabled} />
+                </label>
+              )}
             </div>
             <div className="profile-edit-page__profile-copy">
               <strong>{displayName}</strong>
@@ -177,18 +187,22 @@ export function ProfileEditPage() {
         <form id="profile-edit-form" className="profile-edit-page__editor-panel" onSubmit={saveProfile}>
           <section className="profile-edit-page__section">
             <h2>图片</h2>
-            <div className="profile-edit-page__media-grid">
-              <label className="profile-edit-page__media-tile">
-                <span>{avatarUploading ? <Loader2 size={19} /> : <Camera size={19} />}</span>
-                <strong>{avatarUploading ? '头像上传中' : '上传头像'}</strong>
-                <input type="file" accept="image/*" onChange={(event) => void uploadProfileImage('avatar', event)} disabled={disabled} />
-              </label>
-              <label className="profile-edit-page__media-tile">
-                <span>{backgroundUploading ? <Loader2 size={19} /> : <ImageIcon size={19} />}</span>
-                <strong>{backgroundUploading ? '背景上传中' : '上传背景'}</strong>
-                <input type="file" accept="image/*" onChange={(event) => void uploadProfileImage('background', event)} disabled={disabled} />
-              </label>
-            </div>
+            {MEDIA_UPLOAD_ENABLED ? (
+              <div className="profile-edit-page__media-grid">
+                <label className="profile-edit-page__media-tile">
+                  <span>{avatarUploading ? <Loader2 size={19} /> : <Camera size={19} />}</span>
+                  <strong>{avatarUploading ? '头像上传中' : '上传头像'}</strong>
+                  <input type="file" accept="image/*" onChange={(event) => void uploadProfileImage('avatar', event)} disabled={disabled} />
+                </label>
+                <label className="profile-edit-page__media-tile">
+                  <span>{backgroundUploading ? <Loader2 size={19} /> : <ImageIcon size={19} />}</span>
+                  <strong>{backgroundUploading ? '背景上传中' : '上传背景'}</strong>
+                  <input type="file" accept="image/*" onChange={(event) => void uploadProfileImage('background', event)} disabled={disabled} />
+                </label>
+              </div>
+            ) : (
+              <p className="profile-edit-page__media-note">首发阶段暂不开放头像和背景图片上传，昵称与简介仍可正常修改。</p>
+            )}
           </section>
 
           <section className="profile-edit-page__section">

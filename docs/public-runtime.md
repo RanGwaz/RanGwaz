@@ -15,12 +15,13 @@ APP_WEB_ALLOWED_ORIGIN_PATTERNS=https://www.example.com
 1. 复制根目录的 `.env.public.example` 到服务器的密钥管理或未纳入 Git 的环境文件，填写 RDS、MinIO、令牌与短信等必填项。
 2. `APP_AUTH_TOKEN_SECRET` 至少 32 个随机字符。升级后旧的无签名 token 会失效，用户重新登录一次即可。
 3. 真实短信参数必须完整；公网 Compose 显式设置 `APP_SMS_MOCK=false`。
-4. 公网业务库使用同 VPC 的 RDS MySQL 内网地址，并只在白名单中放行 ECS 私网 IP；Redis、Kafka、Milvus、MinIO、Elasticsearch 和 Python 内部服务只监听本机或内网，不开放公网端口。
-5. 为推荐模型准备持久化目录，并让训练、索引发布与在线服务共用同一个 `VIBELO_RECOMMENDATION_MODEL_DIR`。
-6. 推荐服务可以延后启用；首次上线保持 `VECTOR_ENABLED=false`、`MODEL_RECALL_ENABLED=false`，先由数据库 fallback 收集真实行为。
-7. 当前 7.1 GiB 首发服务器使用 `infra/docker-compose.public.yml` 启动 Nginx、单前端和单后端，不传任何 Spring profile；Compose 内置 MySQL 仅保留在 `local-database` 备用 profile 中，公网常规启动不启用它。
-8. 对公网只开放 80/443；数据库和模型端口由安全组拒绝公网访问。
-9. 160 GB 数据盘挂载到 `/data` 后，将 Docker `data-root` 迁到 `/data/docker`，并将 Docker 29 的 containerd 数据目录迁到 `/data/containerd`，不要让 MinIO、Elasticsearch 和镜像继续占用 40 GB 系统盘。
+4. 公网 Compose 同时固定 `APP_FEATURE_PUBLISHING_ENABLED=false`、`APP_FEATURE_MEDIA_UPLOAD_ENABLED=false`；前端也在构建时隐藏个人图片上传入口，昵称和简介编辑不受影响。
+5. 公网业务库使用同 VPC 的 RDS MySQL 内网地址，并只在白名单中放行 ECS 私网 IP；Redis、Kafka、Milvus、MinIO、Elasticsearch 和 Python 内部服务只监听本机或内网，不开放公网端口。
+6. 为推荐模型准备持久化目录，并让训练、索引发布与在线服务共用同一个 `VIBELO_RECOMMENDATION_MODEL_DIR`。
+7. 推荐服务可以延后启用；首次上线保持 `VECTOR_ENABLED=false`、`MODEL_RECALL_ENABLED=false`，先由数据库 fallback 收集真实行为。
+8. 当前 7.1 GiB 首发服务器使用 `infra/docker-compose.public.yml` 启动 Nginx、单前端和单后端，不传任何 Spring profile；Compose 内置 MySQL 仅保留在 `local-database` 备用 profile 中，公网常规启动不启用它。
+9. 对公网只开放 80/443；数据库和模型端口由安全组拒绝公网访问。
+10. 160 GB 数据盘挂载到 `/data` 后，将 Docker `data-root` 迁到 `/data/docker`，并将 Docker 29 的 containerd 数据目录迁到 `/data/containerd`，不要让 MinIO、Elasticsearch 和镜像继续占用 40 GB 系统盘。
 
 ## Nginx 网关与负载均衡
 

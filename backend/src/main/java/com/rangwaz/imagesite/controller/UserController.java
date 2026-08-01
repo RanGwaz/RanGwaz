@@ -7,6 +7,7 @@ import com.rangwaz.imagesite.service.ImageService;
 import com.rangwaz.imagesite.service.InteractionService;
 import com.rangwaz.imagesite.service.UserService;
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -28,6 +29,7 @@ public class UserController {
     private final ImageService imageService;
     private final InteractionService interactionService;
     private final AuthContext authContext;
+    private final boolean mediaUploadEnabled;
 
     /**
      * Creates the user controller.
@@ -36,12 +38,18 @@ public class UserController {
      * @param imageService post service
      * @param interactionService interaction service
      * @param authContext auth context
+     * @param mediaUploadEnabled whether profile media changes are enabled
      */
-    public UserController(UserService userService, ImageService imageService, InteractionService interactionService, AuthContext authContext) {
+    public UserController(UserService userService,
+                          ImageService imageService,
+                          InteractionService interactionService,
+                          AuthContext authContext,
+                          @Value("${app.features.media-upload-enabled:false}") boolean mediaUploadEnabled) {
         this.userService = userService;
         this.imageService = imageService;
         this.interactionService = interactionService;
         this.authContext = authContext;
+        this.mediaUploadEnabled = mediaUploadEnabled;
     }
 
     /**
@@ -166,7 +174,10 @@ public class UserController {
     @PutMapping("/me")
     public ApiResponse<ApiDtos.ProfileReviewView> updateMe(@RequestHeader(value = "Authorization", required = false) String authorization,
                                                            @RequestBody ApiDtos.UpdateProfileRequest request) {
-        return ApiResponse.ok(userService.updateProfile(authContext.requireUserId(authorization), request));
+        ApiDtos.UpdateProfileRequest safeRequest = mediaUploadEnabled
+                ? request
+                : new ApiDtos.UpdateProfileRequest(request.nickname(), null, null, request.bio());
+        return ApiResponse.ok(userService.updateProfile(authContext.requireUserId(authorization), safeRequest));
     }
 
     /**

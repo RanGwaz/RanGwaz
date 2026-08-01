@@ -24,7 +24,7 @@
 - Milvus：第一版可以单机 standalone。它存的是向量索引，不是原图，不需要 GPU。
 - Python 推荐服务：`vector_recall_service.py` 和 `recommendation_model_service.py` 跑 CPU 即可。
 
-公网首发阶段先做功能收口：页面只保留首页主入口，发现页和发布页不对外展示；发布接口默认关闭；上传接口必须登录后才能调用。第一版重点是稳定浏览、搜索、登录、点赞、收藏、评论、关注和行为数据收集，发布功能等公网稳定后再逐步开放。
+公网首发阶段先做功能收口：页面只保留首页主入口，发现页和发布页不对外展示；发布和媒体上传接口均默认关闭。第一版重点是稳定浏览、搜索、登录、点赞、收藏、评论、关注和行为数据收集，图片写入等公网稳定并补齐审核后再逐步开放。
 
 ## 当前系统拆解
 
@@ -44,7 +44,7 @@
 | 模型排序 | Python FastAPI `8092` | 默认关闭或灰度开启，不直接暴露公网 |
 | 打标签/向量化 | 本地脚本 | 继续在本地跑，产物同步到云端数据库和 Milvus |
 | 公网发布功能 | 已做功能开关 | 默认关闭 `POST /images`，后续确认审核、限流、风控后再打开 |
-| 媒体上传 | 登录后可上传 | 当前用于头像和背景图，不允许匿名调用 |
+| 媒体上传 | 独立功能开关 | 公网首发关闭；本地需要头像和背景图调试时显式开启 |
 
 ## 推荐架构
 
@@ -81,7 +81,7 @@ flowchart LR
 - 顶部搜索仍保留，搜索结果展示在 `/home?q=关键词`，不再单独暴露发现页。
 - 账户菜单、左侧栏、个人资料页里的发布按钮已隐藏。
 - 后端 `POST /images` 默认关闭，未开启时返回“发布功能暂未开放”。
-- 后端 `/media/upload` 必须携带登录态，避免匿名上传。
+- 公网后端 `/media/upload` 由独立开关关闭，即使已登录也不能写入对象；资料页只保留昵称和简介编辑。
 - 主题切换支持浅色、深色、跟随系统，属于前端本地偏好，不依赖后端。
 - 前端请求支持 `VITE_API_BASE`，公网推荐构建时设为 `/api`。
 
@@ -92,7 +92,7 @@ flowchart LR
 3. 发布后的审核状态、失败原因和用户通知链路完整。
 4. 对象存储写入和 CDN 图片地址已经稳定。
 5. 管理端或自动化审核后台能追踪异常内容。
-6. 再把 `APP_FEATURE_PUBLISHING_ENABLED` 改成 `true`，并恢复前端发布入口。
+6. 分别评审后再启用 `APP_FEATURE_PUBLISHING_ENABLED`、`APP_FEATURE_MEDIA_UPLOAD_ENABLED`，同步恢复对应前端入口。
 
 ## 服务器规格建议
 
@@ -370,6 +370,7 @@ spring:
 app:
   features:
     publishing-enabled: ${APP_FEATURE_PUBLISHING_ENABLED:false}
+    media-upload-enabled: ${APP_FEATURE_MEDIA_UPLOAD_ENABLED:false}
   recommendation:
     vector-service-url: ${VECTOR_SERVICE_URL:http://127.0.0.1:8091}
     model-service-url: ${MODEL_SERVICE_URL:http://127.0.0.1:8092}
@@ -386,6 +387,7 @@ app:
 
 ```bash
 APP_FEATURE_PUBLISHING_ENABLED=false
+APP_FEATURE_MEDIA_UPLOAD_ENABLED=false
 CONTENT_SAFETY_CLOUD_ENABLED=true
 CONTENT_SAFETY_CLOUD_PROVIDER=local-model
 CONTENT_SAFETY_MODEL_URL=http://127.0.0.1:8093/moderate/image
@@ -479,8 +481,8 @@ java -jar target/image-site-backend-0.0.1-SNAPSHOT.jar
 - 所有数据库和对象存储密钥使用环境变量或云 Secret，不提交到 Git。
 - Swagger UI 公网关闭或加访问限制。
 - 管理后台、MinIO console、Milvus 端口不要暴露公网。
-- `APP_FEATURE_PUBLISHING_ENABLED` 首发阶段保持 `false`。
-- `/media/upload` 必须保持登录鉴权，不能匿名开放。
+- `APP_FEATURE_PUBLISHING_ENABLED` 与 `APP_FEATURE_MEDIA_UPLOAD_ENABLED` 首发阶段都保持 `false`。
+- 以后开放 `/media/upload` 时仍必须保持登录鉴权，不能匿名开放。
 - 上传接口限制文件大小、类型、频率。
 - 登录、短信、上传、评论、行为上报加限流。
 - 对象存储 bucket 不直接全公开原图，至少通过 CDN 域名和防盗链控制。
@@ -561,7 +563,7 @@ java -jar target/image-site-backend-0.0.1-SNAPSHOT.jar
 - `user_behaviors` 有新增。
 - `/feed` 不重复爆同一批图片。
 - 未开启发布时，直接调用 `POST /images` 返回“发布功能暂未开放”。
-- 未登录调用 `/media/upload` 会被拒绝。
+- 首发阶段即使已登录，调用 `/media/upload` 也会返回 `PUBLISHING_DISABLED`，且不会写入 MinIO。
 - 关掉 `8091/8092` 时后端能降级。
 
 ## 成本判断

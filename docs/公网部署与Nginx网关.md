@@ -71,6 +71,7 @@ MySQL、Redis、Kafka、MinIO、Elasticsearch 和 Milvus 不绑定公网地址�
 
 ```text
 APP_FEATURE_PUBLISHING_ENABLED=false
+APP_FEATURE_MEDIA_UPLOAD_ENABLED=false
 CONTENT_SAFETY_ENABLED=false
 CONTENT_SAFETY_CLOUD_ENABLED=false
 VECTOR_ENABLED=false
@@ -80,6 +81,7 @@ MODEL_RANKING_ENABLED=false
 
 - 前端没有发布页面，旧 `/publish` 地址跳回首页。
 - `POST /api/images` 返回统一 JSON 错误 `PUBLISHING_DISABLED`。
+- `POST /api/media/upload` 同样返回 `PUBLISHING_DISABLED`；资料编辑页隐藏头像和背景上传，只保留昵称、简介。
 - 不启动 8093 图片检测服务。
 - 推荐先使用数据库冷启动/fallback，继续收集曝光、点击、停留、点赞、收藏和评论。
 - ES 启动慢或短暂故障不会再杀死后端；建索引会后台重试，搜索临时回退 MySQL。
@@ -130,7 +132,7 @@ docker compose -f infra/docker-compose.public.yml config --quiet
 
 - 可以运行当前“单前端 + 单后端 + 基础中间件”的首发栈。
 - 不能在这台机器上同时启动 `recommendation` profile、Milvus 和模型训练任务。
-- 公网 Compose 已给每个容器设置内存/PID 上限，所有容器的内存硬上限合计约 5.4 GiB，并给 Docker JSON 日志设置 `20m × 3` 轮转。
+- 公网 Compose 已给每个容器设置内存/PID 上限；默认 RDS 栈硬上限合计约 5.1 GiB，其中主 MinIO 为 1 GiB、预留 512 MiB，并给 Docker JSON 日志设置 `20m × 3` 轮转。
 - Elasticsearch 固定使用 768 MiB JVM heap、1.5 GiB 容器上限，并禁止该容器使用 Swap。
 - Ubuntu 26.04 LTS 是 Docker Engine 当前明确支持的发行版，避免继续承担 CentOS 7 已结束生命周期和旧内核带来的风险。
 - 已安装 Docker Engine 29.6.2、Docker Compose 5.3.1，Docker 服务为 `active`，使用 `overlayfs`、systemd cgroup driver 和 cgroup v2。
@@ -481,15 +483,22 @@ mysql --protocol=TCP --connect-timeout=5 \
 
 4. 进入统一维护窗口，同时停止后端、数据库导入/标签/训练发布任务，以及所有上传、删除和其他 MinIO 写入方；从这一步开始一直冻结到第 7 步 MinIO 独立验证结束，确保数据库对象 key 与对象存储处于同一个一致性窗口。按 MySQL 迁移手册运行 `Export-MySqlSnapshot.ps1`，再用 `Test-MySql80Restore.ps1` 完成 MySQL 8.0.36 恢复演练。只有得到同一前缀的七个文件并出现 `*.restore-tested.json` 才允许上传。
 5. 把七个 MySQL 快照文件复制到 ECS 的 `/data/migration/mysql/`。确认 RDS 目标库仍严格为空，然后运行 `import-mysql-snapshot-to-rds.sh`。脚本会分别静默读取一次性迁移账号和 `vibelo_app` 密码，并在导入后比较表集合、逐表精确行数、Flyway 与所有数据库对象。
-6. RDS 验收通过后，只启动 MinIO；这不会构建业务镜像：
+6. RDS 验收通过后，把固定的 MinIO 与 `mc` 离线文件上传到
+   `/data/migration/minio/`，再用仓库门禁脚本准备并只启动 MinIO。这不会联网
+   拉取或构建业务镜像：
 
    ```bash
-   docker compose --env-file .env.public -f infra/docker-compose.public.yml \
-     up -d minio
-
-   docker compose --env-file .env.public -f infra/docker-compose.public.yml \
-     ps minio
+   cd /opt/vibelo
+   chmod 700 /data/migration/minio
+   chmod 600 /data/migration/minio/*
+   sudo bash ops/migration/minio/prepare-minio-target.sh
+   sudo bash ops/migration/minio/start-minio-target.sh
    ```
+
+   准备脚本会校验文件 SHA256、OCI `linux/amd64` manifest/config/layer、
+   `/data` 至少 101 GiB 可用空间与 200 万 inode、回环端口、Compose 项目名、
+   1 GiB MinIO 内存上限和目标卷不存在；启动脚本内部固定使用
+   `--pull never --no-build --no-deps`，并证明项目中只有 `minio` 在运行。
 
 7. 在 Windows 建立只监听 ECS `127.0.0.1:19090` 的 SSH 反向隧道。按 MinIO 迁移手册依次运行：
 
@@ -521,14 +530,14 @@ RDS 目标库必须在导入前保持为空。MySQL DDL 无法整体回滚；导
 
 上线后给 `/data` 设置容量告警：使用率达到 70% 时评估增长，达到 80% 前必须扩容或迁移 OSS。全量迁移时直接从源 MinIO 流式同步到目标 MinIO，不要先在数据盘生成完整中间包。系统盘只保留操作系统、项目源码和少量系统日志。
 
-首次只启动数据服务时不构建项目镜像：
+迁移阶段只启动目标 MinIO，不提前启动 Redis、Elasticsearch、Kafka 或应用容器：
 
 ```bash
-docker compose --env-file .env.public -f infra/docker-compose.public.yml \
-  up -d redis elasticsearch zookeeper kafka minio
+sudo bash ops/migration/minio/prepare-minio-target.sh
+sudo bash ops/migration/minio/start-minio-target.sh
 ```
 
-先把 MySQL 完整备份（包括表结构、业务数据和 `flyway_schema_history`）恢复到 RDS，并把 MinIO 数据直接同步到数据盘中的目标卷；确认 RDS 行数、MinIO 对象数和抽样图片都无误后再启动应用。当前 Flyway 迁移依赖已有基础表，不能把刚创建的空库直接交给后端自动初始化。
+先把 MySQL 完整备份（包括表结构、业务数据和 `flyway_schema_history`）恢复到 RDS，并把 MinIO 数据直接同步到数据盘中的目标卷；确认 RDS 行数、MinIO 对象数和抽样图片都无误后再启动其余服务及应用。当前 Flyway 迁移依赖已有基础表，不能把刚创建的空库直接交给后端自动初始化。
 
 ### 8.3 是否现在购买 OSS 或 CDN
 
