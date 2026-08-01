@@ -142,6 +142,13 @@ docker compose -f infra/docker-compose.public.yml config --quiet
 sudo apt update
 sudo DEBIAN_FRONTEND=noninteractive apt upgrade -y
 sudo apt install -y ca-certificates curl git
+```
+
+若系统升级安装了新内核，再单独执行下面的重启命令。它会立即中断当前 SSH
+连接；执行前确认没有正在运行的数据迁移或其他维护任务，然后等待 ECS 重新启动并
+再次登录。不要把这条命令与上面的安装命令整段粘贴执行：
+
+```bash
 sudo reboot
 ```
 
