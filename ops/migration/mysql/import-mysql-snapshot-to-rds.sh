@@ -308,6 +308,7 @@ mysql_with_config() {
   local config_path="$1"
   shift
   docker run --rm \
+    --interactive \
     --network host \
     --volume "$config_path:/run/secrets/mysql.cnf:ro" \
     "$MYSQL_IMAGE" \
@@ -446,12 +447,52 @@ normalize_mysql_dump() {
 
 printf '开始导入；出现任意 SQL 错误都会停止，不使用 --force。\n'
 IMPORT_STARTED=1
-gzip -dc -- "$DUMP_FILE" |
-  normalize_mysql_dump |
+IMPORT_GZIP_STDERR="$TEMP_DIR/import-gzip.stderr"
+IMPORT_NORMALIZE_STDERR="$TEMP_DIR/import-normalize.stderr"
+IMPORT_MYSQL_STDERR="$TEMP_DIR/import-mysql.stderr"
+
+# `set -e` 会在管道失败时直接进入 EXIT trap，从而丢失判断具体失败阶段的
+# 机会。这里只在执行导入管道时临时关闭 errexit，紧接着保存三段状态，
+# 并回放每个进程的原始 stderr。密码仅存在挂载的 0600 客户端配置中，
+# 不会出现在这些诊断文件里。
+set +e
+gzip -dc -- "$DUMP_FILE" 2>"$IMPORT_GZIP_STDERR" |
+  normalize_mysql_dump 2>"$IMPORT_NORMALIZE_STDERR" |
   admin_mysql \
     --binary-mode=1 \
     --default-character-set=utf8mb4 \
-    --database="$DATABASE"
+    --database="$DATABASE" \
+    2>"$IMPORT_MYSQL_STDERR"
+IMPORT_PIPELINE_STATUSES=("${PIPESTATUS[@]}")
+set -e
+
+for import_stderr in \
+  "$IMPORT_GZIP_STDERR" \
+  "$IMPORT_NORMALIZE_STDERR" \
+  "$IMPORT_MYSQL_STDERR"; do
+  if [[ -s "$import_stderr" ]]; then
+    cat -- "$import_stderr" >&2
+  fi
+done
+
+IMPORT_GZIP_STATUS="${IMPORT_PIPELINE_STATUSES[0]:-125}"
+IMPORT_NORMALIZE_STATUS="${IMPORT_PIPELINE_STATUSES[1]:-125}"
+IMPORT_MYSQL_STATUS="${IMPORT_PIPELINE_STATUSES[2]:-125}"
+if [[ "$IMPORT_GZIP_STATUS" -ne 0 ||
+  "$IMPORT_NORMALIZE_STATUS" -ne 0 ||
+  "$IMPORT_MYSQL_STATUS" -ne 0 ]]; then
+  printf '导入流水线失败：gzip=%s，SQL 兼容化=%s，mysql=%s。\n' \
+    "$IMPORT_GZIP_STATUS" \
+    "$IMPORT_NORMALIZE_STATUS" \
+    "$IMPORT_MYSQL_STATUS" \
+    >&2
+  if [[ "$IMPORT_MYSQL_STATUS" -ne 0 && ! -s "$IMPORT_MYSQL_STDERR" ]]; then
+    printf '%s\n' \
+      'MySQL 导入进程没有返回错误文本；请根据 mysql 退出码检查 Docker 与内核日志。' \
+      >&2
+  fi
+  exit 1
+fi
 
 TEMP_EXPECTED_TABLES="$TEMP_DIR/expected-tables.txt"
 TEMP_ACTUAL_TABLES="$TEMP_DIR/actual-tables.txt"
