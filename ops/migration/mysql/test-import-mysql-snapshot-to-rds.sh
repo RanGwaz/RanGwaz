@@ -49,16 +49,43 @@ case "${1:-}" in
       if [[ "${MOCK_IMPORT_ERROR_MODE:-silent}" == 'stderr' ]]; then
         printf '%s\n' 'ERROR 1234 (42000) at line 77: simulated RDS SQL failure' >&2
       fi
+      if [[ "${MOCK_IMPORT_ERROR_MODE:-silent}" == 'success' ]]; then
+        exit 0
+      fi
       exit 42
     fi
 
-    case "$sql" in
-      *'SELECT COUNT(*) FROM information_schema.SCHEMATA'*) printf '%s\n' '1' ;;
-      *'SELECT VERSION();'*) printf '%s\n' '8.0.36' ;;
-      *'DEFAULT_CHARACTER_SET_NAME'*) printf 'utf8mb4\tutf8mb4_0900_ai_ci\n' ;;
-      *'information_schema.TABLES'*'information_schema.ROUTINES'*) printf '%s\n' '0' ;;
-      *) : ;;
-    esac
+    if [[ "$sql" =~ SELECT[[:space:]]+COUNT\(\*\)[[:space:]]+FROM[[:space:]]+\`([^\`]*)\`\; ]]; then
+      table_name="${BASH_REMATCH[1]}"
+      if ((interactive)); then
+        # Reproduce the production failure: an interactive Docker query inherits
+        # and drains the row-count loop's redirected stdin.
+        cat >/dev/null
+      fi
+      printf '%s\n' "$table_name" >>"$MOCK_DOCKER_ROW_QUERY_LOG"
+      case "$table_name" in
+        demo_alpha) printf '%s\n' '2' ;;
+        demo_beta) printf '%s\n' '3' ;;
+        demo_gamma) printf '%s\n' '0' ;;
+        *) exit 92 ;;
+      esac
+    elif [[ "$sql" == *'SELECT COUNT(*) FROM information_schema.SCHEMATA'* ]]; then
+      printf '%s\n' '1'
+    elif [[ "$sql" == *'SELECT VERSION();'* ]]; then
+      printf '%s\n' '8.0.36'
+    elif [[ "$sql" == *'DEFAULT_CHARACTER_SET_NAME'* ]]; then
+      printf 'utf8mb4\tutf8mb4_0900_ai_ci\n'
+    elif [[ "$sql" == *'SELECT TABLE_NAME'* && "$sql" == *"TABLE_TYPE = 'BASE TABLE'"* ]]; then
+      printf '%s\n' demo_alpha demo_beta demo_gamma
+    elif [[ "$sql" == *'SELECT object_type, object_name'* ]]; then
+      printf 'TABLE\tdemo_alpha\nTABLE\tdemo_beta\nTABLE\tdemo_gamma\n'
+    elif [[ "$sql" == *'SELECT COUNT(*) FROM flyway_schema_history'* ]]; then
+      printf '%s\n' '0'
+    elif [[ "$sql" == *'FROM flyway_schema_history'* ]]; then
+      :
+    elif [[ "$sql" == *'information_schema.TABLES'* && "$sql" == *'information_schema.ROUTINES'* ]]; then
+      printf '%s\n' '0'
+    fi
     ;;
   *)
     exit 91
@@ -103,6 +130,17 @@ assert_contains() {
   local label=$3
   [[ "$haystack" == *"$needle"* ]] || {
     printf '失败：%s；输出中缺少 <%s>\n--- 实际输出 ---\n%s\n' \
+      "$label" "$needle" "$haystack" >&2
+    exit 1
+  }
+}
+
+assert_not_contains() {
+  local haystack=$1
+  local needle=$2
+  local label=$3
+  [[ "$haystack" != *"$needle"* ]] || {
+    printf '失败：%s；输出中不应包含 <%s>\n--- 实际输出 ---\n%s\n' \
       "$label" "$needle" "$haystack" >&2
     exit 1
   }
@@ -165,4 +203,64 @@ assert_contains "$IMPORT_OUTPUT" \
   '导入流水线失败：gzip=0，SQL 兼容化=0，mysql=42。' \
   '有 stderr 的失败也应指出失败阶段和退出码'
 
-printf '%s\n' 'RDS 导入错误诊断回归测试通过。'
+# The verification loop redirects stdin from this file. Query containers must
+# not be interactive, otherwise the first COUNT(*) drains all remaining rows.
+printf 'object_type\tobject_name\nTABLE\tdemo_alpha\nTABLE\tdemo_beta\nTABLE\tdemo_gamma\n' \
+  >"${prefix}.objects.tsv"
+
+run_completed_import_case() {
+  rm -f -- "$TEMP_ROOT/import-bytes" "$TEMP_ROOT/row-queries"
+  set +e
+  COMPLETED_OUTPUT="$({
+    PATH="$MOCK_BIN:$PATH" \
+      MOCK_IMPORT_ERROR_MODE='success' \
+      MOCK_DOCKER_IMPORT_BYTES_FILE="$TEMP_ROOT/import-bytes" \
+      MOCK_DOCKER_ROW_QUERY_LOG="$TEMP_ROOT/row-queries" \
+      bash "$IMPORT_SCRIPT" \
+        --dump "${prefix}.sql.gz" \
+        --host 'rm-test.mysql.rds.aliyuncs.com' \
+        --admin-user 'migration_admin' \
+        --admin-password-file "$TEMP_ROOT/admin.password" \
+        --app-user 'vibelo_app' \
+        --app-password-file "$TEMP_ROOT/app.password" \
+        --mysql-image 'mysql:8.0.36' \
+        --no-pull \
+        --confirm-import
+  } 2>&1)"
+  COMPLETED_STATUS=$?
+  set -e
+}
+
+printf 'table_name\trow_count\ndemo_alpha\t99\ndemo_beta\t3\ndemo_gamma\t0\n' \
+  >"${prefix}.row-counts.tsv"
+run_completed_import_case
+[[ "$COMPLETED_STATUS" -ne 0 ]] || {
+  printf '失败：模拟验收差异时脚本却返回成功\n' >&2
+  exit 1
+}
+assert_contains "$COMPLETED_OUTPUT" \
+  'SQL 导入流水线已成功完成，但后续验收未通过' \
+  '导入完成后的验收失败应明确保留目标库'
+assert_not_contains "$COMPLETED_OUTPUT" \
+  '请先重建/清空目标库' \
+  '导入完成后的验收失败不应误导操作者立即清库'
+
+printf 'table_name\trow_count\ndemo_alpha\t2\ndemo_beta\t3\ndemo_gamma\t0\n' \
+  >"${prefix}.row-counts.tsv"
+run_completed_import_case
+
+[[ "$COMPLETED_STATUS" -eq 0 ]] || {
+  printf '失败：模拟成功导入未通过完整验收\n--- 实际输出 ---\n%s\n' \
+    "$COMPLETED_OUTPUT" >&2
+  exit 1
+}
+printf 'demo_alpha\ndemo_beta\ndemo_gamma\n' >"$TEMP_ROOT/expected-row-queries"
+diff -u "$TEMP_ROOT/expected-row-queries" "$TEMP_ROOT/row-queries" || {
+  printf '失败：逐表验收没有访问 row-counts.tsv 中的每张表\n' >&2
+  exit 1
+}
+assert_contains "$COMPLETED_OUTPUT" \
+  'RDS 导入与精确验收全部通过。' \
+  '所有逐表查询完成后应通过精确验收'
+
+printf '%s\n' 'RDS 导入与逐表验收回归测试通过。'

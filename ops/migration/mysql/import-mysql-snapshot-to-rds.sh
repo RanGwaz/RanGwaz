@@ -34,6 +34,8 @@ EXPECTED_COLLATION="utf8mb4_0900_ai_ci"
 SSL_MODE="PREFERRED"
 PULL_IF_MISSING=1
 CONFIRM_IMPORT=0
+VERIFY_EXISTING=0
+VERIFY_STARTED=0
 
 TEMP_DIR=""
 ADMIN_CONFIG=""
@@ -41,10 +43,11 @@ APP_CONFIG=""
 PROBE_TABLE=""
 PROBE_ACTIVE=0
 IMPORT_STARTED=0
+IMPORT_PIPELINE_COMPLETED=0
 
 usage() {
   cat <<'EOF'
-用法：
+导入并验收：
   import-mysql-snapshot-to-rds.sh \
     --dump /data/migration/rangwaz_image_dev-时间.sql.gz \
     --host rm-xxxx.mysql.rds.aliyuncs.com \
@@ -54,10 +57,20 @@ usage() {
     [--app-password-file /root/app.password] \
     --confirm-import
 
-必填：
+只读验收已经导入的数据库：
+  import-mysql-snapshot-to-rds.sh \
+    --verify-existing \
+    --dump /data/migration/rangwaz_image_dev-时间.sql.gz \
+    --host rm-xxxx.mysql.rds.aliyuncs.com \
+    [--app-user vibelo_app] \
+    [--app-password-file /root/app.password]
+
+两种模式都必填：
   --dump                 .sql.gz 快照；其余清单默认按同名前缀查找
   --host                 RDS 内网地址
-  --admin-user           只用于本次导入的 RDS 高权限账号
+
+仅导入模式必填：
+  --admin-user           只用于导入模式的 RDS 高权限账号
   --confirm-import       明确确认向经过空库检查的目标库导入
 
 可选：
@@ -74,6 +87,7 @@ usage() {
   --restore-proof PATH   默认 <前缀>.restore-tested.json
   --mysql-image IMAGE    默认 mysql:8.0.36；只 pull，绝不 build
   --no-pull              镜像不存在时直接失败
+  --verify-existing      只用应用账号验收现有库；不导入、不写库、不读取迁移账号密码
   --ssl-mode MODE        默认 PREFERRED
   --expected-version VER 默认 8.0.36
   --help
@@ -102,10 +116,20 @@ cleanup() {
     rm -rf -- "$TEMP_DIR"
   fi
 
-  if [[ "$status" -ne 0 && "$IMPORT_STARTED" -eq 1 ]]; then
+  if [[ "$status" -ne 0 && "$VERIFY_STARTED" -eq 1 ]]; then
     printf '%s\n' \
-      '导入已经开始但未成功完成。MySQL DDL 不能整体回滚；请先重建/清空目标库，再从头执行，切勿使用 --force 跳过错误。' \
+      '现有数据库只读验收未通过；本次没有请求迁移账号密码，也没有执行导入或数据库写入。请保留现场并根据上方差异处理。' \
       >&2
+  elif [[ "$status" -ne 0 && "$IMPORT_STARTED" -eq 1 ]]; then
+    if [[ "$IMPORT_PIPELINE_COMPLETED" -eq 1 ]]; then
+      printf '%s\n' \
+        'SQL 导入流水线已成功完成，但后续验收未通过；请保留目标库现状和完整输出，先定位验收差异，切勿直接清库或重复导入。' \
+        >&2
+    else
+      printf '%s\n' \
+        '导入已经开始但未成功完成。MySQL DDL 不能整体回滚；请先重建/清空目标库，再从头执行，切勿使用 --force 跳过错误。' \
+        >&2
+    fi
   fi
   exit "$status"
 }
@@ -132,6 +156,7 @@ while [[ $# -gt 0 ]]; do
     --ssl-mode) SSL_MODE="${2:?--ssl-mode 缺少值}"; shift 2 ;;
     --no-pull) PULL_IF_MISSING=0; shift ;;
     --confirm-import) CONFIRM_IMPORT=1; shift ;;
+    --verify-existing) VERIFY_EXISTING=1; shift ;;
     --help|-h) usage; exit 0 ;;
     *) die "未知参数：$1（使用 --help 查看说明）" ;;
   esac
@@ -139,20 +164,30 @@ done
 
 [[ -n "$DUMP_FILE" ]] || die '缺少 --dump'
 [[ -n "$RDS_HOST" ]] || die '缺少 --host'
-[[ -n "$ADMIN_USER" ]] || die '缺少 --admin-user'
-[[ "$CONFIRM_IMPORT" -eq 1 ]] || die '必须显式传入 --confirm-import'
 [[ "$DUMP_FILE" == *.sql.gz ]] || die '--dump 必须以 .sql.gz 结尾'
 [[ "$RDS_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || die 'RDS host 格式不安全'
 [[ "$RDS_PORT" =~ ^[0-9]+$ ]] && ((RDS_PORT >= 1 && RDS_PORT <= 65535)) || die 'RDS port 无效'
 [[ "$DATABASE" =~ ^[A-Za-z0-9_$-]+$ ]] || die '数据库名格式不安全'
-[[ "$ADMIN_USER" =~ ^[A-Za-z0-9_.@%-]+$ ]] || die '迁移账号名格式不安全'
 [[ "$APP_USER" =~ ^[A-Za-z0-9_.@%-]+$ ]] || die '应用账号名格式不安全'
 [[ "$MYSQL_IMAGE" =~ ^[A-Za-z0-9_./:@-]+$ ]] || die 'MySQL 镜像名格式不安全'
 [[ "$EXPECTED_SERVER_VERSION" =~ ^[0-9]+([.][0-9]+){1,2}$ ]] || die '预期版本格式无效'
 [[ "$SSL_MODE" =~ ^(DISABLED|PREFERRED|REQUIRED|VERIFY_CA|VERIFY_IDENTITY)$ ]] || die 'ssl-mode 无效'
-[[ "$ADMIN_USER" != dms_user_* ]] || die 'dms_user_* 是 DMS 自动托管账号，禁止用于数据库迁移'
 [[ "$APP_USER" != dms_user_* ]] || die 'dms_user_* 是 DMS 自动托管账号，禁止用于应用运行'
-[[ "$ADMIN_USER" != "$APP_USER" ]] || die '迁移高权限账号与应用账号必须分离'
+
+if [[ "$VERIFY_EXISTING" -eq 1 ]]; then
+  [[ "$CONFIRM_IMPORT" -eq 0 ]] ||
+    die '--verify-existing 与 --confirm-import 互斥'
+  [[ -z "$ADMIN_USER" ]] ||
+    die '--verify-existing 禁止传入 --admin-user；只读验收只使用应用账号'
+  [[ -z "$ADMIN_PASSWORD_FILE" ]] ||
+    die '--verify-existing 禁止传入 --admin-password-file；不会读取迁移账号密码'
+else
+  [[ -n "$ADMIN_USER" ]] || die '导入模式缺少 --admin-user'
+  [[ "$CONFIRM_IMPORT" -eq 1 ]] || die '导入模式必须显式传入 --confirm-import'
+  [[ "$ADMIN_USER" =~ ^[A-Za-z0-9_.@%-]+$ ]] || die '迁移账号名格式不安全'
+  [[ "$ADMIN_USER" != dms_user_* ]] || die 'dms_user_* 是 DMS 自动托管账号，禁止用于数据库迁移'
+  [[ "$ADMIN_USER" != "$APP_USER" ]] || die '迁移高权限账号与应用账号必须分离'
+fi
 
 DUMP_FILE="$(readlink -f -- "$DUMP_FILE")"
 prefix="${DUMP_FILE%.sql.gz}"
@@ -251,7 +286,6 @@ client_version="$(docker run --rm --network none "$MYSQL_IMAGE" mysql --version)
 
 TEMP_DIR="$(mktemp -d /tmp/vibelo-mysql-rds.XXXXXXXX)"
 chmod 700 "$TEMP_DIR"
-ADMIN_CONFIG="$TEMP_DIR/admin.cnf"
 APP_CONFIG="$TEMP_DIR/app.cnf"
 
 load_password() {
@@ -297,14 +331,31 @@ write_client_config() {
   chmod 600 "$config_path"
 }
 
-load_password "$ADMIN_PASSWORD_FILE" '请输入 RDS 高权限迁移账号密码：' ADMIN_PASSWORD
-write_client_config "$ADMIN_CONFIG" "$ADMIN_USER" "$ADMIN_PASSWORD"
-unset ADMIN_PASSWORD
+if [[ "$VERIFY_EXISTING" -eq 0 ]]; then
+  ADMIN_CONFIG="$TEMP_DIR/admin.cnf"
+  load_password "$ADMIN_PASSWORD_FILE" '请输入 RDS 高权限迁移账号密码：' ADMIN_PASSWORD
+  write_client_config "$ADMIN_CONFIG" "$ADMIN_USER" "$ADMIN_PASSWORD"
+  unset ADMIN_PASSWORD
+fi
 load_password "$APP_PASSWORD_FILE" "请输入 RDS 应用账号 $APP_USER 的密码：" APP_PASSWORD
 write_client_config "$APP_CONFIG" "$APP_USER" "$APP_PASSWORD"
 unset APP_PASSWORD
 
 mysql_with_config() {
+  local config_path="$1"
+  shift
+  docker run --rm \
+    --network host \
+    --volume "$config_path:/run/secrets/mysql.cnf:ro" \
+    "$MYSQL_IMAGE" \
+    mysql \
+    --defaults-extra-file=/run/secrets/mysql.cnf \
+    --connect-timeout=10 \
+    "$@" \
+    </dev/null
+}
+
+mysql_with_config_stdin() {
   local config_path="$1"
   shift
   docker run --rm \
@@ -322,6 +373,10 @@ admin_mysql() {
   mysql_with_config "$ADMIN_CONFIG" "$@"
 }
 
+admin_mysql_stdin() {
+  mysql_with_config_stdin "$ADMIN_CONFIG" "$@"
+}
+
 app_mysql() {
   mysql_with_config "$APP_CONFIG" "$@"
 }
@@ -335,6 +390,136 @@ app_query() {
   local sql="$1"
   app_mysql --batch --skip-column-names --database="$DATABASE" --execute="$sql"
 }
+
+app_read_mysql() {
+  mysql_with_config "$APP_CONFIG" \
+    --init-command='SET SESSION TRANSACTION READ ONLY' \
+    "$@"
+}
+
+app_read_query() {
+  local sql="$1"
+  app_read_mysql --batch --skip-column-names --database="$DATABASE" --execute="$sql"
+}
+
+verify_snapshot_against_rds() {
+  local database_exists server_version database_settings
+  local expected_tables actual_tables actual_rows actual_flyway actual_objects
+  local table_name expected_count escaped_table actual_count failed_flyway
+
+  database_exists="$(app_read_mysql --batch --skip-column-names --execute="SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '$DATABASE';")"
+  [[ "$database_exists" == '1' ]] || die "应用账号 $APP_USER 无法访问目标数据库：$DATABASE"
+
+  server_version="$(app_read_mysql --batch --skip-column-names --execute='SELECT VERSION();')"
+  [[ "$server_version" == "$EXPECTED_SERVER_VERSION"* ]] ||
+    die "RDS 版本 $server_version 不符合 $EXPECTED_SERVER_VERSION"
+
+  database_settings="$(app_read_query "SELECT DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '$DATABASE';")"
+  [[ "$database_settings" == "${EXPECTED_CHARSET}"$'\t'"${EXPECTED_COLLATION}" ]] ||
+    die "目标库字符集/排序规则为 $database_settings，预期 ${EXPECTED_CHARSET}/${EXPECTED_COLLATION}"
+
+  expected_tables="$TEMP_DIR/expected-tables.txt"
+  actual_tables="$TEMP_DIR/actual-tables.txt"
+  actual_rows="$TEMP_DIR/actual-row-counts.tsv"
+  actual_flyway="$TEMP_DIR/actual-flyway.tsv"
+  actual_objects="$TEMP_DIR/actual-objects.tsv"
+
+  awk -F '\t' 'NR > 1 { sub(/\r$/, "", $1); print $1 }' "$ROW_COUNTS_FILE" >"$expected_tables"
+  app_read_query "
+SELECT TABLE_NAME
+FROM information_schema.TABLES
+WHERE TABLE_SCHEMA = '$DATABASE' AND TABLE_TYPE = 'BASE TABLE'
+ORDER BY TABLE_NAME;
+" >"$actual_tables"
+  diff -u "$expected_tables" "$actual_tables" ||
+    die 'RDS 基础表集合与源清单不一致'
+
+  printf 'table_name\trow_count\n' >"$actual_rows"
+  while IFS=$'\t' read -r table_name expected_count; do
+    expected_count="${expected_count%$'\r'}"
+    [[ "$table_name" == 'table_name' ]] && continue
+    escaped_table="${table_name//\`/\`\`}"
+    printf '精确验收表行数：%s\n' "$table_name" >&2
+    actual_count="$(app_read_query "SELECT COUNT(*) FROM \`${escaped_table}\`;")"
+    [[ "$actual_count" == "$expected_count" ]] ||
+      die "表 $table_name 行数不一致：期望 $expected_count，实际 $actual_count"
+    printf '%s\t%s\n' "$table_name" "$actual_count" >>"$actual_rows"
+  done <"$ROW_COUNTS_FILE"
+  diff -u "$ROW_COUNTS_FILE" "$actual_rows" ||
+    die 'RDS 逐表精确行数清单不一致'
+
+  {
+    printf 'installed_rank\tversion\tdescription\ttype\tscript\tchecksum\tinstalled_by\tinstalled_on_utc\texecution_time\tsuccess\n'
+    app_read_query "
+SET SESSION time_zone = '+00:00';
+SELECT installed_rank,
+       version,
+       description,
+       type,
+       script,
+       checksum,
+       installed_by,
+       DATE_FORMAT(installed_on, '%Y-%m-%dT%H:%i:%s.%fZ'),
+       execution_time,
+       success
+FROM flyway_schema_history
+ORDER BY installed_rank;
+"
+  } >"$actual_flyway"
+  diff -u "$FLYWAY_FILE" "$actual_flyway" ||
+    die 'RDS Flyway 清单与源清单不一致'
+
+  {
+    printf 'object_type\tobject_name\n'
+    app_read_query "
+SELECT object_type, object_name
+FROM (
+    SELECT IF(TABLE_TYPE = 'BASE TABLE', 'TABLE', 'VIEW') AS object_type,
+           TABLE_NAME AS object_name
+    FROM information_schema.TABLES
+    WHERE TABLE_SCHEMA = '$DATABASE'
+    UNION ALL
+    SELECT ROUTINE_TYPE AS object_type, ROUTINE_NAME AS object_name
+    FROM information_schema.ROUTINES
+    WHERE ROUTINE_SCHEMA = '$DATABASE'
+    UNION ALL
+    SELECT 'TRIGGER' AS object_type, TRIGGER_NAME AS object_name
+    FROM information_schema.TRIGGERS
+    WHERE TRIGGER_SCHEMA = '$DATABASE'
+    UNION ALL
+    SELECT 'EVENT' AS object_type, EVENT_NAME AS object_name
+    FROM information_schema.EVENTS
+    WHERE EVENT_SCHEMA = '$DATABASE'
+) AS objects
+ORDER BY object_type, object_name;
+"
+  } >"$actual_objects"
+  diff -u "$OBJECTS_FILE" "$actual_objects" ||
+    die "应用账号 $APP_USER 看不到完整数据库对象清单"
+
+  failed_flyway="$(app_read_query 'SELECT COUNT(*) FROM flyway_schema_history WHERE success <> 1;')"
+  [[ "$failed_flyway" == '0' ]] || die "RDS 存在 $failed_flyway 条失败 Flyway 记录"
+
+  printf '%s\n' \
+    "  地址：${RDS_HOST}:${RDS_PORT}" \
+    "  数据库：${DATABASE}" \
+    "  服务端：${server_version}" \
+    "  应用账号：${APP_USER}" \
+    "  Dump SHA256：${actual_sha}"
+}
+
+if [[ "$VERIFY_EXISTING" -eq 1 ]]; then
+  VERIFY_STARTED=1
+  printf '%s\n' \
+    '开始对现有 RDS 执行只读精确验收。' \
+    '只使用应用账号，不执行空库探针、DDL、DML 或 dump 导入。'
+  verify_snapshot_against_rds
+  printf '%s\n' \
+    'RDS 现有数据只读精确验收全部通过。' \
+    '本次未请求迁移账号密码，未执行导入或数据库写入。' \
+    "应用运行账号必须使用：${APP_USER}"
+  exit 0
+fi
 
 database_exists="$(admin_mysql --batch --skip-column-names --execute="SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '$DATABASE';")"
 [[ "$database_exists" == '1' ]] || die "目标数据库不存在：$DATABASE"
@@ -458,7 +643,7 @@ IMPORT_MYSQL_STDERR="$TEMP_DIR/import-mysql.stderr"
 set +e
 gzip -dc -- "$DUMP_FILE" 2>"$IMPORT_GZIP_STDERR" |
   normalize_mysql_dump 2>"$IMPORT_NORMALIZE_STDERR" |
-  admin_mysql \
+  admin_mysql_stdin \
     --binary-mode=1 \
     --default-character-set=utf8mb4 \
     --database="$DATABASE" \
@@ -493,87 +678,9 @@ if [[ "$IMPORT_GZIP_STATUS" -ne 0 ||
   fi
   exit 1
 fi
+IMPORT_PIPELINE_COMPLETED=1
 
-TEMP_EXPECTED_TABLES="$TEMP_DIR/expected-tables.txt"
-TEMP_ACTUAL_TABLES="$TEMP_DIR/actual-tables.txt"
-TEMP_ACTUAL_ROWS="$TEMP_DIR/actual-row-counts.tsv"
-TEMP_ACTUAL_FLYWAY="$TEMP_DIR/actual-flyway.tsv"
-TEMP_ACTUAL_OBJECTS="$TEMP_DIR/actual-objects.tsv"
-
-awk -F '\t' 'NR > 1 { sub(/\r$/, "", $1); print $1 }' "$ROW_COUNTS_FILE" >"$TEMP_EXPECTED_TABLES"
-app_query "
-SELECT TABLE_NAME
-FROM information_schema.TABLES
-WHERE TABLE_SCHEMA = '$DATABASE' AND TABLE_TYPE = 'BASE TABLE'
-ORDER BY TABLE_NAME;
-" >"$TEMP_ACTUAL_TABLES"
-diff -u "$TEMP_EXPECTED_TABLES" "$TEMP_ACTUAL_TABLES" ||
-  die 'RDS 基础表集合与源清单不一致'
-
-printf 'table_name\trow_count\n' >"$TEMP_ACTUAL_ROWS"
-while IFS=$'\t' read -r table_name expected_count; do
-  expected_count="${expected_count%$'\r'}"
-  [[ "$table_name" == 'table_name' ]] && continue
-  escaped_table="${table_name//\`/\`\`}"
-  actual_count="$(app_query "SELECT COUNT(*) FROM \`${escaped_table}\`;")"
-  [[ "$actual_count" == "$expected_count" ]] ||
-    die "表 $table_name 行数不一致：期望 $expected_count，实际 $actual_count"
-  printf '%s\t%s\n' "$table_name" "$actual_count" >>"$TEMP_ACTUAL_ROWS"
-done <"$ROW_COUNTS_FILE"
-diff -u "$ROW_COUNTS_FILE" "$TEMP_ACTUAL_ROWS" ||
-  die 'RDS 逐表精确行数清单不一致'
-
-{
-  printf 'installed_rank\tversion\tdescription\ttype\tscript\tchecksum\tinstalled_by\tinstalled_on_utc\texecution_time\tsuccess\n'
-  app_query "
-SET SESSION time_zone = '+00:00';
-SELECT installed_rank,
-       version,
-       description,
-       type,
-       script,
-       checksum,
-       installed_by,
-       DATE_FORMAT(installed_on, '%Y-%m-%dT%H:%i:%s.%fZ'),
-       execution_time,
-       success
-FROM flyway_schema_history
-ORDER BY installed_rank;
-"
-} >"$TEMP_ACTUAL_FLYWAY"
-diff -u "$FLYWAY_FILE" "$TEMP_ACTUAL_FLYWAY" ||
-  die 'RDS Flyway 清单与源清单不一致'
-
-{
-  printf 'object_type\tobject_name\n'
-  app_query "
-SELECT object_type, object_name
-FROM (
-    SELECT IF(TABLE_TYPE = 'BASE TABLE', 'TABLE', 'VIEW') AS object_type,
-           TABLE_NAME AS object_name
-    FROM information_schema.TABLES
-    WHERE TABLE_SCHEMA = '$DATABASE'
-    UNION ALL
-    SELECT ROUTINE_TYPE AS object_type, ROUTINE_NAME AS object_name
-    FROM information_schema.ROUTINES
-    WHERE ROUTINE_SCHEMA = '$DATABASE'
-    UNION ALL
-    SELECT 'TRIGGER' AS object_type, TRIGGER_NAME AS object_name
-    FROM information_schema.TRIGGERS
-    WHERE TRIGGER_SCHEMA = '$DATABASE'
-    UNION ALL
-    SELECT 'EVENT' AS object_type, EVENT_NAME AS object_name
-    FROM information_schema.EVENTS
-    WHERE EVENT_SCHEMA = '$DATABASE'
-) AS objects
-ORDER BY object_type, object_name;
-"
-} >"$TEMP_ACTUAL_OBJECTS"
-diff -u "$OBJECTS_FILE" "$TEMP_ACTUAL_OBJECTS" ||
-  die "应用账号 $APP_USER 看不到完整数据库对象清单"
-
-failed_flyway="$(app_query 'SELECT COUNT(*) FROM flyway_schema_history WHERE success <> 1;')"
-[[ "$failed_flyway" == '0' ]] || die "RDS 存在 $failed_flyway 条失败 Flyway 记录"
+verify_snapshot_against_rds
 
 IMPORT_STARTED=0
 printf '%s\n' \

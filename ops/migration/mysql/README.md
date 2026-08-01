@@ -195,7 +195,7 @@ chmod 600 /root/rds-admin.password /root/rds-app.password
 - 对比数据库对象清单；
 - 确认不存在失败 Flyway。
 
-任何一步失败都会返回非零，且导入命令没有 `--force`。MySQL DDL 无法整体事务回滚；只要导入已经开始后失败，就应重建/清空 RDS 业务库，再从原 dump 重新执行，不能在半成品库上“继续导”。
+任何一步失败都会返回非零，且导入命令没有 `--force`。如果 gzip、SQL 兼容化或 MySQL 导入管道本身失败，数据库可能只完成了部分 DDL/DML，不能在半成品库上“继续导”。如果三段导入管道已经成功、失败只发生在后续验收，则先保留现状并使用下方只读模式复验，不能直接清库或重复导入。
 
 ### 导入只显示统一失败提示
 
@@ -212,11 +212,49 @@ chmod 600 /root/rds-admin.password /root/rds-app.password
 cd /opt/vibelo
 git pull --ff-only origin main
 bash ops/migration/mysql/test-import-mysql-snapshot-to-rds.sh
+bash ops/migration/mysql/test-verify-existing-rds-snapshot.sh
 ```
 
-只有看到“RDS 导入错误诊断回归测试通过”后，才重新执行原导入命令。脚本每次都会在真正导入前重新检查目标数据库是否严格为空：若上次确实没有写入，它会继续；若发现任何残留对象，它会在导入前停止，此时不要使用 `--force`，也不要自行续传，把完整输出保留下来再处理。
+只有同时看到“RDS 导入与逐表验收回归测试通过”和“RDS 现有数据库只读验收回归测试通过”后，才重新执行原导入命令或只读验收。脚本每次都会在真正导入前重新检查目标数据库是否严格为空：若上次确实没有写入，它会继续；若发现任何残留对象，它会在导入前停止，此时不要使用 `--force`，也不要自行续传，把完整输出保留下来再处理。
 
 不要用 `bash -x` 排查该脚本。脚本虽然会主动关闭跟踪，但数据库迁移过程仍应避免开启可能记录秘密值的全局 shell 跟踪。
+
+### SQL 导入完成、后续验收失败时
+
+如果输出已经明确说明 SQL 导入流水线成功，但在逐表行数、Flyway 或对象清单阶段失败，先保留 RDS 现状，不能直接重复导入。可以用同一脚本的 `--verify-existing` 模式重新执行完整验收：
+
+```bash
+cd /opt/vibelo
+
+bash ops/migration/mysql/import-mysql-snapshot-to-rds.sh \
+  --verify-existing \
+  --dump /data/migration/mysql/rangwaz_image_dev-YYYYMMDDTHHMMSSZ.sql.gz \
+  --host rm-xxxx.mysql.rds.aliyuncs.com \
+  --port 3306 \
+  --database rangwaz_image_dev \
+  --app-user vibelo_app \
+  --mysql-image mysql:8.0.36 \
+  --no-pull
+```
+
+该模式只会静默询问 `vibelo_app` 密码，并执行以下只读检查：
+
+- 七个快照及门禁文件、dump SHA256 和 gzip 完整性；
+- RDS 版本、数据库字符集和排序规则；
+- 全部基础表集合和每张表的精确 `COUNT(*)`；
+- 完整 Flyway 清单及失败迁移数量；
+- 表、视图、过程、函数、触发器和事件的完整对象清单。
+
+它不接受 `--admin-user`、`--admin-password-file` 或 `--confirm-import`，不会读取高权限迁移账号密码，也不会执行空库权限探针、DDL、DML 或 dump 导入。所有 RDS 查询都使用只读会话，并且查询容器不接管脚本的标准输入。
+
+只有看到以下两行才表示现有 RDS 已经精确验收通过，无需清库或重新导入：
+
+```text
+RDS 现有数据只读精确验收全部通过。
+本次未请求迁移账号密码，未执行导入或数据库写入。
+```
+
+如果只读验收仍报告真实的表、行数、Flyway 或对象差异，再保留完整输出判断是否需要重建空库并执行一次完整导入；不要对非空库覆盖导入，也不要使用 `--force`。
 
 ## 验收后
 
