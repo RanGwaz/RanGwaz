@@ -116,3 +116,18 @@ vibelo_normalize_toml_string() {
   fi
   printf '%s' "$value"
 }
+
+vibelo_total_swap_bytes() {
+  local swap_sizes=''
+
+  swap_sizes=$(swapon --show=SIZE --bytes --noheadings 2>/dev/null) || return 1
+  awk '
+    NF == 0 { next }
+    NF != 1 || $1 !~ /^[0-9]+$/ { invalid = 1; next }
+    { total += $1 }
+    END {
+      if (invalid) exit 1
+      printf "%.0f", total + 0
+    }
+  ' <<<"$swap_sizes"
+}

@@ -211,10 +211,7 @@ else
 fi
 
 if have_command swapon; then
-  if swap_bytes=$(
-    swapon --show --bytes --noheadings --output SIZE 2>/dev/null |
-      awk '{total += $1} END {printf "%.0f", total + 0}'
-  ); then
+  if swap_bytes=$(vibelo_total_swap_bytes); then
     if [[ $swap_bytes =~ ^[0-9]+$ ]] &&
       ((swap_bytes >= MIN_SWAP_BYTES)); then
       pass 'Swap 已启用且总量不少于 4 GB'

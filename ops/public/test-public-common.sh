@@ -93,4 +93,48 @@ assert_true '应识别示例域名' \
 assert_false '通用密钥占位判断不应误伤中文文本' \
   vibelo_is_placeholder '你的合法业务值'
 
+# swapon 使用 `--show[=列...]` 选择输出列；它没有 `--output` 选项。
+# Ubuntu 26.04 会把 `--output` 当作 `--output-all` 的缩写，旧实现因此返回
+# 以 /swapfile 开头的全部列，并被 awk 算成 0。
+swapon() {
+  local argument=''
+  local has_show_size=0
+  local has_bytes=0
+  local has_noheadings=0
+  local has_unexpected=0
+
+  for argument in "$@"; do
+    case "$argument" in
+      --show=SIZE) has_show_size=1 ;;
+      --bytes) has_bytes=1 ;;
+      --noheadings) has_noheadings=1 ;;
+      *) has_unexpected=1 ;;
+    esac
+  done
+
+  if ((has_show_size && has_bytes && has_noheadings && !has_unexpected)); then
+    printf '%s\n' '4294963200'
+    return 0
+  fi
+
+  printf '%s\n' '/swapfile file 4294963200 0 -1 test-uuid'
+}
+
+assert_equal '4294963200' \
+  "$(vibelo_total_swap_bytes)" \
+  '应使用 swapon --show=SIZE 读取 Swap 字节数'
+unset -f swapon
+
+swapon() {
+  return 16
+}
+assert_false '应向调用方传播 swapon 命令失败' vibelo_total_swap_bytes
+unset -f swapon
+
+swapon() {
+  printf '%s\n' '/swapfile file 4294963200 0 -1 test-uuid'
+}
+assert_false '应拒绝把非数字 Swap 列静默折算成 0' vibelo_total_swap_bytes
+unset -f swapon
+
 printf '%s\n' '公网配置公共函数回归测试通过。'
