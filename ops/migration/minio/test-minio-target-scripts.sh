@@ -187,6 +187,172 @@ cat >"$TEMP_ROOT/mounts.json" <<'JSON'
 JSON
 validate_runtime_mounts "$TEMP_ROOT/mounts.json" >/dev/null
 
+cat >"$TEMP_ROOT/mounts-extra.json" <<'JSON'
+[
+  {
+    "Type": "volume",
+    "Name": "vibelo-public_public-minio-data",
+    "Destination": "/data",
+    "RW": true
+  },
+  {
+    "Type": "bind",
+    "Source": "/tmp/unexpected",
+    "Destination": "/unexpected",
+    "RW": false
+  }
+]
+JSON
+if validate_runtime_mounts "$TEMP_ROOT/mounts-extra.json" >/dev/null 2>&1; then
+  fail '运行挂载门禁未拒绝额外挂载'
+fi
+
+EXPECTED_TEST_CONFIG_HASH=$(printf 'a%.0s' {1..64})
+EXPECTED_TEST_IMAGE_ID='sha256:runtime-image-id'
+actual_config_hash=$(printf 'minio %s\n' "$EXPECTED_TEST_CONFIG_HASH" |
+  parse_compose_service_hash)
+[[ $actual_config_hash == "$EXPECTED_TEST_CONFIG_HASH" ]] ||
+  fail 'Compose 服务配置哈希解析错误'
+if printf 'minio %s\nextra value\n' "$EXPECTED_TEST_CONFIG_HASH" |
+  parse_compose_service_hash >/dev/null 2>&1; then
+  fail 'Compose 服务配置哈希解析未拒绝多行输出'
+fi
+
+python3 - "$TEMP_ROOT/container.json" \
+  "$EXPECTED_CONTAINER_NAME" \
+  "$EXPECTED_COMPOSE_PROJECT" \
+  "$MINIO_IMAGE" \
+  "$EXPECTED_TEST_IMAGE_ID" \
+  "$EXPECTED_TEST_CONFIG_HASH" \
+  "$MIN_MINIO_MEMORY_BYTES" \
+  "$MIN_MINIO_RESERVATION_BYTES" <<'PY'
+import json
+import sys
+
+(
+    path,
+    name,
+    project,
+    image,
+    image_id,
+    config_hash,
+    memory,
+    reservation,
+) = sys.argv[1:]
+value = [{
+    "Name": f"/{name}",
+    "Image": image_id,
+    "Config": {
+        "Image": image,
+        "Labels": {
+            "com.docker.compose.project": project,
+            "com.docker.compose.service": "minio",
+            "com.docker.compose.container-number": "1",
+            "com.docker.compose.oneoff": "False",
+            "com.docker.compose.config-hash": config_hash,
+        },
+    },
+    "State": {
+        "Status": "running",
+        "Running": True,
+        "Restarting": False,
+        "Dead": False,
+        "OOMKilled": False,
+        "Error": "",
+        "Health": {"Status": "healthy"},
+    },
+    "HostConfig": {
+        "RestartPolicy": {"Name": "unless-stopped"},
+        "Memory": int(memory),
+        "MemoryReservation": int(reservation),
+        "PidsLimit": 256,
+    },
+}]
+with open(path, "w", encoding="utf-8") as stream:
+    json.dump(value, stream)
+PY
+validate_runtime_identity \
+  "$TEMP_ROOT/container.json" \
+  "$EXPECTED_TEST_CONFIG_HASH" \
+  "$EXPECTED_TEST_IMAGE_ID" >/dev/null
+
+python3 - "$TEMP_ROOT/container.json" "$TEMP_ROOT/container-invalid.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as stream:
+    value = json.load(stream)
+value[0]["Config"]["Labels"]["com.docker.compose.config-hash"] = "stale"
+with open(sys.argv[2], "w", encoding="utf-8") as stream:
+    json.dump(value, stream)
+PY
+if validate_runtime_identity \
+  "$TEMP_ROOT/container-invalid.json" \
+  "$EXPECTED_TEST_CONFIG_HASH" \
+  "$EXPECTED_TEST_IMAGE_ID" >/dev/null 2>&1; then
+  fail '既有容器验收未拒绝 Compose 配置漂移'
+fi
+
+cat >"$TEMP_ROOT/volume.json" <<JSON
+[
+  {
+    "Name": "$EXPECTED_VOLUME_NAME",
+    "Driver": "local",
+    "Scope": "local",
+    "Mountpoint": "$EXPECTED_DOCKER_ROOT/volumes/$EXPECTED_VOLUME_NAME/_data",
+    "Labels": {
+      "com.docker.compose.project": "$EXPECTED_COMPOSE_PROJECT",
+      "com.docker.compose.volume": "public-minio-data"
+    }
+  }
+]
+JSON
+validate_runtime_volume "$TEMP_ROOT/volume.json" >/dev/null
+
+python3 - "$TEMP_ROOT/volume.json" "$TEMP_ROOT/volume-invalid.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as stream:
+    value = json.load(stream)
+value[0]["Options"] = {"type": "none", "o": "bind", "device": "/unexpected"}
+with open(sys.argv[2], "w", encoding="utf-8") as stream:
+    json.dump(value, stream)
+PY
+if validate_runtime_volume "$TEMP_ROOT/volume-invalid.json" >/dev/null 2>&1; then
+  fail '既有卷验收未拒绝 local-driver bind 卷'
+fi
+
+assert_file_contains "$START_SCRIPT" \
+  '--verify-existing' '缺少既有 MinIO 只读验收入口'
+assert_file_contains "$START_SCRIPT" \
+  '本次没有启动、重启、重建或删除容器/数据卷。' \
+  '缺少既有 MinIO 只读验收成功声明'
+
+python3 - "$START_SCRIPT" <<'PY'
+import re
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as stream:
+    source = stream.read()
+
+anchor = source.index("  local existing_container_ids container_id named_container_id")
+branch_start = source.index("  if [[ $VERIFY_EXISTING == true ]]; then", anchor)
+branch_else = source.index("\n  else\n", branch_start)
+branch_end = source.index("\n  fi\n\n  local health_status", branch_else)
+verify_branch = source[branch_start:branch_else]
+common_verification = source[branch_end:source.index("\n}\n\nif [[ ${BASH_SOURCE[0]}", branch_end)]
+
+forbidden = re.compile(
+    r"^\s*(?:start_minio_service|docker\s+(?:start|restart|rm|container\s+rm|volume\s+rm))\b",
+    re.MULTILINE,
+)
+if forbidden.search(verify_branch) or forbidden.search(common_verification):
+    raise SystemExit("只读验收路径出现 Docker 变更命令")
+if "start_minio_service" not in source[branch_else:branch_end]:
+    raise SystemExit("首次启动路径丢失单服务启动调用")
+PY
+
 MOCK_BIN="$TEMP_ROOT/bin"
 mkdir -p "$MOCK_BIN"
 cat >"$MOCK_BIN/df" <<'MOCK_DF'

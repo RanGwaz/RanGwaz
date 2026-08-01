@@ -67,21 +67,18 @@ config 与所有 layer，再安装 `mc`、执行 `docker load`；它不会启动
 不会自动删除已有容器或卷。
 
 如果首次启动已经创建容器/卷，但随后因健康检查或后置门禁失败，脚本会故意保留
-现场，下一次运行也会拒绝覆盖。此时不要执行 `docker rm` 或 `docker volume rm`，
-先保存以下只读诊断结果；尤其在 mirror 开始后绝不能删除目标卷：
+现场，默认首次启动模式也会拒绝覆盖。此时不要执行 `docker rm` 或
+`docker volume rm`；改用严格的只读验收模式：
 
 ```bash
-docker compose --env-file .env.public -f infra/docker-compose.public.yml \
-  ps -a minio
-docker compose --env-file .env.public -f infra/docker-compose.public.yml \
-  logs --no-color --tail 200 minio
-docker inspect vibelo-public-minio-1
-docker volume inspect vibelo-public_public-minio-data
-ss -lntp | grep -E ':(9000|9001|19090)[[:space:]]' || true
+sudo bash ops/migration/minio/start-minio-target.sh --verify-existing
 ```
 
-根据日志判断是容器仍在启动、端口冲突、卷路径异常还是配置错误，再做单独恢复；
-不能为了让门禁通过而无条件删除现场。
+`--verify-existing` 不会调用 `compose up`、`start`、`restart`、重建或删除。它会精确
+核对容器名与 Compose 标签、当前配置哈希、固定镜像 ID、资源限制、运行与健康
+状态、回环端口、唯一可写数据卷、卷标签及 `/data/docker` 落点。全部通过即可继续
+建立隧道；任一项失败都要保留现场并先诊断，尤其在 mirror 开始后绝不能删除
+目标卷。
 
 三个 Bash 入口的纯 fixture/mock 回归测试不会真实加载镜像或启动服务：
 

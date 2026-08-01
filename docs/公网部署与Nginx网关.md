@@ -500,6 +500,17 @@ mysql --protocol=TCP --connect-timeout=5 \
    1 GiB MinIO 内存上限和目标卷不存在；启动脚本内部固定使用
    `--pull never --no-build --no-deps`，并证明项目中只有 `minio` 在运行。
 
+   如果首次启动已经创建容器，但 SSH 中断或后置验收尚未完成，不要删除
+   容器或数据卷，改用严格的只读验收：
+
+   ```bash
+   sudo bash ops/migration/minio/start-minio-target.sh --verify-existing
+   ```
+
+   该模式不会启动、重启、重建或删除任何容器/数据卷；只有容器身份、
+   Compose 配置哈希、固定镜像、健康状态、回环端口与数据卷落点全部通过，
+   才允许进入下一步。
+
 7. 在 Windows 建立只监听 ECS `127.0.0.1:19090` 的 SSH 反向隧道。按 MinIO 迁移手册依次运行：
 
    ```bash
