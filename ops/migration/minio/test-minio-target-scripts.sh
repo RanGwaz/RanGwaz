@@ -189,6 +189,31 @@ validate_runtime_mounts "$TEMP_ROOT/mounts.json" >/dev/null
 
 MOCK_BIN="$TEMP_ROOT/bin"
 mkdir -p "$MOCK_BIN"
+cat >"$MOCK_BIN/df" <<'MOCK_DF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+case "$*" in
+  '-B1 --output=avail -- /data')
+    printf '%s\n' 'Avail' '108447924224'
+    ;;
+  '--output=iavail -- /data')
+    printf '%s\n' 'IFree' '2000000'
+    ;;
+  *)
+    printf '不兼容的 df 参数：%s\n' "$*" >&2
+    exit 64
+    ;;
+esac
+MOCK_DF
+chmod +x "$MOCK_BIN/df"
+
+actual_free_bytes=$(PATH="$MOCK_BIN:$PATH" read_data_free_bytes /data)
+actual_free_inodes=$(PATH="$MOCK_BIN:$PATH" read_data_free_inodes /data)
+[[ $actual_free_bytes == '108447924224' ]] ||
+  fail "可用字节读取错误：$actual_free_bytes"
+[[ $actual_free_inodes == '2000000' ]] ||
+  fail "可用 inode 读取错误：$actual_free_inodes"
+
 cat >"$MOCK_BIN/docker" <<'MOCK_DOCKER'
 #!/usr/bin/env bash
 set -Eeuo pipefail

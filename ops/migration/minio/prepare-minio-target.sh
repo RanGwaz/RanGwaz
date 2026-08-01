@@ -293,6 +293,20 @@ check_port_free() {
   note "[通过] TCP $port 端口空闲"
 }
 
+read_data_free_bytes() {
+  local path=$1
+
+  df -B1 --output=avail -- "$path" |
+    awk 'NR == 2 { print $1 }'
+}
+
+read_data_free_inodes() {
+  local path=$1
+
+  df --output=iavail -- "$path" |
+    awk 'NR == 2 { print $1 }'
+}
+
 load_and_verify_minio_image() {
   local archive=$1
   local image_platform image_label version_output
@@ -377,8 +391,8 @@ main() {
   [[ $data_target == '/data' ]] || die "/data 不是独立挂载点（当前落在 $data_target）"
   data_options=$(findmnt -rn -o OPTIONS --target /data) || die '无法读取 /data 挂载参数'
   [[ ,$data_options, != *,ro,* ]] || die '/data 是只读挂载'
-  data_free_bytes=$(df -B1 --output=avail /data | awk 'NR == 2 { print $1 }')
-  data_free_inodes=$(df -i --output=iavail /data | awk 'NR == 2 { print $1 }')
+  data_free_bytes=$(read_data_free_bytes /data)
+  data_free_inodes=$(read_data_free_inodes /data)
   [[ $data_free_bytes =~ ^[0-9]+$ ]] || die '无法读取 /data 可用字节数'
   [[ $data_free_inodes =~ ^[0-9]+$ ]] || die '无法读取 /data 可用 inode 数'
   ((data_free_bytes >= MIN_DATA_FREE_BYTES)) ||
