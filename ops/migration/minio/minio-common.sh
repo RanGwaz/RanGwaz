@@ -85,8 +85,9 @@ minio_configure_alias() {
     set +x
   fi
 
-  IFS= read -r -p "$label Access Key（不回显到日志）: " access_key </dev/tty ||
+  IFS= read -r -s -p "$label Access Key（隐藏输入）: " access_key </dev/tty ||
     minio_die "无法读取 $label Access Key"
+  printf '\n' >/dev/tty
   IFS= read -r -s -p "$label Secret Key（隐藏输入）: " secret_key </dev/tty ||
     minio_die "无法读取 $label Secret Key"
   printf '\n' >/dev/tty

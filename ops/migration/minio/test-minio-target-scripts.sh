@@ -5,6 +5,7 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 PREPARE_SCRIPT="$SCRIPT_DIR/prepare-minio-target.sh"
 START_SCRIPT="$SCRIPT_DIR/start-minio-target.sh"
 TUNNEL_SCRIPT="$SCRIPT_DIR/Start-MinioReverseTunnel.ps1"
+COMMON_SCRIPT="$SCRIPT_DIR/minio-common.sh"
 
 TEMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/vibelo-minio-target-test.XXXXXXXX")
 trap 'rm -rf -- "$TEMP_ROOT"' EXIT
@@ -24,8 +25,19 @@ assert_file_contains() {
 
 "$BASH" -n "$PREPARE_SCRIPT"
 "$BASH" -n "$START_SCRIPT"
+"$BASH" -n "$COMMON_SCRIPT"
 "$BASH" "$PREPARE_SCRIPT" --help >/dev/null
 "$BASH" "$START_SCRIPT" --help >/dev/null
+
+assert_file_contains "$COMMON_SCRIPT" \
+  'read -r -s -p "$label Access Key（隐藏输入）: "' \
+  'MinIO Access Key 输入未启用终端隐藏'
+assert_file_contains "$COMMON_SCRIPT" \
+  'read -r -s -p "$label Secret Key（隐藏输入）: "' \
+  'MinIO Secret Key 输入未启用终端隐藏'
+if grep -F -- 'Access Key（不回显到日志）' "$COMMON_SCRIPT" >/dev/null; then
+  fail 'MinIO Access Key 仍使用会回显的旧提示或读取方式'
+fi
 
 assert_file_contains "$TUNNEL_SCRIPT" \
   '"-o", "BatchMode=yes"' '指定 SSH 私钥时缺少批处理失败即退门禁'
