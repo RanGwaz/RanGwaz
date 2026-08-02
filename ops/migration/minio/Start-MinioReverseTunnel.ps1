@@ -81,7 +81,11 @@ $commonArguments = @(
 
 if ($IdentityFile) {
     $resolvedIdentityFile = (Resolve-Path -LiteralPath $IdentityFile).Path
-    $commonArguments += @("-i", $resolvedIdentityFile)
+    $commonArguments += @(
+        "-o", "BatchMode=yes",
+        "-o", "IdentitiesOnly=yes",
+        "-i", $resolvedIdentityFile
+    )
 }
 
 $sshTarget = "$EcsUser@$EcsHost"

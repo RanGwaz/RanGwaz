@@ -4,6 +4,7 @@ set -Eeuo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 PREPARE_SCRIPT="$SCRIPT_DIR/prepare-minio-target.sh"
 START_SCRIPT="$SCRIPT_DIR/start-minio-target.sh"
+TUNNEL_SCRIPT="$SCRIPT_DIR/Start-MinioReverseTunnel.ps1"
 
 TEMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/vibelo-minio-target-test.XXXXXXXX")
 trap 'rm -rf -- "$TEMP_ROOT"' EXIT
@@ -25,6 +26,11 @@ assert_file_contains() {
 "$BASH" -n "$START_SCRIPT"
 "$BASH" "$PREPARE_SCRIPT" --help >/dev/null
 "$BASH" "$START_SCRIPT" --help >/dev/null
+
+assert_file_contains "$TUNNEL_SCRIPT" \
+  '"-o", "BatchMode=yes"' '指定 SSH 私钥时缺少批处理失败即退门禁'
+assert_file_contains "$TUNNEL_SCRIPT" \
+  '"-o", "IdentitiesOnly=yes"' '指定 SSH 私钥时缺少单一身份门禁'
 
 assert_file_contains "$PREPARE_SCRIPT" \
   "MINIO_ARCHIVE_SIZE=64023552" '缺少固定 MinIO 归档尺寸'

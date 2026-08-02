@@ -100,6 +100,9 @@ bash ops/migration/minio/test-minio-target-scripts.sh
 
 如果使用 SSH 密码登录，省略 `-IdentityFile`。首次连接使用 OpenSSH 的
 `accept-new` 策略：可接受新主机，但主机密钥发生变化时会拒绝连接。
+显式传入 `-IdentityFile` 时，脚本同时开启 `BatchMode=yes` 和
+`IdentitiesOnly=yes`：私钥不可用或服务端拒绝时会立即失败，不会退回密码提示并在
+后台长时间卡住。
 
 窗口 A 必须一直保持运行。然后在 PowerShell 窗口 B 验证：
 
