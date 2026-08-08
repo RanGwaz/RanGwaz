@@ -5,6 +5,7 @@ import com.rangwaz.imagesite.entity.SearchSuggestionEntity;
 import com.rangwaz.imagesite.mapper.ImageContentMapper;
 import com.rangwaz.imagesite.service.ContentSafetyService;
 import com.rangwaz.imagesite.service.ElasticsearchSearchClient;
+import com.rangwaz.imagesite.service.SearchIndexService;
 import com.rangwaz.imagesite.service.SearchService;
 import com.rangwaz.imagesite.service.TopicService;
 import com.rangwaz.imagesite.service.UserService;
@@ -25,6 +26,8 @@ import java.util.Locale;
 public class SearchServiceImpl implements SearchService {
     private static final Logger log = LoggerFactory.getLogger(SearchServiceImpl.class);
     private static final int SEARCH_IMAGE_LIMIT = 180;
+    private static final int MYSQL_FALLBACK_IMAGE_LIMIT = 40;
+    private static final int MYSQL_FALLBACK_KEYWORD_LIMIT = 2;
     private static final int RELATED_LIMIT = 18;
 
     private static final List<String> DEFAULT_IDEAS = List.of(
@@ -60,6 +63,7 @@ public class SearchServiceImpl implements SearchService {
     private final UserService userService;
     private final TopicService topicService;
     private final ElasticsearchSearchClient searchClient;
+    private final SearchIndexService searchIndexService;
     private final ContentSafetyService contentSafetyService;
 
     /**
@@ -70,6 +74,7 @@ public class SearchServiceImpl implements SearchService {
      * @param userService user service
      * @param topicService topic service
      * @param searchClient Elasticsearch search client
+     * @param searchIndexService Elasticsearch readiness service
      * @param contentSafetyService content safety service
      */
     public SearchServiceImpl(ImageContentMapper imageContentMapper,
@@ -77,12 +82,14 @@ public class SearchServiceImpl implements SearchService {
                              UserService userService,
                              TopicService topicService,
                              ElasticsearchSearchClient searchClient,
+                             SearchIndexService searchIndexService,
                              ContentSafetyService contentSafetyService) {
         this.imageContentMapper = imageContentMapper;
         this.imageService = imageService;
         this.userService = userService;
         this.topicService = topicService;
         this.searchClient = searchClient;
+        this.searchIndexService = searchIndexService;
         this.contentSafetyService = contentSafetyService;
     }
 
@@ -102,6 +109,9 @@ public class SearchServiceImpl implements SearchService {
             return new ApiDtos.SearchResult(List.of(), List.of(), List.of(), List.of());
         }
         SearchQueryPlan plan = plan(trimmed);
+        if (!searchIndexService.isIndexReady()) {
+            return mysqlFallback(trimmed, plan);
+        }
         List<ApiDtos.ImageView> posts;
         try {
             List<Long> imageIds = searchClient.searchImageIds(plan.searchKeywords(), SEARCH_IMAGE_LIMIT);
@@ -110,16 +120,7 @@ public class SearchServiceImpl implements SearchService {
                     : imageService.toViews(imageContentMapper.findPublishedByIds(imageIds), "search");
         } catch (RuntimeException exception) {
             log.warn("Elasticsearch image search failed; using MySQL metadata fallback", exception);
-            posts = imageService.toViews(
-                    imageContentMapper.search(trimmed, SEARCH_IMAGE_LIMIT),
-                    "search-fallback"
-            );
-            return new ApiDtos.SearchResult(
-                    userService.search(trimmed, 12),
-                    posts,
-                    topicService.search(trimmed, 12),
-                    relatedItems(plan, List.of())
-            );
+            return mysqlFallback(trimmed, plan);
         }
         return new ApiDtos.SearchResult(
                 userService.search(trimmed, 12),
@@ -152,12 +153,31 @@ public class SearchServiceImpl implements SearchService {
     }
 
     private List<SearchSuggestionEntity> suggestKeywords(List<String> keywords, int limit) {
+        if (!searchIndexService.isIndexReady()) {
+            return imageContentMapper.suggestByMetadata(keywords, limit);
+        }
         try {
             return searchClient.suggestKeywords(keywords, limit);
         } catch (RuntimeException exception) {
             log.warn("Elasticsearch suggestions failed; using MySQL metadata fallback", exception);
             return imageContentMapper.suggestByMetadata(keywords, limit);
         }
+    }
+
+    private ApiDtos.SearchResult mysqlFallback(String keyword, SearchQueryPlan plan) {
+        List<ApiDtos.ImageView> posts = imageService.toViews(
+                imageContentMapper.searchExpanded(
+                        plan.searchKeywords().stream().limit(MYSQL_FALLBACK_KEYWORD_LIMIT).toList(),
+                        MYSQL_FALLBACK_IMAGE_LIMIT
+                ),
+                "search-fallback"
+        );
+        return new ApiDtos.SearchResult(
+                userService.search(keyword, 12),
+                posts,
+                topicService.search(keyword, 12),
+                relatedItems(plan, List.of())
+        );
     }
 
     private SearchQueryPlan plan(String keyword) {

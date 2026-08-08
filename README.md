@@ -78,13 +78,7 @@ flowchart LR
 - `POST /images` 与 `POST /media/upload` 分别由 `APP_FEATURE_PUBLISHING_ENABLED=false`、`APP_FEATURE_MEDIA_UPLOAD_ENABLED=false` 强制拒绝；前端 `/publish` 永久重定向首页，个人资料页只保留昵称和简介编辑，当前不启动图片检测服务。
 - TLS 最快可放在云负载均衡/CDN，回源到此 Nginx 的 80 端口。公网安全组只开放 80/443。
 
-只有决定正式上线时才复制 `.env.public.example` 为未跟踪的 `.env.public`，填写密钥并构建：
-
-```powershell
-docker compose --env-file .env.public -f infra/docker-compose.public.yml up -d --build
-```
-
-当前工作阶段不要执行这条命令。
+只有决定正式上线时才生成未跟踪的 `.env.public`。公网发布采用离线、不可变 release：在本机已提交全部跟踪变更且前后端没有未跟踪构建输入的完整 40 位 Git SHA 上，用 `--pull=false --platform linux/amd64` 构建带 `org.opencontainers.image.revision` 标签的 Backend/Frontend commit 镜像，再由 `Export-PublicImageBundle.ps1` 连同固定运行镜像导出并在 ECS 上校验导入；PyMySQL 1.1.2 wheel 单独离线传输。ECS 不构建、不拉取、不在线安装 Python 包，所有 `up` 都使用 `--no-build --pull never` 和显式服务名。完整命令见部署手册第 9 节。
 
 完整的域名、TLS、数据迁移、首次发布、验收、更新与回滚步骤见 [公网部署与 Nginx 网关](docs/公网部署与Nginx网关.md)。
 
@@ -92,19 +86,15 @@ docker compose --env-file .env.public -f infra/docker-compose.public.yml up -d -
 
 当前 160 GB ECS 数据盘应格式化并挂载到 `/data`，再把 Docker `data-root` 迁到 `/data/docker`、把 Docker 29 使用的 containerd 数据目录迁到 `/data/containerd`；这不会改变 40 GB 系统盘 `/` 的容量。首发可继续使用数据盘上的 MinIO，暂不强制购买 OSS/CDN；正式扩大图片流量时再迁移到 OSS，并用 CDN 分发静态图片。完整判断和安全操作顺序见 [公网部署与 Nginx 网关](docs/公网部署与Nginx网关.md)。
 
-上线操作已拆成三套可审计工具，优先按各目录中的 README 执行，不要手工拼接含密码的命令：
+上线操作已拆成可审计工具，优先按各目录中的 README 执行，不要手工拼接含密码的命令：
 
 - [ECS 环境配置与只读预检](ops/public/README.md)
 - [MySQL 8.4 → RDS MySQL 8.0.36 安全迁移](ops/migration/mysql/README.md)
 - [Windows MinIO → ECS MinIO 流式迁移与校验](ops/migration/minio/README.md)
 
-固定顺序是：挂载数据盘并迁移 Docker 数据目录 → 创建 `vibelo_app` 标准 RDS 账号 → 生成 `.env.public` 并预检 → 本机导出和 MySQL 8.0.36 恢复演练 → 导入空 RDS 并精确验收 → 启动目标 MinIO → 流式迁移并校验对象 → 最后才构建、启动前后端和 Nginx Gateway。
+固定顺序是：挂载数据盘并迁移 Docker 数据目录 → 创建 `vibelo_app` 标准 RDS 账号 → 生成 `.env.public` 并预检 → 本机导出和 MySQL 8.0.36 恢复演练 → 导入空 RDS 并精确验收 → 启动目标 MinIO → 流式迁移并校验对象 → 本机构建并导出 full-SHA 离线镜像 release，同时准备固定 PyMySQL wheel → ECS 校验导入 → 只读验收既有 MinIO → 只启动 Elasticsearch → 重建、认证并原子发布搜索索引 → 启动 Redis/Zookeeper/Kafka → 启动 Backend/Frontend → 最后启动 Nginx Gateway。首发不启用 `local-database` 或 `recommendation` profile，也不要执行 `docker compose down -v`。
 
-默认开发账号：
-
-```text
-mira / RanGwaz147..
-```
+后端默认不再自动创建开发账号。如果本地空库确实需要初始化一个账号，必须显式设置 `APP_DATA_INITIALIZER_ENABLED=true`、`APP_DATA_INITIALIZER_USERNAME`和 `APP_DATA_INITIALIZER_PASSWORD`；公网 Compose 固定关闭该功能。
 
 ## 本地开发中间件端口
 

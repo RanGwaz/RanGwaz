@@ -45,7 +45,8 @@ upstream frontend_pool {
 
 ```bash
 docker compose --env-file .env.public -f infra/docker-compose.public.yml \
-  up -d --scale frontend=2 --scale backend=2
+  up -d --wait --no-build --pull never --no-deps \
+  --scale frontend=2 --scale backend=2 frontend backend
 docker compose --env-file .env.public -f infra/docker-compose.public.yml \
   restart gateway
 ```
@@ -84,7 +85,7 @@ MODEL_RANKING_ENABLED=false
 - `POST /api/media/upload` 同样返回 `PUBLISHING_DISABLED`；资料编辑页隐藏头像和背景上传，只保留昵称、简介。
 - 不启动 8093 图片检测服务。
 - 推荐先使用数据库冷启动/fallback，继续收集曝光、点击、停留、点赞、收藏和评论。
-- ES 启动慢或短暂故障不会再杀死后端；建索引会后台重试，搜索临时回退 MySQL。
+- ES 启动慢或短暂故障不会再杀死后端；后端会定时重试 RDS/ES 计数 readiness 检查，但不在应用进程内全量建索引，ready 前搜索临时回退 MySQL。
 - 公网数据库使用同 VPC 的 RDS MySQL；上线前必须先验证内网地址、白名单和账号权限。Redis 和 Kafka 首次健康后才启动后端，避免验证码不可用或首批行为数据丢失。
 - Milvus 位于 Compose 的 `recommendation` profile，首次上线默认不启动，减少内存和启动时间。
 
@@ -450,7 +451,7 @@ mysql --protocol=TCP --connect-timeout=5 \
 
 1. MySQL：导出当前 `rangwaz_image_dev`，再恢复到 RDS 的同名数据库；导入前先确认字符集、账号权限和备份。
 2. 业务 MinIO：同步 `rangwaz-media` bucket，数据库中的 object key 必须保持不变。
-3. Elasticsearch：可以不搬，后端启动后重新建立索引。
+3. Elasticsearch：可以不搬，但后端启动时只检查 RDS/ES 精确计数，不会在应用进程内全量重建。首次发布后必须按第 9 节运行独立重建工具；在索引 ready 前搜索使用 MySQL 元数据回退。
 4. Milvus：首次推荐服务关闭，可暂不搬；以后用原图向量脚本重建更稳妥。
 5. 推荐模型目录：以后启用双塔时再同步 `VIBELO_RECOMMENDATION_MODEL_DIR`。
 
@@ -577,26 +578,152 @@ sudo bash ops/migration/minio/start-minio-target.sh
 
 ## 9. 首次构建与发布
 
-只有决定上线时执行：
+首次上线采用离线、不可变 release。ECS 不构建项目镜像、不访问镜像仓库、不在线安装 Python 包。固定顺序必须是：只读验收既有 MinIO → Elasticsearch → 搜索索引 → Redis/Zookeeper/Kafka → Backend/Frontend → Gateway。重建完成前不要把 80/443 流量接入本机。
+
+### 9.1 Windows 构建、导出并上传 release
+
+先在本机完成测试并提交全部发布内容。下面的 `$release` 必须是当前 HEAD 的完整 40 位 SHA；所有已跟踪文件都不能有改动，`backend/`、`frontend/` 也不能存在未跟踪的构建输入。不参与镜像构建的个人未跟踪文档不影响导出。基础镜像和固定中间件镜像必须已经在本机，`--pull=false` 不会下载它们：
+
+```powershell
+cd G:\你的路径\RanGwaz
+$release = (git rev-parse HEAD).Trim().ToLowerInvariant()
+if ($LASTEXITCODE -ne 0 -or $release -notmatch '^[0-9a-f]{40}$') {
+  throw '无法读取完整 Git SHA'
+}
+$trackedDirty = @(git status --porcelain=v1 --untracked-files=no)
+$untrackedBuildInputs = @(git ls-files --others --exclude-standard -- backend frontend)
+if ($LASTEXITCODE -ne 0 -or $trackedDirty.Count -ne 0 -or $untrackedBuildInputs.Count -ne 0) {
+  throw '已跟踪文件或前后端构建输入不干净，请先提交相关变更'
+}
+
+docker build --pull=false --platform linux/amd64 `
+  --build-arg "VIBELO_GIT_REVISION=$release" `
+  --tag "vibelo-public-backend:$release" `
+  .\backend
+if ($LASTEXITCODE -ne 0) { throw 'Backend 镜像构建失败' }
+
+docker build --pull=false --platform linux/amd64 `
+  --build-arg "VIBELO_GIT_REVISION=$release" `
+  --build-arg 'VITE_API_BASE=/api' `
+  --build-arg 'VITE_MEDIA_UPLOAD_ENABLED=false' `
+  --tag "vibelo-public-frontend:$release" `
+  .\frontend
+if ($LASTEXITCODE -ne 0) { throw 'Frontend 镜像构建失败' }
+
+$bundleDir = Join-Path $env:TEMP "vibelo-public-$release"
+if (Test-Path -LiteralPath $bundleDir) {
+  throw "导出目录必须不存在或为空：$bundleDir"
+}
+.\ops\public\Export-PublicImageBundle.ps1 `
+  -Release $release `
+  -TargetDirectory $bundleDir
+
+$wheelDir = Join-Path $env:TEMP 'vibelo-search-reindex'
+.\ops\public\Prepare-SearchReindexDependencies.ps1 -OutputDirectory $wheelDir
+
+$ecs = 'root@你的ECS公网IP'
+ssh $ecs "install -d -m 700 /data/releases/$release /data/migration/search-reindex"
+if ($LASTEXITCODE -ne 0) { throw 'ECS 目录创建失败' }
+
+$bundleFiles = @(Get-ChildItem -LiteralPath $bundleDir -File)
+if ($bundleFiles.Count -ne 3) { throw 'release 目录必须恰好包含三个文件' }
+foreach ($file in $bundleFiles) {
+  scp $file.FullName "${ecs}:/data/releases/$release/"
+  if ($LASTEXITCODE -ne 0) { throw "上传失败：$($file.Name)" }
+}
+scp (Join-Path $wheelDir 'pymysql-1.1.2-py3-none-any.whl') `
+  "${ecs}:/data/migration/search-reindex/"
+if ($LASTEXITCODE -ne 0) { throw 'PyMySQL wheel 上传失败' }
+```
+
+导出器会验证 Git SHA、全部跟踪文件、前后端未跟踪构建输入、两个 commit tag、`org.opencontainers.image.revision` label、`linux/amd64` 平台及八个固定镜像，并生成 tar、TSV manifest 和 `SHA256SUMS`。release 目录必须恰好保留这三个文件；PyMySQL wheel 必须单独上传，不能混入该目录。
+
+如果 SSH 提示主机密钥变化，必须先从阿里云控制台核对 ECS 上 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` 的指纹；不要使用 `StrictHostKeyChecking=no` 绕过校验。
+
+### 9.2 ECS 验收导入并固定镜像变量
+
+让 ECS 源码与 release SHA 完全一致，再运行镜像导入门禁和离线依赖安装：
 
 ```bash
+cd /opt/vibelo
+RELEASE='<完整的 40 位 Git SHA>'
+git pull --ff-only origin main
+test "$(git rev-parse HEAD)" = "$RELEASE"
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+bash ops/public/import-public-image-bundle.sh \
+  --release "$RELEASE" \
+  --target-directory "/data/releases/$RELEASE"
+
+bash ops/public/install-search-reindex-dependencies.sh \
+  --wheel /data/migration/search-reindex/pymysql-1.1.2-py3-none-any.whl \
+  --venv /opt/vibelo/.venv-ops
+```
+
+导入器会校验三文件目录、SHA256、归档结构、八个固定引用、镜像 ID、平台以及应用镜像 revision label；它不会启动服务。把其输出的两个值写入 `.env.public`，每个键只保留一条，不使用 `latest` 或短 SHA：
+
+```text
+VIBELO_BACKEND_IMAGE=vibelo-public-backend:<完整的 40 位 Git SHA>
+VIBELO_FRONTEND_IMAGE=vibelo-public-frontend:<完整的 40 位 Git SHA>
+```
+
+保存后执行 `chmod 600 .env.public`。安装器固定使用 PyMySQL 1.1.2，并强制 `--no-index --no-deps`；ECS 不运行在线 `pip install`。
+
+### 9.3 严格分阶段启动
+
+首次发布此时只允许目标 MinIO 正在运行。先校验配置，再对已迁移 MinIO 做只读验收；不要启动、重建或删除它：
+
+```bash
+cd /opt/vibelo
+
 docker compose --env-file .env.public -f infra/docker-compose.public.yml \
   config --quiet
 
+sudo bash ops/migration/minio/start-minio-target.sh --verify-existing
+
 docker compose --env-file .env.public -f infra/docker-compose.public.yml \
-  up -d --build
+  up -d --wait --no-build --pull never elasticsearch
 ```
 
-此命令会首次构建前端和后端项目镜像。当前开发阶段不要执行。
-
-查看状态与日志：
+确认 Elasticsearch 健康后，保持 Backend、Gateway 以及所有会修改图片、标签、主题、分类和用户资料的任务停止，再重建索引：
 
 ```bash
+cd /opt/vibelo
+(
+  set -a
+  . ./.env.public
+  set +a
+  export VIBELO_ES_URL='http://127.0.0.1:9200'
+  export VIBELO_ES_INDEX='rangwaz-images'
+  exec .venv-ops/bin/python tools/reindex_search_es.py \
+    --confirm-promote \
+    --replace-conflicting-index
+)
+```
+
+工具在 MySQL `REPEATABLE READ` 只读一致快照内分页，计算有序 ID 集合 SHA256 与规范化全文 SHA256；随后回读候选 ES 并再次读取新的 RDS 一致快照。只有数量、集合指纹和内容指纹全部相同，才把以下证书写入候选 mapping 的 `_meta.vibelo_reindex_certificate`：`schema=v1`、`status=verified`、`published_count`、`source_fingerprint`、`collection_fingerprint`、`candidate_fingerprint` 和 UTC 时间。证书写入后会先验回，再原子切换 alias，最后通过“alias 只指向一个 concrete index + count + 全文/集合指纹 + 证书”做发布后验收。
+
+`VIBELO_DB_*` 与 `.env.public` 是同一套 RDS 变量，密码只在子 shell 内可见；不要用命令行参数传密码。`--confirm-promote` 是必须的人工发布确认；任意计数、指纹、证书或 bulk 错误都会阻止切换旧 alias。`--limit` 只能与 `--dry-run` 同时使用，部分数据永远不允许写入或发布。`--replace-conflicting-index` 仅用于首次升级时处理同名具体索引，删除冲突索引与添加 alias 会在同一个 `/_aliases` 请求中完成。MySQL advisory lock 只防止两个重建脚本并发，不能替代维护窗口；即使有双快照指纹门禁，也必须保持所有相关写入停止直到脚本成功退出。
+
+只有重建脚本退出码为 `0` 后，才允许按以下三组命令继续；不得合并成一次全栈 `up`：
+
+```bash
+docker compose --env-file .env.public -f infra/docker-compose.public.yml \
+  up -d --wait --no-build --pull never redis zookeeper kafka
+
+docker compose --env-file .env.public -f infra/docker-compose.public.yml \
+  up -d --wait --no-build --pull never --no-deps backend frontend
+
+docker compose --env-file .env.public -f infra/docker-compose.public.yml \
+  up -d --wait --no-build --pull never --no-deps gateway
+
 docker compose --env-file .env.public -f infra/docker-compose.public.yml ps
-docker compose --env-file .env.public -f infra/docker-compose.public.yml logs -f gateway
-docker compose --env-file .env.public -f infra/docker-compose.public.yml logs -f backend
+docker compose --env-file .env.public -f infra/docker-compose.public.yml \
+  logs --tail=200 gateway backend
 docker stats --no-stream
 ```
+
+首发不要传 `--profile local-database`，不要启动 `mysql`；业务库只使用 RDS。也不要传 `--profile recommendation`，不要启动 Milvus。任何时候都不要执行 `docker compose down -v`，该命令会删除命名卷和业务数据。脚本成功后，后端最多等待 `ELASTICSEARCH_INDEX_RETRY_DELAY_MS`（默认 30 秒），便会在下一次证书/计数检查后切回 ES；ES 的真实零命中会保持空结果。
 
 ## 10. 上线验收
 
@@ -620,12 +747,7 @@ curl -fsS "https://example.com/api/feed?page=1&pageSize=2"
 
 ## 11. 启用推荐与 Milvus
 
-当前 7.1 GiB 主机不要执行本节命令。先升级到至少 16 GB 内存，或把 Milvus/模型服务迁移到独立服务器。资源满足后，才启动 Milvus profile：
-
-```bash
-docker compose --profile recommendation --env-file .env.public \
-  -f infra/docker-compose.public.yml up -d
-```
+当前 7.1 GiB 主机禁止启用 `recommendation` profile；当前八镜像公网 release 也不包含 Milvus 镜像。先升级到至少 16 GB 内存或把 Milvus/模型服务迁移到独立服务器，再为全部推荐镜像设计同样固定版本、`linux/amd64`、离线导出/导入的独立 release 门禁。门禁和回滚方案落地前不要在 ECS 运行该 profile，也不要临时在线拉取镜像。
 
 先在宿主机确认向量服务 8091、模型服务 8092 健康，再把：
 
@@ -639,15 +761,46 @@ MODEL_RANKING_ENABLED=true
 
 ## 12. 更新与回滚
 
-更新应用前先记录 Git commit：
+每次更新都生成新的完整 SHA release；不覆盖旧 tag，不在 ECS 重新构建。先在 Windows 对目标 commit 完整重复 9.1 节的两次 `docker build --pull=false --platform linux/amd64`、`Export-PublicImageBundle.ps1`、固定 wheel 准备和上传。随后在 ECS 校验源码并导入新 release：
 
 ```bash
-git rev-parse HEAD
-git pull --ff-only
-docker compose --env-file .env.public -f infra/docker-compose.public.yml \
-  up -d --build frontend backend gateway
+cd /opt/vibelo
+RELEASE='<新的完整 40 位 Git SHA>'
+git switch main
+git pull --ff-only origin main
+test "$(git rev-parse HEAD)" = "$RELEASE"
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+bash ops/public/import-public-image-bundle.sh \
+  --release "$RELEASE" \
+  --target-directory "/data/releases/$RELEASE"
+bash ops/public/install-search-reindex-dependencies.sh \
+  --wheel /data/migration/search-reindex/pymysql-1.1.2-py3-none-any.whl \
+  --venv /opt/vibelo/.venv-ops
 ```
 
-如果新版本异常，切回刚才记录的 commit，重新执行同一构建命令。数据库迁移必须保持向前兼容；发布前先备份 MySQL、MinIO 和推荐模型目录。
+把 `.env.public` 中 `VIBELO_BACKEND_IMAGE`、`VIBELO_FRONTEND_IMAGE` 分别改为该完整 SHA 的两个 tag，并执行 `chmod 600 .env.public` 与 `docker compose ... config --quiet`。导入唯一 commit tag 不会改变仍在运行的旧容器。进入维护窗口后，只停止明确列出的非 MinIO 服务：
+
+```bash
+docker compose --env-file .env.public -f infra/docker-compose.public.yml \
+  stop gateway backend frontend kafka zookeeper redis elasticsearch
+```
+
+随后完整重复 9.3 节，顺序不能跳过：`start-minio-target.sh --verify-existing` → `up ... elasticsearch` → 搜索重建脚本成功 → `up ... redis zookeeper kafka` → `up ... backend frontend` → `up ... gateway`。每一条 `up` 仍必须使用 `--no-build --pull never` 和显式服务名。即使应用代码没有修改搜索 schema，当前发布门禁仍要求重新认证并原子发布索引后再启动应用。
+
+回滚只允许使用已经在 ECS 验收导入、仍有完整 SHA tag 且数据库迁移向前兼容的旧 release。记录故障现场后，切到与旧镜像一致的 commit，把 `.env.public` 的两个镜像变量改回旧完整 SHA，停止上述七个非 MinIO 服务，再完整重复 9.3 节：
+
+```bash
+cd /opt/vibelo
+ROLLBACK_RELEASE='<已导入的旧完整 40 位 Git SHA>'
+git switch --detach "$ROLLBACK_RELEASE"
+test "$(git rev-parse HEAD)" = "$ROLLBACK_RELEASE"
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
+docker image inspect \
+  "vibelo-public-backend:$ROLLBACK_RELEASE" \
+  "vibelo-public-frontend:$ROLLBACK_RELEASE" >/dev/null
+```
+
+不要用 `latest`、短 SHA、`up --build`、在线 `pip install` 或临时拉取替代 release 门禁；不要运行 `docker compose down -v`。发布前备份 RDS 与 MinIO，至少保留当前和上一版镜像归档。回滚完成、准备继续跟随主分支时再执行 `git switch main`。
 
 模型回滚不需要回滚整站：registry 会保留 `previous`，使用训练文档中的 rollback 命令交换 `current/previous`，在线模型服务检测 registry 修改后自动热加载。

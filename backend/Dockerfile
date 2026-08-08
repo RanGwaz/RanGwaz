@@ -8,6 +8,11 @@ RUN mvn -q -DskipTests package
 
 FROM eclipse-temurin:17-jre-alpine
 
+ARG VIBELO_GIT_REVISION=unknown
+LABEL org.opencontainers.image.source="https://github.com/RanGwaz/RanGwaz" \
+      org.opencontainers.image.revision="${VIBELO_GIT_REVISION}" \
+      org.opencontainers.image.title="Vibelo backend"
+
 RUN addgroup -S vibelo && adduser -S vibelo -G vibelo \
     && mkdir -p /app/storage/uploads \
     && chown -R vibelo:vibelo /app

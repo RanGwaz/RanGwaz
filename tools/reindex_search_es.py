@@ -10,27 +10,38 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import sys
 import time
+from contextlib import closing, contextmanager
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
-DEFAULT_MYSQL_HOST = os.environ.get("VIBELO_MYSQL_HOST", "127.0.0.1")
-DEFAULT_MYSQL_PORT = int(os.environ.get("VIBELO_MYSQL_PORT", "3306") or "3306")
-DEFAULT_MYSQL_DATABASE = os.environ.get("VIBELO_MYSQL_DATABASE", "rangwaz_image_dev")
-DEFAULT_MYSQL_USER = os.environ.get("VIBELO_MYSQL_USER", "rangwaz")
-DEFAULT_MYSQL_PASSWORD = os.environ.get("VIBELO_MYSQL_PASSWORD", "rangwaz123")
+def _env_value(primary: str, fallback: str, default: str) -> str:
+    return os.environ.get(primary) or os.environ.get(fallback) or default
+
+
+DEFAULT_MYSQL_HOST = _env_value("VIBELO_MYSQL_HOST", "VIBELO_DB_HOST", "127.0.0.1")
+DEFAULT_MYSQL_PORT = int(_env_value("VIBELO_MYSQL_PORT", "VIBELO_DB_PORT", "3306"))
+DEFAULT_MYSQL_DATABASE = _env_value("VIBELO_MYSQL_DATABASE", "VIBELO_DB_NAME", "rangwaz_image_dev")
+DEFAULT_MYSQL_USER = _env_value("VIBELO_MYSQL_USER", "VIBELO_DB_USER", "vibelo_app")
+DEFAULT_MYSQL_PASSWORD = _env_value("VIBELO_MYSQL_PASSWORD", "VIBELO_DB_PASSWORD", "")
 
 DEFAULT_ES_URL = os.environ.get("VIBELO_ES_URL", "http://127.0.0.1:9200")
 DEFAULT_ES_INDEX = os.environ.get("VIBELO_ES_INDEX", "rangwaz-images")
 DEFAULT_BATCH_SIZE = int(os.environ.get("VIBELO_SEARCH_BATCH_SIZE", "500") or "500")
 DEFAULT_TIMEOUT_SECONDS = int(os.environ.get("VIBELO_ES_TIMEOUT_SECONDS", "30") or "30")
+
+CERTIFICATE_META_KEY = "vibelo_reindex_certificate"
+CERTIFICATE_SCHEMA = "v1"
+CERTIFICATE_STATUS = "verified"
 
 
 INDEX_DEFINITION: Dict[str, Any] = {
@@ -119,6 +130,47 @@ LIMIT %s
 """
 
 
+@dataclass(frozen=True)
+class DatasetFingerprint:
+    document_count: int
+    collection_fingerprint: str
+    content_fingerprint: str
+
+
+class DatasetFingerprintBuilder:
+    def __init__(self) -> None:
+        self._collection = hashlib.sha256()
+        self._content = hashlib.sha256()
+        self._document_count = 0
+
+    @staticmethod
+    def _add_frame(digest: Any, payload: bytes) -> None:
+        digest.update(str(len(payload)).encode("ascii"))
+        digest.update(b":")
+        digest.update(payload)
+        digest.update(b"\n")
+
+    def add(self, document_id: str, source: Dict[str, Any]) -> None:
+        encoded_id = str(document_id).encode("utf-8")
+        encoded_document = json.dumps(
+            {"_id": str(document_id), "_source": source},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=json_value,
+        ).encode("utf-8")
+        self._add_frame(self._collection, encoded_id)
+        self._add_frame(self._content, encoded_document)
+        self._document_count += 1
+
+    def finish(self) -> DatasetFingerprint:
+        return DatasetFingerprint(
+            document_count=self._document_count,
+            collection_fingerprint=self._collection.hexdigest(),
+            content_fingerprint=self._content.hexdigest(),
+        )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Rebuild the Vibelo/RanGwaz Elasticsearch search index from MySQL.")
     parser.add_argument("--mysql-host", default=DEFAULT_MYSQL_HOST)
@@ -131,9 +183,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--timeout-seconds", type=int, default=DEFAULT_TIMEOUT_SECONDS)
     parser.add_argument("--limit", type=int, default=0, help="Only index the first N rows; useful for smoke tests.")
-    parser.add_argument("--no-recreate", action="store_true", help="Upsert into --es-index directly instead of building a versioned index and swapping the alias.")
-    parser.add_argument("--replace-conflicting-index", action="store_true", help="Delete a concrete index that has the same name as the target alias before swapping.")
+    parser.add_argument("--no-recreate", action="store_true", help="Deprecated unsafe mode; only accepted together with --dry-run.")
+    parser.add_argument("--replace-conflicting-index", action="store_true", help="Atomically remove a concrete index that conflicts with the target alias during promotion.")
     parser.add_argument("--dry-run", action="store_true", help="Read data and print progress without writing to Elasticsearch.")
+    parser.add_argument(
+        "--confirm-promote",
+        action="store_true",
+        help="Required acknowledgement that a complete candidate index may replace the search alias.",
+    )
+    parser.add_argument(
+        "--lock-name",
+        default="vibelo-search-reindex",
+        help="MySQL advisory lock used to prevent concurrent search reindex jobs.",
+    )
     return parser.parse_args()
 
 
@@ -141,11 +203,14 @@ def require_pymysql():
     try:
         import pymysql
     except Exception as exc:
-        raise SystemExit("Missing dependency: python -m pip install pymysql\nOriginal error: {0}".format(exc)) from exc
+        raise SystemExit(
+            "Missing fixed PyMySQL dependency; prepare and install it with the scripts under ops/public "
+            "instead of using an online pip install.\nOriginal error: {0}".format(exc)
+        ) from exc
     return pymysql
 
 
-def connect_mysql(args: argparse.Namespace):
+def connect_mysql(args: argparse.Namespace, autocommit: bool = True):
     pymysql = require_pymysql()
     return pymysql.connect(
         host=args.mysql_host,
@@ -154,9 +219,53 @@ def connect_mysql(args: argparse.Namespace):
         password=args.mysql_password,
         database=args.mysql_database,
         charset="utf8mb4",
-        autocommit=True,
+        autocommit=autocommit,
         cursorclass=pymysql.cursors.DictCursor,
     )
+
+
+def begin_consistent_snapshot(conn) -> None:
+    with conn.cursor() as cursor:
+        cursor.execute("SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        cursor.execute("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
+
+
+@contextmanager
+def consistent_snapshot(args: argparse.Namespace) -> Iterator[Any]:
+    conn = connect_mysql(args, autocommit=False)
+    try:
+        begin_consistent_snapshot(conn)
+        yield conn
+    finally:
+        try:
+            conn.rollback()
+        finally:
+            conn.close()
+
+
+def acquire_reindex_lock(conn, lock_name: str) -> None:
+    if not lock_name or len(lock_name.encode("utf-8")) > 64:
+        raise SystemExit("--lock-name must contain between 1 and 64 UTF-8 bytes")
+    with conn.cursor() as cursor:
+        cursor.execute("SELECT GET_LOCK(%s, 0) AS acquired", (lock_name,))
+        row = cursor.fetchone()
+    acquired = row.get("acquired") if isinstance(row, dict) else row[0]
+    if int(acquired or 0) != 1:
+        raise SystemExit("Another Elasticsearch reindex job holds MySQL lock: {0}".format(lock_name))
+
+
+def release_reindex_lock(conn, lock_name: str) -> None:
+    with conn.cursor() as cursor:
+        cursor.execute("SELECT RELEASE_LOCK(%s) AS released", (lock_name,))
+        cursor.fetchone()
+
+
+def count_published(conn) -> int:
+    with conn.cursor() as cursor:
+        cursor.execute("SELECT COUNT(*) AS published_count FROM images WHERE status='PUBLISHED'")
+        row = cursor.fetchone()
+    value = row.get("published_count") if isinstance(row, dict) else row[0]
+    return int(value or 0)
 
 
 class Elasticsearch:
@@ -222,6 +331,56 @@ class Elasticsearch:
         response = self.json_request("GET", "/" + index_name + "/_count")
         return int(response.get("count", 0))
 
+    def fingerprint(self, index_name: str, batch_size: int) -> DatasetFingerprint:
+        builder = DatasetFingerprintBuilder()
+        search_after: Optional[List[Any]] = None
+        page_size = max(50, min(batch_size, 1000))
+        while True:
+            body: Dict[str, Any] = {
+                "size": page_size,
+                "query": {"match_all": {}},
+                "sort": [{"id": {"order": "asc", "unmapped_type": "long"}}],
+                "_source": True,
+                "track_total_hits": False,
+            }
+            if search_after is not None:
+                body["search_after"] = search_after
+            response = self.json_request("POST", "/" + index_name + "/_search", body)
+            hits = response.get("hits", {}).get("hits", [])
+            if not isinstance(hits, list):
+                raise SystemExit("Elasticsearch fingerprint response does not contain a hit list")
+            if not hits:
+                break
+            for hit in hits:
+                document_id = hit.get("_id")
+                source = hit.get("_source")
+                if document_id is None or not isinstance(source, dict):
+                    raise SystemExit("Elasticsearch fingerprint response contains an invalid document")
+                builder.add(str(document_id), source)
+            last_sort = hits[-1].get("sort")
+            if not isinstance(last_sort, list) or not last_sort:
+                raise SystemExit("Elasticsearch fingerprint response is missing search_after values")
+            search_after = last_sort
+        return builder.finish()
+
+    def write_certificate(self, index_name: str, certificate: Dict[str, Any]) -> None:
+        self.json_request(
+            "PUT",
+            "/" + index_name + "/_mapping",
+            {"_meta": {CERTIFICATE_META_KEY: certificate}},
+        )
+
+    def certificates(self, index_or_alias: str) -> Dict[str, Dict[str, Any]]:
+        response = self.json_request("GET", "/" + index_or_alias + "/_mapping")
+        certificates: Dict[str, Dict[str, Any]] = {}
+        for index_name, definition in response.items():
+            mappings = definition.get("mappings", {}) if isinstance(definition, dict) else {}
+            metadata = mappings.get("_meta", {}) if isinstance(mappings, dict) else {}
+            certificate = metadata.get(CERTIFICATE_META_KEY) if isinstance(metadata, dict) else None
+            if isinstance(certificate, dict):
+                certificates[index_name] = certificate
+        return certificates
+
     def alias_indices(self, alias: str) -> List[str]:
         status = self.status("HEAD", "/_alias/" + alias)
         if status == 404:
@@ -233,14 +392,14 @@ class Elasticsearch:
 
     def swap_alias(self, alias: str, new_index: str, replace_conflicting_index: bool) -> List[str]:
         old_indices = self.alias_indices(alias)
+        actions = [{"remove": {"index": old_index, "alias": alias}} for old_index in old_indices]
         if not old_indices and alias != new_index and self.status("HEAD", "/" + alias) == 200:
             if not replace_conflicting_index:
                 raise SystemExit(
                     "Cannot create alias '{0}' because a concrete index with the same name exists. "
-                    "Run again with --replace-conflicting-index, or use --no-recreate to write into it directly.".format(alias)
+                    "Run again with --replace-conflicting-index to replace it atomically.".format(alias)
                 )
-            self.json_request("DELETE", "/" + alias)
-        actions = [{"remove": {"index": old_index, "alias": alias}} for old_index in old_indices]
+            actions.append({"remove_index": {"index": alias}})
         actions.append({"add": {"index": new_index, "alias": alias}})
         self.json_request("POST", "/_aliases", {"actions": actions})
         return old_indices
@@ -434,12 +593,18 @@ def to_document(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def bulk_index(es: Elasticsearch, rows: List[Dict[str, Any]], target_index: str) -> None:
+PreparedDocument = Tuple[str, Dict[str, Any]]
+
+
+def prepare_documents(rows: List[Dict[str, Any]]) -> List[PreparedDocument]:
+    return [(str(row["id"]), to_document(row)) for row in rows]
+
+
+def bulk_index(es: Elasticsearch, documents: List[PreparedDocument], target_index: str) -> None:
     lines: List[str] = []
-    for row in rows:
-        image_id = str(row["id"])
+    for image_id, document in documents:
         lines.append(json.dumps({"index": {"_index": target_index, "_id": image_id}}, ensure_ascii=False))
-        lines.append(json.dumps(to_document(row), ensure_ascii=False, default=json_value))
+        lines.append(json.dumps(document, ensure_ascii=False, default=json_value))
     response = es.ndjson_request("/_bulk", "\n".join(lines) + "\n")
     if not response.get("errors"):
         return
@@ -453,8 +618,114 @@ def bulk_index(es: Elasticsearch, rows: List[Dict[str, Any]], target_index: str)
     raise SystemExit("Elasticsearch bulk index failed:\n{0}".format(json.dumps(failures, ensure_ascii=False, indent=2)))
 
 
-def main() -> int:
-    args = parse_args()
+def scan_snapshot(
+    conn,
+    batch_size: int,
+    limit: int = 0,
+    consumer: Optional[Callable[[List[PreparedDocument]], None]] = None,
+) -> DatasetFingerprint:
+    builder = DatasetFingerprintBuilder()
+    total = 0
+    after_id = 0
+    while True:
+        current_batch_size = batch_size
+        if limit and total + current_batch_size > limit:
+            current_batch_size = limit - total
+        if current_batch_size <= 0:
+            break
+        rows = fetch_batch(conn, after_id, current_batch_size)
+        if not rows:
+            break
+        documents = prepare_documents(rows)
+        for document_id, document in documents:
+            builder.add(document_id, document)
+        if consumer is not None:
+            consumer(documents)
+        total += len(documents)
+        after_id = int(rows[-1]["id"])
+        print("Read {0} documents, last image id {1}".format(total, after_id))
+        if limit and total >= limit:
+            break
+    return builder.finish()
+
+
+def verify_fingerprint(label: str, expected: DatasetFingerprint, actual: DatasetFingerprint) -> None:
+    differences = []
+    if actual.document_count != expected.document_count:
+        differences.append("count {0} != {1}".format(actual.document_count, expected.document_count))
+    if actual.collection_fingerprint != expected.collection_fingerprint:
+        differences.append("collection SHA256 differs")
+    if actual.content_fingerprint != expected.content_fingerprint:
+        differences.append("content SHA256 differs")
+    if differences:
+        raise SystemExit("{0} verification failed: {1}".format(label, "; ".join(differences)))
+
+
+def build_certificate(
+    args: argparse.Namespace,
+    target_index: str,
+    source: DatasetFingerprint,
+    candidate: DatasetFingerprint,
+) -> Dict[str, Any]:
+    return {
+        "schema": CERTIFICATE_SCHEMA,
+        "status": CERTIFICATE_STATUS,
+        "published_count": source.document_count,
+        "source_fingerprint": source.content_fingerprint,
+        "collection_fingerprint": source.collection_fingerprint,
+        "candidate_fingerprint": candidate.content_fingerprint,
+        "target_alias": args.es_index,
+        "target_index": target_index,
+        "created_at_utc": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+    }
+
+
+def verify_certificate(
+    es: Elasticsearch,
+    index_or_alias: str,
+    expected_index: str,
+    expected_certificate: Dict[str, Any],
+) -> None:
+    certificates = es.certificates(index_or_alias)
+    if certificates != {expected_index: expected_certificate}:
+        raise SystemExit(
+            "Elasticsearch certificate verification failed for {0}".format(index_or_alias)
+        )
+
+
+def verify_promoted_alias(
+    es: Elasticsearch,
+    alias: str,
+    target_index: str,
+    expected: DatasetFingerprint,
+    certificate: Dict[str, Any],
+    batch_size: int,
+) -> None:
+    indices = es.alias_indices(alias)
+    if indices != [target_index]:
+        raise SystemExit(
+            "Promoted alias verification failed: {0} points to {1}, expected only {2}".format(
+                alias,
+                ",".join(indices) if indices else "nothing",
+                target_index,
+            )
+        )
+    if es.count(alias) != expected.document_count:
+        raise SystemExit("Promoted alias count verification failed")
+    verify_fingerprint("Promoted alias", expected, es.fingerprint(alias, batch_size))
+    verify_certificate(es, alias, target_index, certificate)
+
+
+def run_reindex(args: argparse.Namespace) -> int:
+    if args.limit < 0:
+        raise SystemExit("--limit must not be negative")
+    if args.limit and not args.dry_run:
+        raise SystemExit("--limit is only allowed with --dry-run; a partial candidate can never be promoted")
+    if args.no_recreate and not args.dry_run:
+        raise SystemExit("--no-recreate is disabled for writes; build and promote an isolated candidate index")
+    if not args.dry_run and not args.confirm_promote:
+        raise SystemExit("Promotion is disabled; rerun with --confirm-promote after reviewing the target settings")
+
     batch_size = max(50, args.batch_size)
     limit = max(0, args.limit)
     es = Elasticsearch(args.es_url, args.es_index, args.timeout_seconds)
@@ -462,48 +733,112 @@ def main() -> int:
     print("MySQL: {0}:{1}/{2}".format(args.mysql_host, args.mysql_port, args.mysql_database))
     print("Elasticsearch: {0}/{1}".format(args.es_url.rstrip("/"), args.es_index))
 
-    target_index = args.es_index
+    target_index = "{0}-candidate-{1}".format(
+        args.es_index,
+        datetime.utcnow().strftime("%Y%m%d%H%M%S%f"),
+    )
     if args.dry_run:
         print("Dry run: Elasticsearch writes are disabled.")
-    elif args.no_recreate:
-        es.ensure_index()
     else:
-        target_index = "{0}-v{1}".format(args.es_index, datetime.now().strftime("%Y%m%d%H%M%S"))
-        print("Building versioned Elasticsearch index: {0}".format(target_index))
-        es.create_index(target_index)
+        print("Building candidate Elasticsearch index: {0}".format(target_index))
 
     started_at = time.time()
     total = 0
-    after_id = 0
-    with connect_mysql(args) as conn:
-        while True:
-            current_batch_size = batch_size
-            if limit and total + current_batch_size > limit:
-                current_batch_size = limit - total
-            if current_batch_size <= 0:
-                break
-            rows = fetch_batch(conn, after_id, current_batch_size)
-            if not rows:
-                break
-            if not args.dry_run:
-                bulk_index(es, rows, target_index)
-            total += len(rows)
-            after_id = int(rows[-1]["id"])
-            print("Indexed {0} documents, last image id {1}".format(total, after_id))
-            if limit and total >= limit:
-                break
+    with closing(connect_mysql(args, autocommit=True)) as lock_conn:
+        lock_acquired = False
+        try:
+            acquire_reindex_lock(lock_conn, args.lock_name)
+            lock_acquired = True
+            with consistent_snapshot(args) as snapshot_conn:
+                published_before = count_published(snapshot_conn)
+                if not args.dry_run and published_before <= 0:
+                    raise SystemExit("Refusing to promote an empty search index")
+                if not args.dry_run:
+                    es.create_index(target_index)
+                    source_fingerprint = scan_snapshot(
+                        snapshot_conn,
+                        batch_size,
+                        consumer=lambda documents: bulk_index(es, documents, target_index),
+                    )
+                else:
+                    source_fingerprint = scan_snapshot(snapshot_conn, batch_size, limit=limit)
 
-    if not args.dry_run:
-        es.refresh(target_index)
-        print("ES document count in {0}: {1}".format(target_index, es.count(target_index)))
-        if not args.no_recreate:
-            old_indices = es.swap_alias(args.es_index, target_index, args.replace_conflicting_index)
-            print("Alias {0} now points to {1}".format(args.es_index, target_index))
-            if old_indices:
-                print("Old index versions kept: {0}".format(", ".join(old_indices)))
+            total = source_fingerprint.document_count
+            if (not args.dry_run or not limit) and total != published_before:
+                raise SystemExit(
+                    "Consistent RDS snapshot count mismatch: expected {0}, read {1}; candidate was not promoted".format(
+                        published_before,
+                        total,
+                    )
+                )
+
+            if args.dry_run:
+                print(
+                    "Dry-run fingerprint: count={0}, collection_sha256={1}, content_sha256={2}".format(
+                        source_fingerprint.document_count,
+                        source_fingerprint.collection_fingerprint,
+                        source_fingerprint.content_fingerprint,
+                    )
+                )
+            else:
+                es.refresh(target_index)
+                indexed_count = es.count(target_index)
+                if indexed_count != published_before:
+                    raise SystemExit(
+                        "Candidate Elasticsearch count mismatch: expected {0}, indexed {1}; candidate was not promoted".format(
+                            published_before,
+                            indexed_count,
+                        )
+                    )
+                candidate_fingerprint = es.fingerprint(target_index, batch_size)
+                verify_fingerprint("Candidate Elasticsearch index", source_fingerprint, candidate_fingerprint)
+
+                with consistent_snapshot(args) as verification_conn:
+                    published_after = count_published(verification_conn)
+                    live_fingerprint = scan_snapshot(verification_conn, batch_size)
+                if live_fingerprint.document_count != published_after:
+                    raise SystemExit(
+                        "Live RDS snapshot count mismatch: expected {0}, read {1}; candidate was not promoted".format(
+                            published_after,
+                            live_fingerprint.document_count,
+                        )
+                    )
+                verify_fingerprint("RDS before-promotion snapshot", source_fingerprint, live_fingerprint)
+
+                certificate = build_certificate(args, target_index, source_fingerprint, candidate_fingerprint)
+                es.write_certificate(target_index, certificate)
+                verify_certificate(es, target_index, target_index, certificate)
+                print(
+                    "Pre-promotion gates passed: count={0}, collection_sha256={1}, content_sha256={2}".format(
+                        published_before,
+                        source_fingerprint.collection_fingerprint,
+                        source_fingerprint.content_fingerprint,
+                    )
+                )
+
+                old_indices = es.swap_alias(args.es_index, target_index, args.replace_conflicting_index)
+                verify_promoted_alias(
+                    es,
+                    args.es_index,
+                    target_index,
+                    source_fingerprint,
+                    certificate,
+                    batch_size,
+                )
+                print("Alias {0} now points only to verified index {1}".format(args.es_index, target_index))
+                if old_indices:
+                    print("Old index versions kept: {0}".format(", ".join(old_indices)))
+        finally:
+            if lock_acquired:
+                release_reindex_lock(lock_conn, args.lock_name)
+
     elapsed = time.time() - started_at
     print("Done. Reindexed {0} published images in {1:.1f}s.".format(total, elapsed))
     return 0
+
+
+def main() -> int:
+    return run_reindex(parse_args())
 
 
 if __name__ == "__main__":

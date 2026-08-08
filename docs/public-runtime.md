@@ -19,7 +19,7 @@ APP_WEB_ALLOWED_ORIGIN_PATTERNS=https://www.example.com
 5. 公网业务库使用同 VPC 的 RDS MySQL 内网地址，并只在白名单中放行 ECS 私网 IP；Redis、Kafka、Milvus、MinIO、Elasticsearch 和 Python 内部服务只监听本机或内网，不开放公网端口。
 6. 为推荐模型准备持久化目录，并让训练、索引发布与在线服务共用同一个 `VIBELO_RECOMMENDATION_MODEL_DIR`。
 7. 推荐服务可以延后启用；首次上线保持 `VECTOR_ENABLED=false`、`MODEL_RECALL_ENABLED=false`，先由数据库 fallback 收集真实行为。
-8. 当前 7.1 GiB 首发服务器使用 `infra/docker-compose.public.yml` 启动 Nginx、单前端和单后端，不传任何 Spring profile；Compose 内置 MySQL 仅保留在 `local-database` 备用 profile 中，公网常规启动不启用它。
+8. 当前 7.1 GiB 首发服务器使用 `infra/docker-compose.public.yml` 启动 Nginx、单前端和单后端，不传任何 profile；Compose 内置 MySQL 仅保留在 `local-database` profile，Milvus 仅保留在 `recommendation` profile，首发都不启用。
 9. 对公网只开放 80/443；数据库和模型端口由安全组拒绝公网访问。
 10. 160 GB 数据盘挂载到 `/data` 后，将 Docker `data-root` 迁到 `/data/docker`，并将 Docker 29 的 containerd 数据目录迁到 `/data/containerd`，不要让 MinIO、Elasticsearch 和镜像继续占用 40 GB 系统盘。
 
@@ -45,13 +45,32 @@ $env:APP_AUTH_TOKEN_SECRET="validation-only-token-secret-at-least-32-characters"
 docker compose -f infra/docker-compose.public.yml config --quiet
 ```
 
-决定上线时再执行：
+决定上线时先生成 `.env.public`，但不要立即启动全栈。本机必须先提交全部跟踪变更，并确认 `backend/`、`frontend/` 没有未跟踪构建输入，再以完整 40 位 Git SHA 和 `--pull=false --platform linux/amd64` 构建两个带 `org.opencontainers.image.revision` 标签的 commit 镜像；随后运行 `Export-PublicImageBundle.ps1`。固定 PyMySQL wheel 单独准备、单独上传。ECS 用 `import-public-image-bundle.sh` 验收归档，并在 `.env.public` 中固定：
 
-```powershell
-Copy-Item .env.public.example .env.public
-# 编辑 .env.public，替换全部 replace_me
-docker compose --env-file .env.public -f infra/docker-compose.public.yml up -d --build
+```text
+VIBELO_BACKEND_IMAGE=vibelo-public-backend:<完整的 40 位 Git SHA>
+VIBELO_FRONTEND_IMAGE=vibelo-public-frontend:<完整的 40 位 Git SHA>
 ```
+
+ECS 不运行 `docker build`、`up --build`、在线 `pip install` 或镜像拉取。导入镜像并离线安装 PyMySQL 后，严格按下列顺序发布；每条 `up` 都禁止构建和拉取，并显式指定服务：
+
+```bash
+sudo bash ops/migration/minio/start-minio-target.sh --verify-existing
+
+docker compose --env-file .env.public -f infra/docker-compose.public.yml \
+  up -d --wait --no-build --pull never elasticsearch
+
+# 此处必须完成 tools/reindex_search_es.py 的认证与 alias 原子发布，且退出码为 0。
+
+docker compose --env-file .env.public -f infra/docker-compose.public.yml \
+  up -d --wait --no-build --pull never redis zookeeper kafka
+docker compose --env-file .env.public -f infra/docker-compose.public.yml \
+  up -d --wait --no-build --pull never --no-deps backend frontend
+docker compose --env-file .env.public -f infra/docker-compose.public.yml \
+  up -d --wait --no-build --pull never --no-deps gateway
+```
+
+完整构建、上传、镜像导入、搜索命令与更新/回滚流程见[公网部署与 Nginx 网关第 9、12 节](./公网部署与Nginx网关.md#9-首次构建与发布)。不要启用 `local-database`/`recommendation` profile，也不要执行 `docker compose down -v`。
 
 数据盘初始化、Docker 数据目录迁移、RDS 内网配置和 OSS/CDN 采购顺序见 [公网部署与 Nginx 网关](./公网部署与Nginx网关.md)。
 

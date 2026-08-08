@@ -7,7 +7,6 @@ import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.util.CollectionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -48,9 +47,7 @@ public class SearchIndexService {
             fixedDelayString = "${app.search.index-retry-delay-ms:30000}"
     )
     public void retryIndexPreparation() {
-        if (!indexReady.get()) {
-            prepareIndex(false);
-        }
+        prepareIndex(false);
     }
 
     /**
@@ -61,34 +58,40 @@ public class SearchIndexService {
     public void indexImage(Long imageId) {
         if (imageId == null) return;
         List<ImageSearchDocumentEntity> documents = imageContentMapper.findSearchDocumentsByIds(List.of(imageId));
-        searchClient.bulkIndex(documents);
+        try {
+            searchClient.bulkIndex(documents);
+        } catch (RuntimeException exception) {
+            indexReady.set(false);
+            throw exception;
+        }
     }
 
     /**
-     * Rebuilds all published image documents into Elasticsearch.
-     *
-     * @return indexed document count
+     * Returns whether Elasticsearch contains the complete published dataset.
      */
-    public long reindexAllPublished() {
-        searchClient.recreateIndex();
-        long count = 0;
-        long afterId = 0;
-        int batchSize = Math.max(50, properties.getReindexBatchSize());
-        while (true) {
-            List<ImageSearchDocumentEntity> documents = imageContentMapper.pageSearchDocuments(afterId, batchSize);
-            if (CollectionUtils.isEmpty(documents)) break;
-            searchClient.bulkIndex(documents);
-            count += documents.size();
-            afterId = documents.get(documents.size() - 1).getId();
-        }
-        return count;
+    public boolean isIndexReady() {
+        return indexReady.get();
     }
 
     private void prepareIndex(boolean failFast) {
         try {
             searchClient.ensureIndex();
-            if (indexReady.compareAndSet(false, true)) {
-                log.info("Elasticsearch image index is ready");
+            long publishedCount = imageContentMapper.countPublished();
+            long indexedCount = searchClient.countDocuments(properties.getIndexName());
+            ElasticsearchSearchClient.ReindexCertificate certificate = searchClient
+                    .readVerifiedReindexCertificate(properties.getIndexName())
+                    .orElse(null);
+            boolean ready = certificate != null
+                    && publishedCount > 0
+                    && publishedCount == indexedCount
+                    && publishedCount == certificate.publishedCount();
+            boolean wasReady = indexReady.getAndSet(ready);
+            if (ready && !wasReady) {
+                log.info("Elasticsearch image index is ready: {} documents", indexedCount);
+            } else if (!ready) {
+                log.warn("Elasticsearch image index is not ready: RDS published={}, Elasticsearch={}, certified={}; " +
+                                "search will use the MySQL fallback until the operator reindex job succeeds",
+                        publishedCount, indexedCount, certificate == null ? "none" : certificate.publishedCount());
             }
         } catch (RuntimeException exception) {
             indexReady.set(false);

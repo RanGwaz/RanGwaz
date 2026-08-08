@@ -12,6 +12,11 @@ RUN npm run build
 
 FROM nginx:1.27-alpine
 
+ARG VIBELO_GIT_REVISION=unknown
+LABEL org.opencontainers.image.source="https://github.com/RanGwaz/RanGwaz" \
+      org.opencontainers.image.revision="${VIBELO_GIT_REVISION}" \
+      org.opencontainers.image.title="Vibelo frontend"
+
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /workspace/dist /usr/share/nginx/html
 

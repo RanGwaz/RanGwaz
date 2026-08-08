@@ -332,6 +332,24 @@ if ((ENV_AVAILABLE == 1)); then
     fi
   fi
 
+  RELEASE_BACKEND_SHA=''
+  RELEASE_FRONTEND_SHA=''
+  if get_env_plain VIBELO_BACKEND_IMAGE &&
+    [[ $ENV_PLAIN =~ ^[^[:space:]@]+:([0-9a-f]{40})$ ]]; then
+    RELEASE_BACKEND_SHA=${BASH_REMATCH[1]}
+  fi
+  if get_env_plain VIBELO_FRONTEND_IMAGE &&
+    [[ $ENV_PLAIN =~ ^[^[:space:]@]+:([0-9a-f]{40})$ ]]; then
+    RELEASE_FRONTEND_SHA=${BASH_REMATCH[1]}
+  fi
+  if [[ -n $RELEASE_BACKEND_SHA &&
+    $RELEASE_BACKEND_SHA == "$RELEASE_FRONTEND_SHA" ]]; then
+    pass '前后端镜像使用同一个完整 Git SHA 发布标签'
+  else
+    warn '前后端镜像尚未配置为同一个完整 Git SHA；导入离线发布包后再设置'
+  fi
+  unset RELEASE_BACKEND_SHA RELEASE_FRONTEND_SHA
+
   check_required_env SPRING_DATASOURCE_URL 'Spring RDS JDBC 地址'
   if get_env_plain SPRING_DATASOURCE_URL &&
     ! is_placeholder "$ENV_PLAIN"; then

@@ -66,6 +66,10 @@ management:
       exposure:
         include: health,info,metrics
 app:
+  data-initializer:
+    enabled: ${APP_DATA_INITIALIZER_ENABLED:false}
+    username: ${APP_DATA_INITIALIZER_USERNAME:}
+    password: ${APP_DATA_INITIALIZER_PASSWORD:}
   features:
     publishing-enabled: ${APP_FEATURE_PUBLISHING_ENABLED:false}
     media-upload-enabled: ${APP_FEATURE_MEDIA_UPLOAD_ENABLED:false}

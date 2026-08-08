@@ -7,6 +7,8 @@ x-default-logging: &default-logging
     max-file: "3"
 
 x-backend-common: &backend-common
+  image: ${VIBELO_BACKEND_IMAGE:-vibelo-public-backend:latest}
+  pull_policy: never
   build:
     context: ../backend
   restart: unless-stopped
@@ -29,6 +31,7 @@ x-backend-common: &backend-common
     MINIO_BUCKET: ${MINIO_BUCKET:-rangwaz-media}
     APP_STORAGE_MINIO_OBJECT_URL_PREFIX: /api/media/object
     ELASTICSEARCH_URL: http://elasticsearch:9200
+    APP_DATA_INITIALIZER_ENABLED: "false"
     APP_WEB_ALLOWED_ORIGIN_PATTERNS: ${APP_WEB_ALLOWED_ORIGIN_PATTERNS:-http://localhost}
     APP_AUTH_TOKEN_SECRET: ${APP_AUTH_TOKEN_SECRET:?set APP_AUTH_TOKEN_SECRET in .env.public}
     APP_AUTH_TOKEN_TTL_SECONDS: ${APP_AUTH_TOKEN_TTL_SECONDS:-86400}
@@ -66,6 +69,7 @@ x-backend-common: &backend-common
 services:
   gateway:
     image: nginx:1.27-alpine
+    pull_policy: never
     restart: unless-stopped
     init: true
     mem_limit: 96m
@@ -88,6 +92,8 @@ services:
       retries: 3
 
   frontend:
+    image: ${VIBELO_FRONTEND_IMAGE:-vibelo-public-frontend:latest}
+    pull_policy: never
     build:
       context: ../frontend
       args:
@@ -105,6 +111,7 @@ services:
 
   mysql:
     image: mysql:8.4
+    pull_policy: never
     profiles: ["local-database"]
     restart: unless-stopped
     mem_limit: 768m
@@ -136,6 +143,7 @@ services:
 
   redis:
     image: redis:7.4-alpine
+    pull_policy: never
     restart: unless-stopped
     mem_limit: 192m
     mem_reservation: 64m
@@ -155,6 +163,7 @@ services:
 
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.14.3
+    pull_policy: never
     restart: unless-stopped
     mem_limit: 1536m
     memswap_limit: 1536m
@@ -179,6 +188,7 @@ services:
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.1
+    pull_policy: never
     restart: unless-stopped
     mem_limit: 384m
     mem_reservation: 192m
@@ -199,6 +209,7 @@ services:
 
   kafka:
     image: confluentinc/cp-kafka:7.6.1
+    pull_policy: never
     restart: unless-stopped
     mem_limit: 896m
     mem_reservation: 512m
@@ -233,6 +244,7 @@ services:
 
   minio:
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    pull_policy: never
     restart: unless-stopped
     mem_limit: 1024m
     mem_reservation: 512m
@@ -256,6 +268,7 @@ services:
 
   milvus-etcd:
     image: quay.io/coreos/etcd:v3.5.18
+    pull_policy: never
     profiles: ["recommendation"]
     restart: unless-stopped
     mem_limit: 384m
@@ -284,6 +297,7 @@ services:
 
   milvus-minio:
     image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    pull_policy: never
     profiles: ["recommendation"]
     restart: unless-stopped
     mem_limit: 384m
@@ -304,6 +318,7 @@ services:
 
   milvus-standalone:
     image: milvusdb/milvus:v2.5.4
+    pull_policy: never
     profiles: ["recommendation"]
     restart: unless-stopped
     mem_limit: 1536m

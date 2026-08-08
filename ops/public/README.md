@@ -1,11 +1,13 @@
 # ECS 公网上线前置脚本
 
-本目录只负责两件事：
+本目录提供四类公网发布门禁：
 
 1. 安全生成或更新仓库根目录的 `.env.public`；
 2. 在 Ubuntu ECS 上做只读上线预检。
+3. 在干净的完整 Git SHA 上导出、导入并验收固定的 `linux/amd64` 公网镜像 release；
+4. 下载、校验并在 ECS 离线安装搜索重建所需的固定 PyMySQL wheel。
 
-两个脚本都不会构建镜像，也不会启动、停止或修改任何容器。
+配置与预检脚本不会构建镜像，也不会启动、停止或修改任何容器。镜像导出/导入脚本只处理已经构建好的镜像及归档，不联网拉取，也不启动服务；依赖安装脚本只使用指定 wheel，不访问 PyPI。服务启动必须按部署手册的显式顺序另行执行。
 
 ## 先准备 RDS 应用账号
 
@@ -108,6 +110,85 @@ Compose 检查只解析配置，输出会被隐藏以免泄露秘密；它不会
 ```bash
 bash ops/public/test-public-common.sh
 ```
+
+## 3. 导出并导入离线公网镜像 release
+
+先在联网 Windows 主机完成测试并提交所有发布内容。全部跟踪文件必须无改动，`backend/`、`frontend/` 不能有未跟踪构建输入；不参与镜像构建的个人未跟踪文档可以保留。`$release` 必须是当前 HEAD 的完整 40 位 SHA；所需基础镜像和固定中间件镜像也必须已经存在于本机：
+
+```powershell
+cd G:\你的路径\RanGwaz
+$release = (git rev-parse HEAD).Trim().ToLowerInvariant()
+if ($LASTEXITCODE -ne 0 -or $release -notmatch '^[0-9a-f]{40}$') {
+  throw '无法读取完整 Git SHA'
+}
+$trackedDirty = @(git status --porcelain=v1 --untracked-files=no)
+$untrackedBuildInputs = @(git ls-files --others --exclude-standard -- backend frontend)
+if ($LASTEXITCODE -ne 0 -or $trackedDirty.Count -ne 0 -or $untrackedBuildInputs.Count -ne 0) {
+  throw '已跟踪文件或前后端构建输入不干净，请先提交相关变更'
+}
+
+docker build --pull=false --platform linux/amd64 `
+  --build-arg "VIBELO_GIT_REVISION=$release" `
+  --tag "vibelo-public-backend:$release" `
+  .\backend
+
+docker build --pull=false --platform linux/amd64 `
+  --build-arg "VIBELO_GIT_REVISION=$release" `
+  --build-arg 'VITE_API_BASE=/api' `
+  --build-arg 'VITE_MEDIA_UPLOAD_ENABLED=false' `
+  --tag "vibelo-public-frontend:$release" `
+  .\frontend
+
+$bundleDir = Join-Path $env:TEMP "vibelo-public-$release"
+if (Test-Path -LiteralPath $bundleDir) {
+  throw "导出目录必须不存在或为空：$bundleDir"
+}
+.\ops\public\Export-PublicImageBundle.ps1 `
+  -Release $release `
+  -TargetDirectory $bundleDir
+```
+
+导出器会拒绝脏工作树、短 SHA、错误 commit tag、错误 revision label 和非 `linux/amd64` 镜像，并固定导出八个镜像。把导出目录中的三个文件原样上传到 ECS 的独立目录 `/data/releases/<完整 SHA>/`；该目录不能混入 wheel 或其他文件。然后在与该 SHA 完全一致且干净的 ECS 仓库中验收导入：
+
+```bash
+cd /opt/vibelo
+RELEASE='<完整的 40 位 Git SHA>'
+test "$(git rev-parse HEAD)" = "$RELEASE"
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+bash ops/public/import-public-image-bundle.sh \
+  --release "$RELEASE" \
+  --target-directory "/data/releases/$RELEASE"
+```
+
+导入器会校验目录内容、SHA256、八个固定引用、镜像 ID、平台和应用镜像 revision label。把其输出的两行值写入 `.env.public`，每个键只保留一条，并恢复权限 `600`：
+
+```text
+VIBELO_BACKEND_IMAGE=vibelo-public-backend:<完整的 40 位 Git SHA>
+VIBELO_FRONTEND_IMAGE=vibelo-public-frontend:<完整的 40 位 Git SHA>
+```
+
+不要使用 `latest`、短 SHA、ECS 上的 `docker build`、公网 Compose 的 `up --build` 或任何镜像拉取。上传、首次启动和更新的完整顺序见部署手册第 9、12 节。
+
+## 4. 离线准备搜索重建依赖
+
+ECS 不直接访问 PyPI。先在联网的 Windows 主机运行：
+
+```powershell
+$wheelDir = Join-Path $env:TEMP 'vibelo-search-reindex'
+.\ops\public\Prepare-SearchReindexDependencies.ps1 -OutputDirectory $wheelDir
+```
+
+脚本只下载固定的 `pymysql-1.1.2-py3-none-any.whl`，并校验固定尺寸和 SHA256。把该文件上传到 ECS 的 `/data/migration/search-reindex/` 后执行：
+
+```bash
+cd /opt/vibelo
+bash ops/public/install-search-reindex-dependencies.sh \
+  --wheel /data/migration/search-reindex/pymysql-1.1.2-py3-none-any.whl \
+  --venv /opt/vibelo/.venv-ops
+```
+
+安装器强制 `--no-index --no-deps`，不会访问包索引或升级 pip；既有 venv 只有在包版本和 wheel SHA256 凭据均匹配时才会复用。搜索索引的首次启动顺序、维护窗口和证书门禁见 [`docs/公网部署与Nginx网关.md`](../../docs/公网部署与Nginx网关.md#9-首次构建与发布)。
 
 ## 安全边界
 

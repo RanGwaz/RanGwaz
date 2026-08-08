@@ -23,6 +23,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Elasticsearch-backed search API used as the primary search path.
@@ -54,12 +55,58 @@ public class ElasticsearchSearchClient {
     }
 
     /**
-     * Recreates the image index for a clean full reindex.
+     * Counts documents in an index or alias.
+     *
+     * @param indexName concrete index or alias
+     * @return document count
      */
-    public void recreateIndex() {
-        String physicalName = versionedIndexName();
-        requestJson("PUT", "/" + physicalName, indexDefinition());
-        swapAlias(physicalName);
+    public long countDocuments(String indexName) {
+        if (!StringUtils.hasText(indexName)) {
+            throw new IllegalArgumentException("indexName must not be blank");
+        }
+        JsonNode response = requestJson("GET", "/" + indexName + "/_count", null);
+        return response.path("count").asLong(0L);
+    }
+
+    /**
+     * Reads the operator-issued certificate from the only concrete index behind an alias.
+     * Uncertified, malformed, empty, or multi-index mappings are rejected.
+     *
+     * @param indexName index alias
+     * @return verified certificate when the mapping satisfies the certificate contract
+     */
+    public Optional<ReindexCertificate> readVerifiedReindexCertificate(String indexName) {
+        if (!StringUtils.hasText(indexName)) {
+            throw new IllegalArgumentException("indexName must not be blank");
+        }
+        JsonNode response = requestJson("GET", "/" + indexName + "/_mapping", null);
+        if (!response.isObject() || response.size() != 1) return Optional.empty();
+
+        Map.Entry<String, JsonNode> mapping = response.fields().next();
+        JsonNode certificate = mapping.getValue()
+                .path("mappings")
+                .path("_meta")
+                .path("vibelo_reindex_certificate");
+        JsonNode publishedCount = certificate.path("published_count");
+        if (!"v1".equals(certificate.path("schema").asText())
+                || !"verified".equals(certificate.path("status").asText())
+                || !indexName.equals(certificate.path("target_alias").asText())
+                || !mapping.getKey().equals(certificate.path("target_index").asText())
+                || !publishedCount.isIntegralNumber()
+                || !publishedCount.canConvertToLong()
+                || publishedCount.asLong() <= 0) {
+            return Optional.empty();
+        }
+        return Optional.of(new ReindexCertificate(mapping.getKey(), publishedCount.asLong()));
+    }
+
+    /**
+     * A verified reindex certificate attached to one concrete Elasticsearch index.
+     *
+     * @param concreteIndex physical index name
+     * @param publishedCount exact published document count certified by the reindexer
+     */
+    public record ReindexCertificate(String concreteIndex, long publishedCount) {
     }
 
     /**

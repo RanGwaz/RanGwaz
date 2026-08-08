@@ -1,0 +1,4 @@
+# Fixed, hash-locked dependency for tools/reindex_search_es.py.
+# PyMySQL 1.2.0 requires Python >=3.9; 1.1.2 intentionally keeps Python 3.8 support.
+PyMySQL==1.1.2 \
+    --hash=sha256:e6b1d89711dd51f8f74b1631fe08f039e7d76cf67a42a323d3178f0f25762ed9

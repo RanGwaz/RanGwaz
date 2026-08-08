@@ -18,6 +18,7 @@ __pycache__/
 *.pyc
 backend/storage/
 tools/.venv/
+.venv-ops/
 tools/.pip-cache/
 tools/.tmp/
 tools/models/*
