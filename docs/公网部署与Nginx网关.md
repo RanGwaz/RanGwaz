@@ -63,8 +63,11 @@ docker compose --env-file .env.public -f infra/docker-compose.public.yml \
 | `/media/object/**` | 后端池 | 兼容数据库里的旧媒体 URL |
 | `/uploads/**` | 后端池 | 兼容历史本地上传 URL |
 | `/gateway/health` | Gateway | 网关健康检查 |
+| `/api/actuator/health` | Backend | 唯一公开的 Spring Boot 管理端点 |
 
 MySQL、Redis、Kafka、MinIO、Elasticsearch 和 Milvus 不绑定公网地址；需要宿主机工具访问的端口只绑定 `127.0.0.1`。安全组只允许 80/443，数据库端口全部拒绝公网。
+
+`info`、`metrics` 等其他 Actuator 端点不在后端暴露，并由 Nginx 再次阻断。API 与短信限流统一返回 JSON `429 RATE_LIMITED`，前端不会再收到 Nginx 默认 HTML/503 错误页。
 
 ## 4. 当前首发开关
 

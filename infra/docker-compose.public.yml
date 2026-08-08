@@ -53,7 +53,7 @@ x-backend-common: &backend-common
     MODEL_SERVICE_URL: ${MODEL_SERVICE_URL:-http://host.docker.internal:8092}
     SPRINGDOC_API_DOCS_ENABLED: "false"
     SPRINGDOC_SWAGGER_UI_ENABLED: "false"
-    MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info,metrics
+    MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health
   extra_hosts:
     - "host.docker.internal:host-gateway"
   depends_on:
