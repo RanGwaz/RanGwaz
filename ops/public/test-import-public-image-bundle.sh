@@ -133,7 +133,7 @@ invoke_importer_fixture() {
   export VIBELO_TEST_MANIFEST_PATH=$target/vibelo-public-$RELEASE-images.tsv
   set +e
   IMPORT_OUTPUT=$(
-    "$IMPORTER" \
+    "$BASH" "$IMPORTER" \
       --release "$RELEASE" \
       --target-directory "$target" \
       --docker-command "$FAKE_DOCKER" 2>&1
