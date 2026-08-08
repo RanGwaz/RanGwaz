@@ -87,7 +87,9 @@ minio_mc ls "source/$BUCKET" >/dev/null ||
 
 if ! minio_mc ls "target/$BUCKET" >/dev/null 2>&1; then
   minio_note "目标 bucket 尚不存在。"
-  IFS= read -r -p "输入 CREATE $BUCKET 以创建空目标 bucket：" create_confirmation </dev/tty
+  create_confirmation=$(
+    minio_read_confirmation "输入 CREATE $BUCKET 以创建空目标 bucket："
+  )
   [[ $create_confirmation == "CREATE $BUCKET" ]] ||
     minio_die "未确认创建目标 bucket"
   minio_mc mb "target/$BUCKET"
@@ -108,7 +110,9 @@ cat >&2 <<EOF
 4. 中断后可重新运行本脚本。
 EOF
 
-IFS= read -r -p "输入 MIRROR $BUCKET 开始流式迁移：" mirror_confirmation </dev/tty
+mirror_confirmation=$(
+  minio_read_confirmation "输入 MIRROR $BUCKET 开始流式迁移："
+)
 [[ $mirror_confirmation == "MIRROR $BUCKET" ]] ||
   minio_die "未确认迁移"
 

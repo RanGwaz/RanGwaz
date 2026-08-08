@@ -132,6 +132,26 @@ minio_configure_alias() {
     minio_die "$label 凭据校验或 alias 配置失败"
 }
 
+minio_read_confirmation() {
+  local prompt=$1
+  local confirmation
+
+  case ${VIBELO_MINIO_CONFIRMATION_INPUT:-tty} in
+    tty)
+      IFS= read -r -p "$prompt" confirmation </dev/tty ||
+        minio_die '无法从终端读取确认词'
+      ;;
+    stdin)
+      IFS= read -r confirmation || minio_die '无法从标准输入读取确认词'
+      ;;
+    *)
+      minio_die 'VIBELO_MINIO_CONFIRMATION_INPUT 只能是 tty 或 stdin'
+      ;;
+  esac
+
+  printf '%s' "$confirmation"
+}
+
 minio_create_audit_dir() {
   local requested_dir=$1
 

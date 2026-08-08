@@ -74,6 +74,30 @@ if printf '%s\n' 'unused-access' 'unused-secret' |
   fail 'MinIO credential input mode must fail closed on an unknown value'
 fi
 
+stdin_confirmation_result=$(
+  printf '%s\n' 'MIRROR rangwaz-media' |
+    VIBELO_MINIO_CONFIRMATION_INPUT=stdin \
+    COMMON_SCRIPT="$COMMON_SCRIPT" \
+    "$BASH" -c '
+      set -Eeuo pipefail
+      source "$COMMON_SCRIPT"
+      minio_read_confirmation "Confirm: "
+    '
+)
+[[ $stdin_confirmation_result == 'MIRROR rangwaz-media' ]] ||
+  fail 'MinIO stdin confirmation mode did not consume exactly one value'
+
+if printf '%s\n' 'unused-confirmation' |
+  VIBELO_MINIO_CONFIRMATION_INPUT=invalid \
+  COMMON_SCRIPT="$COMMON_SCRIPT" \
+  "$BASH" -c '
+    set -Eeuo pipefail
+    source "$COMMON_SCRIPT"
+    minio_read_confirmation "Confirm: "
+  ' >/dev/null 2>&1; then
+  fail 'MinIO confirmation input mode must fail closed on an unknown value'
+fi
+
 assert_file_contains "$TUNNEL_SCRIPT" \
   '"-o", "BatchMode=yes"' '指定 SSH 私钥时缺少批处理失败即退门禁'
 assert_file_contains "$TUNNEL_SCRIPT" \
