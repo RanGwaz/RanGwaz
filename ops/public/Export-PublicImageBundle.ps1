@@ -141,10 +141,18 @@ foreach ($imageRef in $imageRefs) {
         throw "Image is not linux/amd64: $imageRef ($os/$arch)"
     }
     if ($imageRef -eq $BackendImage -or $imageRef -eq $FrontendImage) {
-        $revisionOutput = @(& $DockerExecutable image inspect --platform linux/amd64 `
-            --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' $imageRef)
-        if ($LASTEXITCODE -ne 0 -or $revisionOutput.Count -ne 1 -or
-            $revisionOutput[0].Trim() -cne $Release) {
+        $labelsOutput = @(& $DockerExecutable image inspect --platform linux/amd64 `
+            --format '{{json .Config.Labels}}' $imageRef)
+        if ($LASTEXITCODE -ne 0 -or $labelsOutput.Count -ne 1) {
+            throw "Release image revision label does not exactly match Git HEAD: $imageRef"
+        }
+        try {
+            $labels = $labelsOutput[0] | ConvertFrom-Json
+            $revision = [string]$labels.'org.opencontainers.image.revision'
+        } catch {
+            throw "Release image labels are not valid JSON: $imageRef"
+        }
+        if ($revision -cne $Release) {
             throw "Release image revision label does not exactly match Git HEAD: $imageRef"
         }
     }

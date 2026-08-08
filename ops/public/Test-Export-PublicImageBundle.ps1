@@ -70,12 +70,13 @@ if ($args.Count -ge 3 -and $args[0] -eq 'image' -and $args[1] -eq 'inspect') {
     $ref = $args[$args.Count - 1]
     $formatIndex = [Array]::IndexOf($args, '--format')
     if ($formatIndex -ge 0 -and $formatIndex + 1 -lt $args.Count -and
-        $args[$formatIndex + 1] -like '*org.opencontainers.image.revision*') {
+        $args[$formatIndex + 1] -eq '{{json .Config.Labels}}') {
         if ($ref -eq $env:VIBELO_TEST_WRONG_REVISION_IMAGE) {
-            Write-Output 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+            $revision = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
         } else {
-            Write-Output $env:VIBELO_TEST_GIT_HEAD
+            $revision = $env:VIBELO_TEST_GIT_HEAD
         }
+        Write-Output (ConvertTo-Json @{ 'org.opencontainers.image.revision' = $revision } -Compress)
         exit 0
     }
     if ($ref -eq $env:VIBELO_TEST_MISSING_IMAGE) {
