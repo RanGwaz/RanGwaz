@@ -39,6 +39,41 @@ if grep -F -- 'Access Key（不回显到日志）' "$COMMON_SCRIPT" >/dev/null; 
   fail 'MinIO Access Key 仍使用会回显的旧提示或读取方式'
 fi
 
+stdin_credential_result=$(
+  printf '%s\n' 'stdin-access' 'stdin-secret' |
+    VIBELO_MINIO_CREDENTIAL_INPUT=stdin \
+    COMMON_SCRIPT="$COMMON_SCRIPT" \
+    TEST_CONFIG_DIR="$TEMP_ROOT/stdin-mc-config" \
+    "$BASH" -c '
+      set -Eeuo pipefail
+      source "$COMMON_SCRIPT"
+      MC_CONFIG_DIR=$TEST_CONFIG_DIR
+      mkdir -p "$MC_CONFIG_DIR"
+      minio_mc() {
+        [[ $# == 8 ]]
+        [[ $1 == alias && $2 == set && $3 == source ]]
+        [[ $4 == http://127.0.0.1:19090 ]]
+        [[ $5 == stdin-access && $6 == stdin-secret ]]
+        [[ $7 == --api && $8 == S3v4 ]]
+      }
+      minio_configure_alias source http://127.0.0.1:19090 Source
+      printf "%s\n" STDIN_CREDENTIALS_OK
+    '
+)
+[[ $stdin_credential_result == STDIN_CREDENTIALS_OK ]] ||
+  fail 'MinIO stdin credential mode did not consume exactly two hidden values'
+
+if printf '%s\n' 'unused-access' 'unused-secret' |
+  VIBELO_MINIO_CREDENTIAL_INPUT=invalid \
+  COMMON_SCRIPT="$COMMON_SCRIPT" \
+  "$BASH" -c '
+    set -Eeuo pipefail
+    source "$COMMON_SCRIPT"
+    minio_configure_alias source http://127.0.0.1:19090 Source
+  ' >/dev/null 2>&1; then
+  fail 'MinIO credential input mode must fail closed on an unknown value'
+fi
+
 assert_file_contains "$TUNNEL_SCRIPT" \
   '"-o", "BatchMode=yes"' '指定 SSH 私钥时缺少批处理失败即退门禁'
 assert_file_contains "$TUNNEL_SCRIPT" \

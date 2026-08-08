@@ -228,16 +228,49 @@ with tarfile.open(bundle, "r:*") as archive:
     if index_payload is not None:
         if not isinstance(index_payload, dict) or not isinstance(index_payload.get("manifests"), list):
             raise SystemExit("bundle index.json is invalid")
+        attestation_descriptors = []
         for descriptor in index_payload["manifests"]:
             if not isinstance(descriptor, dict):
                 raise SystemExit("bundle index descriptor must be an object")
-            platform = descriptor.get("platform")
-            if not isinstance(platform, dict) or platform.get("os") != "linux" or platform.get("architecture") != "amd64":
-                raise SystemExit("bundle index contains a non-linux-amd64 image")
             digest = descriptor.get("digest")
             size = descriptor.get("size")
             if not isinstance(size, int) or isinstance(size, bool) or size < 0:
                 raise SystemExit("bundle platform manifest size is invalid")
+            annotations = descriptor.get("annotations")
+            if "platform" not in descriptor:
+                if (
+                    descriptor.get("mediaType") != "application/vnd.oci.image.manifest.v1+json"
+                    or not isinstance(annotations, dict)
+                    or set(annotations) != {"io.containerd.manifest.subject"}
+                    or not isinstance(annotations.get("io.containerd.manifest.subject"), str)
+                ):
+                    raise SystemExit("bundle index descriptor platform is invalid")
+                attestation_descriptors.append(
+                    ("containerd", digest, size, annotations["io.containerd.manifest.subject"])
+                )
+                continue
+            platform = descriptor.get("platform")
+            if not isinstance(platform, dict):
+                raise SystemExit("bundle index descriptor platform is invalid")
+            if platform.get("os") == "unknown" and platform.get("architecture") == "unknown":
+                if (
+                    descriptor.get("mediaType") != "application/vnd.oci.image.manifest.v1+json"
+                    or not isinstance(annotations, dict)
+                    or annotations.get("vnd.docker.reference.type") != "attestation-manifest"
+                    or not isinstance(annotations.get("vnd.docker.reference.digest"), str)
+                ):
+                    raise SystemExit("bundle index contains an unsupported non-runnable descriptor")
+                attestation_descriptors.append(
+                    ("docker", digest, size, annotations["vnd.docker.reference.digest"])
+                )
+                continue
+            if platform.get("os") != "linux" or platform.get("architecture") != "amd64":
+                raise SystemExit("bundle index contains a non-linux-amd64 image")
+            if descriptor.get("mediaType") not in {
+                "application/vnd.docker.distribution.manifest.v2+json",
+                "application/vnd.oci.image.manifest.v1+json",
+            }:
+                raise SystemExit("bundle runnable manifest media type is invalid")
             blob = read_digest_blob(archive, digest, "platform manifest blob", size)
             try:
                 platform_manifest = json.loads(blob)
@@ -251,6 +284,129 @@ with tarfile.open(bundle, "r:*") as archive:
             read_digest_blob(archive, config_digest, "platform config blob", config_size)
             oci_descriptors_by_config.setdefault(config_digest, set()).add(digest)
             all_oci_descriptor_ids.add(digest)
+
+        for attestation_kind, digest, size, target_digest in attestation_descriptors:
+            if target_digest not in all_oci_descriptor_ids:
+                raise SystemExit("bundle attestation does not reference a runnable image manifest")
+            blob = read_digest_blob(archive, digest, "attestation manifest blob", size)
+            try:
+                attestation_manifest = json.loads(blob)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise SystemExit("bundle attestation manifest is not valid JSON") from exc
+            if (
+                not isinstance(attestation_manifest, dict)
+                or attestation_manifest.get("schemaVersion") != 2
+                or attestation_manifest.get("mediaType") != "application/vnd.oci.image.manifest.v1+json"
+            ):
+                raise SystemExit("bundle attestation manifest is invalid")
+            artifact_type = attestation_manifest.get("artifactType")
+            if (
+                artifact_type is not None
+                and artifact_type != "application/vnd.docker.attestation.manifest.v1+json"
+            ):
+                raise SystemExit("bundle attestation artifact type is invalid")
+            subject = attestation_manifest.get("subject")
+            if attestation_kind == "containerd":
+                if artifact_type is not None or subject is not None:
+                    raise SystemExit("bundle containerd attestation payload shape is invalid")
+            else:
+                if artifact_type is not None and not isinstance(subject, dict):
+                    raise SystemExit("bundle OCI attestation subject is missing")
+                if subject is not None:
+                    if not isinstance(subject, dict) or subject.get("digest") != target_digest:
+                        raise SystemExit("bundle attestation subject does not match its runnable image")
+            config_descriptor = attestation_manifest.get("config")
+            config_digest = config_descriptor.get("digest") if isinstance(config_descriptor, dict) else None
+            config_size = config_descriptor.get("size") if isinstance(config_descriptor, dict) else None
+            if not isinstance(config_size, int) or isinstance(config_size, bool) or config_size < 0:
+                raise SystemExit("bundle attestation config size is invalid")
+            config_blob = read_digest_blob(
+                archive, config_digest, "attestation config blob", config_size
+            )
+            containerd_diff_ids = None
+            if attestation_kind == "containerd":
+                if config_descriptor.get("mediaType") != "application/vnd.oci.image.config.v1+json":
+                    raise SystemExit("bundle containerd attestation config media type is invalid")
+                try:
+                    config_payload = json.loads(config_blob)
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise SystemExit("bundle containerd attestation config is not valid JSON") from exc
+                rootfs = config_payload.get("rootfs") if isinstance(config_payload, dict) else None
+                containerd_diff_ids = rootfs.get("diff_ids") if isinstance(rootfs, dict) else None
+                if (
+                    not isinstance(config_payload, dict)
+                    or set(config_payload) != {"architecture", "config", "os", "rootfs"}
+                    or config_payload.get("architecture") != "unknown"
+                    or config_payload.get("os") != "unknown"
+                    or config_payload.get("config") != {}
+                    or not isinstance(rootfs, dict)
+                    or set(rootfs) != {"diff_ids", "type"}
+                    or rootfs.get("type") != "layers"
+                    or not isinstance(containerd_diff_ids, list)
+                    or not all(
+                        isinstance(item, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", item)
+                        for item in containerd_diff_ids
+                    )
+                ):
+                    raise SystemExit("bundle containerd attestation config shape is invalid")
+            layers = attestation_manifest.get("layers")
+            if not isinstance(layers, list) or not layers:
+                raise SystemExit("bundle attestation layers are invalid")
+            target_hex = target_digest.removeprefix("sha256:")
+            layer_digests = []
+            for layer in layers:
+                if not isinstance(layer, dict) or layer.get("mediaType") != "application/vnd.in-toto+json":
+                    raise SystemExit("bundle attestation layer media type is invalid")
+                layer_size = layer.get("size")
+                if not isinstance(layer_size, int) or isinstance(layer_size, bool) or layer_size < 0:
+                    raise SystemExit("bundle attestation layer size is invalid")
+                layer_blob = read_digest_blob(
+                    archive, layer.get("digest"), "attestation layer blob", layer_size
+                )
+                layer_digests.append(layer["digest"])
+                try:
+                    statement = json.loads(layer_blob)
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise SystemExit("bundle in-toto attestation is not valid JSON") from exc
+                subjects = statement.get("subject") if isinstance(statement, dict) else None
+                if (
+                    not isinstance(statement, dict)
+                    or statement.get("_type")
+                    not in {
+                        "https://in-toto.io/Statement/v0.1",
+                        "https://in-toto.io/Statement/v1",
+                    }
+                ):
+                    raise SystemExit("bundle in-toto attestation statement type is invalid")
+                if (
+                    not isinstance(subjects, list)
+                    or not subjects
+                    or not all(
+                        isinstance(item, dict)
+                        and isinstance(item.get("digest"), dict)
+                        and item["digest"].get("sha256") == target_hex
+                        for item in subjects
+                    )
+                ):
+                    raise SystemExit("bundle in-toto attestation subject does not match its runnable image")
+                layer_annotations = layer.get("annotations")
+                predicate_type = statement.get("predicateType") if isinstance(statement, dict) else None
+                if (
+                    attestation_kind == "containerd"
+                    and (
+                        not isinstance(layer_annotations, dict)
+                        or not isinstance(layer_annotations.get("in-toto.io/predicate-type"), str)
+                    )
+                ):
+                    raise SystemExit("bundle containerd attestation layer annotation is invalid")
+                if (
+                    isinstance(layer_annotations, dict)
+                    and "in-toto.io/predicate-type" in layer_annotations
+                    and layer_annotations["in-toto.io/predicate-type"] != predicate_type
+                ):
+                    raise SystemExit("bundle attestation predicate type annotation is inconsistent")
+            if attestation_kind == "containerd" and containerd_diff_ids != layer_digests:
+                raise SystemExit("bundle containerd attestation config does not match its layers")
 
     used_oci_descriptor_ids = set()
     for item in payload:

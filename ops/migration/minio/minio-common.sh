@@ -85,12 +85,23 @@ minio_configure_alias() {
     set +x
   fi
 
-  IFS= read -r -s -p "$label Access Key（隐藏输入）: " access_key </dev/tty ||
-    minio_die "无法读取 $label Access Key"
-  printf '\n' >/dev/tty
-  IFS= read -r -s -p "$label Secret Key（隐藏输入）: " secret_key </dev/tty ||
-    minio_die "无法读取 $label Secret Key"
-  printf '\n' >/dev/tty
+  case ${VIBELO_MINIO_CREDENTIAL_INPUT:-tty} in
+    tty)
+      IFS= read -r -s -p "$label Access Key（隐藏输入）: " access_key </dev/tty ||
+        minio_die "无法读取 $label Access Key"
+      printf '\n' >/dev/tty
+      IFS= read -r -s -p "$label Secret Key（隐藏输入）: " secret_key </dev/tty ||
+        minio_die "无法读取 $label Secret Key"
+      printf '\n' >/dev/tty
+      ;;
+    stdin)
+      IFS= read -r access_key || minio_die "无法从标准输入读取 $label Access Key"
+      IFS= read -r secret_key || minio_die "无法从标准输入读取 $label Secret Key"
+      ;;
+    *)
+      minio_die 'VIBELO_MINIO_CREDENTIAL_INPUT 只能是 tty 或 stdin'
+      ;;
+  esac
 
   if [[ -z $access_key || -z $secret_key ]]; then
     unset access_key secret_key
