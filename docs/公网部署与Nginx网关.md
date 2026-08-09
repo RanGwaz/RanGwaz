@@ -9,7 +9,7 @@
 ```text
 浏览器 / 云 HTTPS 负载均衡
               |
-        Nginx Gateway :80
+      Nginx Gateway :80/:443
          /            \ /api/**
   frontend          backend
                         |
@@ -20,11 +20,19 @@
 
 相关文件：
 
-- `infra/nginx/gateway.conf`：公网 API 网关、限流、请求头和负载均衡。
+- `infra/nginx/gateway.conf`：默认 HTTP 公网 API 网关、限流、请求头和负载均衡。
+- `infra/nginx/gateway.tls.conf` 与 `infra/docker-compose.public.tls.yml`：备案、DNS、
+  证书门禁通过后才显式启用的 HTTPS 配置。
 - `infra/docker-compose.public.yml`：当前 8 GB 主机使用单前端、单后端和中间件编排。
 - `frontend/nginx.conf`：每个前端实例内部的静态文件与 SPA 回退。
 - `frontend/Dockerfile`：构建 React 静态文件，再交给轻量 Nginx 提供。
 - `backend/Dockerfile`：构建 Spring Boot JAR，再用 JRE 运行。
+
+域名实名认证不等于 ICP 备案。`vibelo.xin` 使用中国内地 ECS，首次备案审核期间必须
+保持站点不可访问；不要把阿里云备案拦截页误判为 DNS 故障，也不要通过购买付费 DNS、
+ESA 或 SSL 证书尝试替代备案。备案完成后的 `www` 解析、双域名证书、TLS 只读挂载、
+启用、验收和回退步骤见 [域名备案与 HTTPS 上线](./域名备案与HTTPS上线.md)。默认
+Compose 不依赖证书，证书缺失不会破坏当前 HTTP 部署。
 
 ## 2. 前端负载均衡如何工作
 
@@ -125,6 +133,7 @@ $env:SPRING_DATASOURCE_PASSWORD="validation-only"
 $env:MINIO_ACCESS_KEY="validation-only"
 $env:MINIO_SECRET_KEY="validation-only"
 $env:APP_AUTH_TOKEN_SECRET="validation-only-token-secret-at-least-32-characters"
+$env:APP_MODERATION_TOKEN="distinct-validation-moderation-token-32-characters"
 docker compose -f infra/docker-compose.public.yml config --quiet
 ```
 
@@ -406,9 +415,10 @@ chmod 600 .env.public
 - `SPRING_DATASOURCE_USERNAME`、`SPRING_DATASOURCE_PASSWORD`：RDS 业务账号；不要使用高权限管理账号
 - `MINIO_ACCESS_KEY`、`MINIO_SECRET_KEY`
 - `APP_AUTH_TOKEN_SECRET`：至少 32 个随机字符；以后扩容出的所有后端必须完全一致
+- `APP_MODERATION_TOKEN`：另一份至少 32 个随机字符的人工审核令牌，不能复用登录签名密钥
 - `ALIYUN_SMS_ACCESS_KEY_ID`、`ALIYUN_SMS_ACCESS_KEY_SECRET`
 - `ALIYUN_SMS_SIGN_NAME`、`ALIYUN_SMS_TEMPLATE_CODE`
-- `APP_WEB_ALLOWED_ORIGIN_PATTERNS`：真实 HTTPS 站点来源
+- `APP_WEB_ALLOWED_ORIGIN_PATTERNS`：当前真实入口；IP 自测期是实际 HTTP IP，备案后改为 HTTPS 域名
 
 `.env.public` 已被 `.gitignore` 排除，不要提交。项目不再使用 `application-prod.yml` 或 `SPRING_PROFILES_ACTIVE=prod`。
 
@@ -791,6 +801,19 @@ docker compose --env-file .env.public -f infra/docker-compose.public.yml \
 
 随后完整重复 9.3 节，顺序不能跳过：`start-minio-target.sh --verify-existing` → `up ... elasticsearch` → 搜索重建脚本成功 → `up ... redis zookeeper kafka` → `up ... backend frontend` → `up ... gateway`。每一条 `up` 仍必须使用 `--no-build --pull never` 和显式服务名。即使应用代码没有修改搜索 schema，当前发布门禁仍要求重新认证并原子发布索引后再启动应用。
 
+如果域名 TLS 已按专用文档启用，最后重建 Gateway 时不能照抄只含基础文件的旧命令，
+必须持续叠加 TLS 文件，否则会静默退回仅 HTTP：
+
+```bash
+docker compose --env-file .env.public \
+  -f infra/docker-compose.public.yml \
+  -f infra/docker-compose.public.tls.yml \
+  up -d --wait --no-build --pull never --no-deps gateway
+```
+
+以后任何会创建或重建 `gateway` 的命令都遵守这一规则；只有明确执行 TLS 回退时才省略
+覆盖文件。完整门禁、续期与回退见 [域名备案与 HTTPS 上线](./域名备案与HTTPS上线.md)。
+
 回滚只允许使用已经在 ECS 验收导入、仍有完整 SHA tag 且数据库迁移向前兼容的旧 release。记录故障现场后，切到与旧镜像一致的 commit，把 `.env.public` 的两个镜像变量改回旧完整 SHA，停止上述七个非 MinIO 服务，再完整重复 9.3 节：
 
 ```bash
@@ -807,3 +830,36 @@ docker image inspect \
 不要用 `latest`、短 SHA、`up --build`、在线 `pip install` 或临时拉取替代 release 门禁；不要运行 `docker compose down -v`。发布前备份 RDS 与 MinIO，至少保留当前和上一版镜像归档。回滚完成、准备继续跟随主分支时再执行 `git switch main`。
 
 模型回滚不需要回滚整站：registry 会保留 `previous`，使用训练文档中的 rollback 命令交换 `current/previous`，在线模型服务检测 registry 修改后自动热加载。
+
+## 13. 日常开发、按量停机与开机恢复
+
+日常仍采用“本地开发和测试 → Git 提交并推送 → 生成固定 commit 的镜像发布包 →
+ECS 拉取同一 commit → 导入镜像 → 按第 12 节滚动更新”的流程。代码提交本身不会改变
+公网服务；只有 ECS 显式导入并切换到新镜像 tag 后才算发布。不要在低内存生产机临时
+编译源码，也不要用 `latest` 代替可回滚的完整 SHA。
+
+当前公网 Compose 的持久服务都使用 `restart: unless-stopped`。Docker 服务设为开机启动
+后，直接关停 ECS 时仍处于运行状态的容器会在下次开机由 Docker 自动恢复：
+
+```bash
+sudo systemctl enable docker
+sudo systemctl is-enabled docker
+docker compose --env-file .env.public -f infra/docker-compose.public.yml ps
+sudo shutdown -h now
+```
+
+如果希望下次开机自动恢复，不要在关机前执行 `docker compose stop`，更不要执行
+`down -v`。在阿里云控制台重新启动实例后验收：
+
+```bash
+cd /opt/vibelo
+systemctl is-active docker
+docker compose --env-file .env.public -f infra/docker-compose.public.yml ps
+curl -fsS http://127.0.0.1/gateway/health
+curl -fsS http://127.0.0.1/api/actuator/health
+```
+
+曾被人工 `stop` 的容器会保持停止，这是 `unless-stopped` 的预期行为；需要恢复时按发布
+顺序显式执行 `up -d --no-build --pull never`。当前仅用公网 IP 做所有者验收时，
+`APP_WEB_ALLOWED_ORIGIN_PATTERNS` 保持为实际的 `http://<ECS公网IP>`，不要叠加 TLS
+Compose 文件，也不要让真实用户在纯 HTTP 上登录。

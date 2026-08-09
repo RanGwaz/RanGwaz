@@ -137,4 +137,22 @@ swapon() {
 assert_false '应拒绝把非数字 Swap 列静默折算成 0' vibelo_total_swap_bytes
 unset -f swapon
 
+REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd -P)
+grep -qF 'APP_MODERATION_TOKEN: ${APP_MODERATION_TOKEN:?' \
+  "$REPO_ROOT/infra/docker-compose.public.yml" || {
+    printf '失败：公网 Backend 没有强制注入独立人工审核令牌\n' >&2
+    exit 1
+  }
+grep -qF 'prompt_secret_key APP_MODERATION_TOKEN "人工审核令牌" 32 true' \
+  "$SCRIPT_DIR/configure-rds-env.sh" || {
+    printf '失败：安全配置脚本没有静默配置独立人工审核令牌\n' >&2
+    exit 1
+  }
+grep -qF "check_required_env APP_MODERATION_TOKEN '独立人工审核令牌' 32" \
+  "$SCRIPT_DIR/preflight.sh" || {
+    printf '失败：公网预检没有检查独立人工审核令牌\n' >&2
+    exit 1
+  }
+unset REPO_ROOT
+
 printf '%s\n' '公网配置公共函数回归测试通过。'

@@ -1,0 +1,39 @@
+[Unit]
+Description=Vibelo authorized content ingestion pipeline
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+ConditionPathIsMountPoint=/data
+
+[Service]
+Type=oneshot
+User=vibelo-jobs
+Group=vibelo-jobs
+WorkingDirectory=/opt/vibelo
+EnvironmentFile=/etc/vibelo/content-job.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+RuntimeDirectory=vibelo-content-jobs
+UMask=0077
+
+ExecStart=/usr/bin/flock --nonblock --conflict-exit-code=75 /run/vibelo-content-jobs/content.lock /usr/bin/bash /opt/vibelo/ops/jobs/run-content-pipeline.sh
+SuccessExitStatus=75
+TimeoutStartSec=2h5m
+TimeoutStopSec=120
+KillSignal=SIGINT
+
+Nice=15
+IOSchedulingClass=idle
+CPUQuota=25%
+MemoryHigh=768M
+MemoryMax=1024M
+TasksMax=192
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/data/vibelo-ingest /run/vibelo-content-jobs
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+StandardOutput=journal
+StandardError=journal

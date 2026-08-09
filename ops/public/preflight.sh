@@ -378,9 +378,27 @@ if ((ENV_AVAILABLE == 1)); then
   fi
   check_required_env SPRING_DATASOURCE_PASSWORD 'Spring RDS 密码'
   check_required_env APP_AUTH_TOKEN_SECRET '登录 Token 签名密钥' 32
+  check_required_env APP_MODERATION_TOKEN '独立人工审核令牌' 32
   check_required_env MINIO_ACCESS_KEY 'MinIO Access Key' 3
   check_required_env MINIO_SECRET_KEY 'MinIO Secret Key' 8
   check_required_env VIBELO_DB_PASSWORD '训练任务 RDS 密码'
+
+  AUTH_TOKEN_SECRET=''
+  MODERATION_TOKEN=''
+  if get_env_plain APP_AUTH_TOKEN_SECRET && ! is_placeholder "$ENV_PLAIN"; then
+    AUTH_TOKEN_SECRET=$ENV_PLAIN
+  fi
+  if get_env_plain APP_MODERATION_TOKEN && ! is_placeholder "$ENV_PLAIN"; then
+    MODERATION_TOKEN=$ENV_PLAIN
+  fi
+  if [[ -n $AUTH_TOKEN_SECRET && -n $MODERATION_TOKEN ]]; then
+    if [[ $AUTH_TOKEN_SECRET != "$MODERATION_TOKEN" ]]; then
+      pass '登录签名密钥与人工审核令牌已隔离'
+    else
+      fail 'APP_MODERATION_TOKEN 不能复用 APP_AUTH_TOKEN_SECRET'
+    fi
+  fi
+  unset AUTH_TOKEN_SECRET MODERATION_TOKEN
 
   SPRING_PASSWORD=''
   VIBELO_PASSWORD=''

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Vibelo vectorization on a dedicated recommendation node
+
+[Timer]
+OnCalendar=*-*-* 02:15:00
+RandomizedDelaySec=20m
+Persistent=false
+Unit=vibelo-vectorize.service
+
+[Install]
+WantedBy=timers.target

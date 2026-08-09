@@ -28,11 +28,11 @@ def _env_value(primary: str, fallback: str, default: str) -> str:
     return os.environ.get(primary) or os.environ.get(fallback) or default
 
 
-DEFAULT_MYSQL_HOST = _env_value("VIBELO_MYSQL_HOST", "VIBELO_DB_HOST", "127.0.0.1")
-DEFAULT_MYSQL_PORT = int(_env_value("VIBELO_MYSQL_PORT", "VIBELO_DB_PORT", "3306"))
-DEFAULT_MYSQL_DATABASE = _env_value("VIBELO_MYSQL_DATABASE", "VIBELO_DB_NAME", "rangwaz_image_dev")
-DEFAULT_MYSQL_USER = _env_value("VIBELO_MYSQL_USER", "VIBELO_DB_USER", "vibelo_app")
-DEFAULT_MYSQL_PASSWORD = _env_value("VIBELO_MYSQL_PASSWORD", "VIBELO_DB_PASSWORD", "")
+DEFAULT_MYSQL_HOST = _env_value("VIBELO_DB_HOST", "VIBELO_MYSQL_HOST", "127.0.0.1")
+DEFAULT_MYSQL_PORT = int(_env_value("VIBELO_DB_PORT", "VIBELO_MYSQL_PORT", "3306"))
+DEFAULT_MYSQL_DATABASE = _env_value("VIBELO_DB_NAME", "VIBELO_MYSQL_DATABASE", "rangwaz_image_dev")
+DEFAULT_MYSQL_USER = _env_value("VIBELO_DB_USER", "VIBELO_MYSQL_USER", "vibelo_app")
+DEFAULT_MYSQL_PASSWORD = _env_value("VIBELO_DB_PASSWORD", "VIBELO_MYSQL_PASSWORD", "")
 
 DEFAULT_ES_URL = os.environ.get("VIBELO_ES_URL", "http://127.0.0.1:9200")
 DEFAULT_ES_INDEX = os.environ.get("VIBELO_ES_INDEX", "rangwaz-images")

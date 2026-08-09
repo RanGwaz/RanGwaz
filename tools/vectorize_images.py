@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import os
 import sys
@@ -20,13 +21,18 @@ MODELS_DIR = ROOT / "tools" / "models"
 
 IMPORT_RESULTS_PATH = ROOT / "tools" / "import_results.jsonl"
 IMAGE_DIR = ROOT / "tools" / "downloaded_dataset" / "images"
-BACKEND_BASE_URL = "http://127.0.0.1:8080"
+BACKEND_BASE_URL = os.environ.get("VIBELO_BACKEND_BASE_URL", "http://127.0.0.1")
 
-MYSQL_HOST = os.environ.get("VIBELO_MYSQL_HOST", "127.0.0.1")
-MYSQL_PORT = int(os.environ.get("VIBELO_MYSQL_PORT", "3306") or "3306")
-MYSQL_DATABASE = os.environ.get("VIBELO_MYSQL_DATABASE", "rangwaz_image_dev")
-MYSQL_USER = os.environ.get("VIBELO_MYSQL_USER", "rangwaz")
-MYSQL_PASSWORD = os.environ.get("VIBELO_MYSQL_PASSWORD", "rangwaz123")
+
+def env_value(primary: str, fallback: str, default: str = "") -> str:
+    return os.environ.get(primary) or os.environ.get(fallback) or default
+
+
+MYSQL_HOST = env_value("VIBELO_DB_HOST", "VIBELO_MYSQL_HOST", "127.0.0.1")
+MYSQL_PORT = int(env_value("VIBELO_DB_PORT", "VIBELO_MYSQL_PORT", "3306"))
+MYSQL_DATABASE = env_value("VIBELO_DB_NAME", "VIBELO_MYSQL_DATABASE", "rangwaz_image_dev")
+MYSQL_USER = env_value("VIBELO_DB_USER", "VIBELO_MYSQL_USER", "vibelo_app")
+MYSQL_PASSWORD = env_value("VIBELO_DB_PASSWORD", "VIBELO_MYSQL_PASSWORD", "")
 
 MILVUS_HOST = os.environ.get("VIBELO_MILVUS_HOST", "127.0.0.1")
 MILVUS_PORT = os.environ.get("VIBELO_MILVUS_PORT", "19530")
@@ -37,23 +43,50 @@ MODEL_NAME = os.environ.get("VIBELO_EMBED_MODEL", "google/siglip2-base-patch16-2
 VECTOR_VERSION = os.environ.get("VIBELO_EMBED_VECTOR_VERSION", "siglip2-base-p224-d512-v1")
 VECTOR_DIMENSION = 512
 PROJECTION_SEED = 20260606
+SUPPORTED_PROJECTION_VERSION = "siglip-image-feature-l2-rp512-seed20260606-v1"
+PROJECTION_VERSION = os.environ.get(
+    "VIBELO_EMBED_PROJECTION_VERSION", SUPPORTED_PROJECTION_VERSION
+)
+if PROJECTION_VERSION != SUPPORTED_PROJECTION_VERSION:
+    raise SystemExit("VIBELO_EMBED_PROJECTION_VERSION does not match this vector worker")
 DEVICE = os.environ.get("VIBELO_EMBED_DEVICE", "auto")
 MODEL_TORCH_DTYPE = os.environ.get("VIBELO_EMBED_TORCH_DTYPE", "auto")
-HF_CACHE_DIR = Path(os.environ.get("VIBELO_HF_HOME", str(MODELS_DIR / "huggingface")))
-TORCH_CACHE_DIR = Path(os.environ.get("VIBELO_TORCH_HOME", str(MODELS_DIR / "torch")))
+MODEL_CACHE_ROOT = Path(os.environ.get("MODEL_CACHE_ROOT", str(MODELS_DIR)))
+HF_CACHE_DIR = Path(os.environ.get("VIBELO_HF_HOME", str(MODEL_CACHE_ROOT / "huggingface")))
+TORCH_CACHE_DIR = Path(
+    os.environ.get("TORCH_HOME")
+    or os.environ.get("VIBELO_TORCH_HOME")
+    or str(MODEL_CACHE_ROOT / "torch")
+)
+XDG_CACHE_DIR = Path(
+    os.environ.get("XDG_CACHE_HOME")
+    or os.environ.get("XDG_CACHE")
+    or str(MODEL_CACHE_ROOT / "xdg")
+)
 MODEL_LOCAL_DIR = HF_CACHE_DIR / MODEL_NAME.replace("/", "__")
 MODEL_LOAD_PATH = os.environ.get(
     "VIBELO_EMBED_MODEL_PATH",
     str(MODEL_LOCAL_DIR) if MODEL_LOCAL_DIR.exists() else MODEL_NAME,
 )
+OFFLINE_MODE = os.environ.get("VIBELO_MODEL_OFFLINE", "0") == "1"
+REQUIRE_DATA_CACHE = os.environ.get("VIBELO_REQUIRE_DATA_CACHE", "0") == "1"
 
 BATCH_SIZE = int(os.environ.get("VIBELO_EMBED_BATCH_SIZE", "4") or "4")
 LIMIT = int(os.environ.get("VIBELO_EMBED_LIMIT", "0") or "0")
+REQUIRE_INDEX_COUNT_MATCH = os.environ.get("VIBELO_EMBED_REQUIRE_INDEX_COUNT_MATCH", "1") == "1"
+READY_MARKER_PATH = (
+    Path(os.environ["VIBELO_VECTOR_READY_MARKER"])
+    if os.environ.get("VIBELO_VECTOR_READY_MARKER")
+    else None
+)
 IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 30
 MAX_CONSECUTIVE_FAILURES = 20
 
 USE_HUGGINGFACE_PROXY = os.environ.get("VIBELO_USE_HF_PROXY", "0") == "1"
 HUGGINGFACE_PROXY_URL = os.environ.get("VIBELO_HF_PROXY_URL", "http://127.0.0.1:12000")
+
+if OFFLINE_MODE and USE_HUGGINGFACE_PROXY:
+    raise SystemExit("Offline model mode cannot be combined with a Hugging Face proxy.")
 
 if USE_HUGGINGFACE_PROXY:
     os.environ["HTTP_PROXY"] = HUGGINGFACE_PROXY_URL
@@ -63,15 +96,38 @@ if USE_HUGGINGFACE_PROXY:
 os.environ["NO_PROXY"] = "localhost,127.0.0.1,::1"
 os.environ["no_proxy"] = "localhost,127.0.0.1,::1"
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
-os.environ.setdefault("HF_HOME", str(HF_CACHE_DIR))
-os.environ.setdefault("HF_HUB_CACHE", str(HF_CACHE_DIR / "hub"))
-os.environ.setdefault("TRANSFORMERS_CACHE", str(HF_CACHE_DIR / "transformers"))
-os.environ.setdefault("TORCH_HOME", str(TORCH_CACHE_DIR))
-os.environ.setdefault("XDG_CACHE_HOME", str(MODELS_DIR / "cache"))
+os.environ["HF_HOME"] = str(HF_CACHE_DIR)
+os.environ["HF_HUB_CACHE"] = str(HF_CACHE_DIR / "hub")
+os.environ["TRANSFORMERS_CACHE"] = str(HF_CACHE_DIR / "transformers")
+os.environ["TORCH_HOME"] = str(TORCH_CACHE_DIR)
+os.environ["XDG_CACHE_HOME"] = str(XDG_CACHE_DIR)
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
-MODELS_DIR.mkdir(parents=True, exist_ok=True)
+if OFFLINE_MODE:
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    os.environ["HF_DATASETS_OFFLINE"] = "1"
+
+
+def _is_under_data(path: Path) -> bool:
+    data_root = Path("/data").resolve(strict=False)
+    resolved = path.resolve(strict=False)
+    return resolved == data_root or data_root in resolved.parents
+
+
+if REQUIRE_DATA_CACHE:
+    for cache_name, cache_path in (
+        ("MODEL_CACHE_ROOT", MODEL_CACHE_ROOT),
+        ("VIBELO_HF_HOME", HF_CACHE_DIR),
+        ("TORCH_HOME", TORCH_CACHE_DIR),
+        ("XDG_CACHE_HOME", XDG_CACHE_DIR),
+    ):
+        if not _is_under_data(cache_path):
+            raise SystemExit("{} must resolve below /data: {}".format(cache_name, cache_path))
+
+MODEL_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 HF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 TORCH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+XDG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 _PYMYSQL = None
 _MILVUS = None
@@ -169,8 +225,8 @@ def require_model():
         model_kwargs["torch_dtype"] = torch.float16
     elif MODEL_TORCH_DTYPE and MODEL_TORCH_DTYPE != "auto":
         model_kwargs["torch_dtype"] = getattr(torch, MODEL_TORCH_DTYPE)
-    processor = AutoProcessor.from_pretrained(MODEL_LOAD_PATH)
-    model = AutoModel.from_pretrained(MODEL_LOAD_PATH, **model_kwargs)
+    processor = AutoProcessor.from_pretrained(MODEL_LOAD_PATH, local_files_only=OFFLINE_MODE)
+    model = AutoModel.from_pretrained(MODEL_LOAD_PATH, local_files_only=OFFLINE_MODE, **model_kwargs)
     model.to(device)
     model.eval()
     _MODEL = (torch, processor, model, device)
@@ -270,8 +326,45 @@ def ensure_collection():
         )
     else:
         collection = Collection(MILVUS_COLLECTION)
+        validate_collection(collection)
     collection.load()
     return collection
+
+
+def validate_collection(collection) -> None:
+    """Fail closed when an existing collection cannot hold this vector artifact."""
+    vector_field = next((field for field in collection.schema.fields if field.name == VECTOR_FIELD), None)
+    if vector_field is None:
+        raise RuntimeError("Milvus collection {} has no {} field".format(MILVUS_COLLECTION, VECTOR_FIELD))
+    dimension = int((getattr(vector_field, "params", {}) or {}).get("dim", 0) or 0)
+    if dimension != VECTOR_DIMENSION:
+        raise RuntimeError(
+            "Milvus collection {} dimension {} does not match {}".format(
+                MILVUS_COLLECTION,
+                dimension,
+                VECTOR_DIMENSION,
+            )
+        )
+    vector_indexes = [
+        index
+        for index in (getattr(collection, "indexes", []) or [])
+        if getattr(index, "field_name", None) == VECTOR_FIELD
+    ]
+    if len(vector_indexes) != 1:
+        raise RuntimeError(
+            "Milvus collection {} must have exactly one {} index".format(MILVUS_COLLECTION, VECTOR_FIELD)
+        )
+    params = getattr(vector_indexes[0], "params", {}) or {}
+    metric = str(params.get("metric_type") or "").upper()
+    index_type = str(params.get("index_type") or "").upper()
+    if metric != "COSINE" or index_type != "HNSW":
+        raise RuntimeError(
+            "Milvus collection {} index must be HNSW/COSINE, got {}/{}".format(
+                MILVUS_COLLECTION,
+                index_type or "missing",
+                metric or "missing",
+            )
+        )
 
 
 def import_path_map() -> Dict[int, Path]:
@@ -309,18 +402,21 @@ def pending_images(conn) -> List[ImageRow]:
           ON e.image_id=i.id
          AND e.model_name=%s
          AND e.vector_version=%s
+         AND e.milvus_collection=%s
+         AND e.vector_dimension=%s
         WHERE i.status='PUBLISHED'
           AND (
             e.image_id IS NULL
             OR e.status <> 'READY'
             OR COALESCE(e.image_hash,'') <> COALESCE(i.hash,'')
+            OR COALESCE(e.milvus_pk,0) <> i.id
           )
         ORDER BY i.id
     """
     if LIMIT and LIMIT > 0:
         sql += " LIMIT {}".format(int(LIMIT))
     with conn.cursor() as cursor:
-        cursor.execute(sql, (MODEL_NAME, VECTOR_VERSION))
+        cursor.execute(sql, (MODEL_NAME, VECTOR_VERSION, MILVUS_COLLECTION, VECTOR_DIMENSION))
         rows = cursor.fetchall()
     return [
         ImageRow(
@@ -335,6 +431,153 @@ def pending_images(conn) -> List[ImageRow]:
         )
         for row in rows
     ]
+
+
+def ready_embedding_count(conn) -> int:
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM image_embeddings e
+            JOIN images i ON i.id=e.image_id AND i.status='PUBLISHED'
+            WHERE e.model_name=%s
+              AND e.vector_version=%s
+              AND e.milvus_collection=%s
+              AND e.vector_dimension=%s
+              AND e.status='READY'
+              AND COALESCE(e.image_hash,'')=COALESCE(i.hash,'')
+              AND COALESCE(e.milvus_pk,0)=i.id
+            """,
+            (MODEL_NAME, VECTOR_VERSION, MILVUS_COLLECTION, VECTOR_DIMENSION),
+        )
+        return int(cursor.fetchone()["total"])
+
+
+def pending_embedding_count(conn) -> int:
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM images i
+            LEFT JOIN image_embeddings e
+              ON e.image_id=i.id
+             AND e.model_name=%s
+             AND e.vector_version=%s
+             AND e.milvus_collection=%s
+             AND e.vector_dimension=%s
+            WHERE i.status='PUBLISHED'
+              AND (
+                e.image_id IS NULL
+                OR e.status<>'READY'
+                OR COALESCE(e.image_hash,'')<>COALESCE(i.hash,'')
+                OR COALESCE(e.milvus_pk,0)<>i.id
+              )
+            """,
+            (MODEL_NAME, VECTOR_VERSION, MILVUS_COLLECTION, VECTOR_DIMENSION),
+        )
+        return int(cursor.fetchone()["total"])
+
+
+def ready_embedding_ids(conn) -> set[int]:
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT i.id
+            FROM image_embeddings e
+            JOIN images i ON i.id=e.image_id AND i.status='PUBLISHED'
+            WHERE e.model_name=%s
+              AND e.vector_version=%s
+              AND e.milvus_collection=%s
+              AND e.vector_dimension=%s
+              AND e.status='READY'
+              AND COALESCE(e.image_hash,'')=COALESCE(i.hash,'')
+              AND COALESCE(e.milvus_pk,0)=i.id
+            """,
+            (MODEL_NAME, VECTOR_VERSION, MILVUS_COLLECTION, VECTOR_DIMENSION),
+        )
+        return {int(row["id"]) for row in cursor.fetchall()}
+
+
+def collection_image_ids(collection) -> set[int]:
+    result: set[int] = set()
+    iterator = collection.query_iterator(
+        batch_size=4096,
+        expr="image_id > 0",
+        output_fields=["image_id"],
+    )
+    try:
+        while True:
+            batch = iterator.next()
+            if not batch:
+                break
+            for row in batch:
+                image_id = int(row.get("image_id") or 0)
+                if image_id <= 0 or image_id in result:
+                    raise RuntimeError("Milvus collection contains an invalid or duplicate image_id")
+                result.add(image_id)
+    finally:
+        iterator.close()
+    return result
+
+
+def id_set_sha256(image_ids: set[int]) -> str:
+    digest = hashlib.sha256()
+    for image_id in sorted(image_ids):
+        digest.update(str(image_id).encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def assert_collection_model_binding(conn) -> None:
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT model_name,vector_version
+            FROM image_embeddings
+            WHERE milvus_collection=%s
+              AND status='READY'
+              AND (model_name<>%s OR vector_version<>%s)
+            LIMIT 1
+            """,
+            (MILVUS_COLLECTION, MODEL_NAME, VECTOR_VERSION),
+        )
+        conflict = cursor.fetchone()
+    if conflict:
+        raise RuntimeError(
+            "Milvus collection {} is already bound to {}/{}; use a new collection for {}/{}".format(
+                MILVUS_COLLECTION,
+                conflict["model_name"],
+                conflict["vector_version"],
+                MODEL_NAME,
+                VECTOR_VERSION,
+            )
+        )
+
+
+def remove_ready_marker() -> None:
+    if READY_MARKER_PATH is not None:
+        READY_MARKER_PATH.unlink(missing_ok=True)
+
+
+def write_ready_marker(image_ids: set[int]) -> None:
+    if READY_MARKER_PATH is None:
+        return
+    READY_MARKER_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = READY_MARKER_PATH.with_name(READY_MARKER_PATH.name + ".tmp")
+    payload = {
+        "collection": MILVUS_COLLECTION,
+        "dimension": VECTOR_DIMENSION,
+        "entities": len(image_ids),
+        "idSetSha256": id_set_sha256(image_ids),
+        "metric": "COSINE",
+        "model": MODEL_NAME,
+        "projectionVersion": PROJECTION_VERSION,
+        "ready": len(image_ids),
+        "vectorVersion": VECTOR_VERSION,
+    }
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+    os.chmod(temporary, 0o640)
+    os.replace(temporary, READY_MARKER_PATH)
 
 
 def chunks(items: Sequence[ImageRow], size: int) -> Iterable[List[ImageRow]]:
@@ -478,6 +721,29 @@ def run() -> None:
     failed = 0
     consecutive_failed = 0
     with connect_mysql() as conn:
+        assert_collection_model_binding(conn)
+        ready_count = ready_embedding_count(conn)
+        pending_count = pending_embedding_count(conn)
+        entity_count = int(collection.num_entities)
+        # A previous full-coverage marker is no longer sufficient once this run
+        # observes new or stale work. It is recreated only after exact coverage.
+        if pending_count > 0 or entity_count != ready_count:
+            remove_ready_marker()
+        if entity_count == 0 and ready_count > 0:
+            raise SystemExit(
+                "RDS marks {} embeddings READY but Milvus collection is empty. "
+                "Publish a new vector version into a new collection instead of trusting stale status.".format(ready_count)
+            )
+        recoverable_upper_bound = ready_count + pending_count
+        if REQUIRE_INDEX_COUNT_MATCH and not (ready_count <= entity_count <= recoverable_upper_bound):
+            raise SystemExit(
+                "Milvus/RDS vector count mismatch: entities={}, ready={}, pending={}. "
+                "Rebuild or repair the collection before scheduled vectorization.".format(
+                    entity_count,
+                    ready_count,
+                    pending_count,
+                )
+            )
         rows = pending_images(conn)
         print("Vectorizing {} images into Milvus collection {}.".format(len(rows), MILVUS_COLLECTION))
         for batch_index, batch in enumerate(chunks(rows, BATCH_SIZE), start=1):
@@ -518,7 +784,41 @@ def run() -> None:
                         image.close()
                     except Exception:
                         pass
+        if failed == 0:
+            collection.flush()
+            final_ready_count = ready_embedding_count(conn)
+            final_pending_count = pending_embedding_count(conn)
+            final_entity_count = int(collection.num_entities)
+            rds_ids: set[int] = set()
+            milvus_ids: set[int] = set()
+            if final_pending_count == 0 and final_entity_count == final_ready_count and final_ready_count > 0:
+                rds_ids = ready_embedding_ids(conn)
+                milvus_ids = collection_image_ids(collection)
+            if (
+                final_pending_count == 0
+                and final_ready_count > 0
+                and len(rds_ids) == final_ready_count
+                and rds_ids == milvus_ids
+            ):
+                if READY_MARKER_PATH is not None:
+                    write_ready_marker(rds_ids)
+                    print("Full vector coverage marker written: {}.".format(READY_MARKER_PATH))
+            else:
+                remove_ready_marker()
+                print(
+                    "Vector coverage is incomplete: entities={}, ready={}, pending={}.".format(
+                        final_entity_count,
+                        final_ready_count,
+                        final_pending_count,
+                    )
+                )
+                if final_pending_count == 0:
+                    raise SystemExit(
+                        "Full vector coverage verification failed: RDS and Milvus image ID sets differ."
+                    )
     print("Done. embedded={}, failed={}".format(ok, failed))
+    if failed:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

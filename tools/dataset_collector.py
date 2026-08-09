@@ -15,6 +15,7 @@ import concurrent.futures
 import datetime as dt
 import hashlib
 import html
+import io
 import json
 import mimetypes
 import os
@@ -22,6 +23,7 @@ import queue
 import re
 import sys
 import threading
+import tempfile
 import time
 import traceback
 from dataclasses import asdict, dataclass, field
@@ -35,8 +37,8 @@ from urllib.request import Request, urlopen
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = ROOT / "tools" / "downloaded_dataset"
 DEFAULT_BROWSER_PROFILE = ROOT / "tools" / ".collector_browser"
-DEFAULT_LOGIN_EMAIL = "RanGwaz@protonmail.com"
-DEFAULT_LOGIN_PASSWORD = "RanGwaz147.."
+DEFAULT_LOGIN_EMAIL = os.environ.get("RANGWAZ_LOGIN_EMAIL", "")
+DEFAULT_LOGIN_PASSWORD = os.environ.get("RANGWAZ_LOGIN_PASSWORD", "")
 DEFAULT_TARGET_IMAGES = 80_000
 DEFAULT_START_SCROLLS = 12
 DEFAULT_DETAIL_PAGES = 320
@@ -46,6 +48,9 @@ DEFAULT_LOGIN_WAIT_SECONDS = 240
 DEFAULT_DOWNLOAD_WORKERS = 10
 DEFAULT_SCROLL_PAUSE = 0.9
 DEFAULT_REQUEST_DELAY = 0.12
+DEFAULT_MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
+DEFAULT_MAX_IMAGE_PIXELS = 40_000_000
+DOWNLOAD_CHUNK_BYTES = 64 * 1024
 
 PINIMG_HOST_RE = re.compile(r"(^|\.)pinimg\.com$", re.IGNORECASE)
 PIN_DETAIL_RE = re.compile(
@@ -53,6 +58,13 @@ PIN_DETAIL_RE = re.compile(
     re.IGNORECASE,
 )
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
+IMAGE_FORMAT_MIME_TYPES = {
+    "JPEG": "image/jpeg",
+    "PNG": "image/png",
+    "WEBP": "image/webp",
+    "GIF": "image/gif",
+    "BMP": "image/bmp",
+}
 PINIMG_SIZE_SEGMENT_RE = re.compile(r"^\d+x$|^x\d+$|^\d+x\d+$", re.IGNORECASE)
 PINIMG_SMALL_SEGMENT_RE = re.compile(r"^(\d+)x(\d+)(?:_[A-Z]+)?$", re.IGNORECASE)
 DEFAULT_HEADERS = {
@@ -67,6 +79,10 @@ DEFAULT_HEADERS = {
 
 
 LogFn = Callable[[str], None]
+
+
+class LoginGateError(RuntimeError):
+    """Collection cannot safely continue because access-gate state is uncertain."""
 
 
 @dataclass
@@ -101,6 +117,10 @@ class CollectorConfig:
     pinimg_only: bool = True
     download_images: bool = True
     browser_profile: Path = DEFAULT_BROWSER_PROFILE
+    headless: bool = False
+    fail_on_login_gate: bool = False
+    max_download_bytes: int = DEFAULT_MAX_DOWNLOAD_BYTES
+    max_image_pixels: int = DEFAULT_MAX_IMAGE_PIXELS
 
 
 @dataclass
@@ -123,6 +143,7 @@ class DownloadResult:
 
 @dataclass
 class DownloadIndex:
+    seen_candidate_keys: Set[str] = field(default_factory=set)
     candidate_keys: Set[str] = field(default_factory=set)
     sha256_paths: Dict[str, str] = field(default_factory=dict)
 
@@ -372,6 +393,7 @@ def detect_login_gate(page: object) -> Dict[str, object]:
             }).length;
             const bodyText = (document.body ? document.body.innerText : '').toLowerCase();
             const url = location.href.toLowerCase();
+            const title = (document.title || '').toLowerCase();
             const loginWords = [
                 'log in',
                 'login',
@@ -383,13 +405,50 @@ def detect_login_gate(page: object) -> Dict[str, object]:
                 '使用账号'
             ];
             const hasLoginWords = loginWords.some((word) => bodyText.includes(word));
+            const challengeWords = [
+                'captcha',
+                'verify you are human',
+                'security check',
+                'two-factor',
+                'two factor authentication',
+                'verification code',
+                'unusual activity',
+                'suspicious activity',
+                'risk control',
+                '验证码',
+                '人机验证',
+                '安全验证',
+                '二次验证',
+                '双重验证',
+                '身份验证',
+                '异常活动',
+                '风控',
+                '访问受限'
+            ];
+            const challengeUrlParts = [
+                '/challenge', '/checkpoint', '/captcha', '/verify', '/security-check'
+            ];
+            const hasChallengeWords = challengeWords.some((word) =>
+                bodyText.includes(word) || title.includes(word)
+            );
+            const hasChallengeFrame = Array.from(document.querySelectorAll('iframe')).some((frame) => {
+                const source = (frame.src || '').toLowerCase();
+                return source.includes('captcha') || source.includes('recaptcha') || source.includes('hcaptcha');
+            });
+            const hasChallengeUrl = challengeUrlParts.some((part) => url.includes(part));
             return {
                 gated: passwordCount > 0 ||
                     url.includes('/login') ||
                     url.includes('/signup') ||
-                    (accountCount > 0 && hasLoginWords),
+                    (accountCount > 0 && hasLoginWords) ||
+                    hasChallengeWords ||
+                    hasChallengeFrame ||
+                    hasChallengeUrl,
                 passwordCount,
                 accountCount,
+                hasChallengeWords,
+                hasChallengeFrame,
+                hasChallengeUrl,
                 url,
                 title: document.title || ''
             };
@@ -547,24 +606,26 @@ def wait_for_login_if_needed(
     login_password: str,
     log: LogFn,
     stop_event: Optional[threading.Event] = None,
+    fail_on_login_gate: bool = False,
 ) -> None:
-    if timeout_seconds <= 0:
-        return
     time.sleep(1.5)
     try:
         state = detect_login_gate(page)
     except Exception as exc:
-        log("Login gate check failed; continuing: {}".format(exc))
-        return
-    if not state.get("gated") and (login_email and login_password):
-        open_login_form_if_available(page, log)
-        try:
-            state = detect_login_gate(page)
-        except Exception as exc:
-            log("Login gate check failed; continuing: {}".format(exc))
-            return
+        raise LoginGateError("Login/CAPTCHA/2FA/risk-control detection failed") from exc
     if not state.get("gated"):
         return
+
+    if fail_on_login_gate:
+        raise LoginGateError(
+            "Login, CAPTCHA, 2FA, or platform risk-control gate detected; "
+            "non-interactive collection stopped"
+        )
+
+    if timeout_seconds <= 0:
+        raise LoginGateError(
+            "Login, CAPTCHA, 2FA, or platform risk-control gate remains active; collection stopped"
+        )
 
     if login_email and login_password:
         log("Login form detected. Trying automatic login.")
@@ -580,8 +641,7 @@ def wait_for_login_if_needed(
         try:
             state = detect_login_gate(page)
         except Exception as exc:
-            log("Login gate check failed; continuing: {}".format(exc))
-            return
+            raise LoginGateError("Login/CAPTCHA/2FA/risk-control detection failed") from exc
         if not state.get("gated"):
             try:
                 page.wait_for_load_state("networkidle", timeout=8_000)
@@ -589,7 +649,9 @@ def wait_for_login_if_needed(
                 pass
             log("Login gate cleared; collection continues.")
             return
-    log("Login wait expired; continuing with the page as-is. If CAPTCHA or 2FA is visible, complete it and rerun.")
+    raise LoginGateError(
+        "Login, CAPTCHA, 2FA, or platform risk-control gate was not cleared before timeout"
+    )
 
 
 def collect_from_browser(
@@ -598,6 +660,7 @@ def collect_from_browser(
     seed_detail_urls: Sequence[str],
     log: LogFn,
     stop_event: Optional[threading.Event] = None,
+    download_index: Optional[DownloadIndex] = None,
 ) -> Tuple[List[ImageCandidate], List[str]]:
     try:
         from playwright.sync_api import sync_playwright
@@ -615,7 +678,12 @@ def collect_from_browser(
     detail_queue: List[str] = []
     queued_detail_urls: Set[str] = set()
     visited_detail_urls: Set[str] = set()
-    download_index = load_download_index(collector_reference_dirs(config))
+    if download_index is None:
+        download_index = load_download_index(
+            collector_reference_dirs(config),
+            max_bytes=config.max_download_bytes,
+            max_pixels=config.max_image_pixels,
+        )
     incremental_downloaded_keys: Set[str] = set(download_index.candidate_keys)
 
     def download_page_candidates(items: Iterable[ImageCandidate], page_label: str) -> None:
@@ -634,7 +702,7 @@ def collect_from_browser(
             log("  {} has no new images to download.".format(page_label))
             return
         log("  downloading {} images from {} before continuing.".format(len(todo), page_label))
-        download_candidates(
+        page_results = download_candidates(
             todo,
             config,
             log=log,
@@ -642,11 +710,21 @@ def collect_from_browser(
             reset_manifest=False,
             known_sha256_paths=download_index.sha256_paths,
         )
+        for result in page_results:
+            if result.ok:
+                download_index.candidate_keys.add(
+                    canonical_image_key(ImageCandidate(image_url=result.image_url))
+                )
 
     def add_candidates(items: Iterable[ImageCandidate]) -> int:
         added = 0
         for candidate in items:
             key = canonical_image_key(candidate)
+            # A scheduled incremental run must count only genuinely new URLs
+            # towards max_images. Otherwise the first page can exhaust the
+            # quota with entries that the manifest already completed.
+            if key in download_index.candidate_keys:
+                continue
             existing = candidates_by_key.get(key)
             if not existing:
                 candidates_by_key[key] = candidate
@@ -685,32 +763,31 @@ def collect_from_browser(
     enqueue_details(seed_detail_urls)
     config.browser_profile.mkdir(parents=True, exist_ok=True)
 
-    log("Opening visible browser. Login will be attempted automatically when credentials are provided.")
+    browser_mode = "headless" if config.headless else "visible"
+    log("Opening {} browser. Login will be attempted automatically when credentials are provided.".format(browser_mode))
     with sync_playwright() as playwright:
         context = playwright.chromium.launch_persistent_context(
             user_data_dir=str(config.browser_profile),
-            headless=False,
+            headless=config.headless,
             viewport={"width": 1365, "height": 900},
             locale="zh-CN",
         )
         page = context.pages[0] if context.pages else context.new_page()
         try:
-            first_page = True
             for start_url in config.start_urls:
                 if stop_event and stop_event.is_set():
                     break
                 log("Loading start URL: {}".format(start_url))
                 page.goto(start_url, wait_until="domcontentloaded", timeout=60_000)
-                if first_page:
-                    wait_for_login_if_needed(
-                        page,
-                        config.login_wait_seconds,
-                        config.login_email,
-                        config.login_password,
-                        log,
-                        stop_event,
-                    )
-                    first_page = False
+                wait_for_login_if_needed(
+                    page,
+                    config.login_wait_seconds,
+                    config.login_email,
+                    config.login_password,
+                    log,
+                    stop_event,
+                    config.fail_on_login_gate,
+                )
                 start_detail_url = normalize_detail_url(start_url)
                 if start_detail_url:
                     visited_detail_urls.add(start_detail_url)
@@ -724,6 +801,15 @@ def collect_from_browser(
                     known_keys=set(candidates_by_key),
                     log=log,
                     stop_event=stop_event,
+                )
+                wait_for_login_if_needed(
+                    page,
+                    config.login_wait_seconds,
+                    config.login_email,
+                    config.login_password,
+                    log,
+                    stop_event,
+                    config.fail_on_login_gate,
                 )
                 added = add_candidates(scroll_candidates)
                 enqueued = enqueue_details(scroll_details)
@@ -756,6 +842,7 @@ def collect_from_browser(
                             config.login_password,
                             log,
                             stop_event,
+                            config.fail_on_login_gate,
                         )
                         target_new_images = min_nonzero(config.detail_target_images, remaining_global_images())
                         detail_candidates, nested_details = collect_scrolling_page(
@@ -769,6 +856,15 @@ def collect_from_browser(
                             log=log,
                             stop_event=stop_event,
                         )
+                        wait_for_login_if_needed(
+                            page,
+                            config.login_wait_seconds,
+                            config.login_email,
+                            config.login_password,
+                            log,
+                            stop_event,
+                            config.fail_on_login_gate,
+                        )
                         for item in detail_candidates:
                             if not item.detail_url:
                                 item.detail_url = detail_url
@@ -776,6 +872,8 @@ def collect_from_browser(
                         enqueued = enqueue_details(nested_details)
                         download_page_candidates(detail_candidates, "detail {}/{}".format(visited_count, config.detail_pages))
                         log("  detail added {} new images, queued {} more detail pages.".format(added, enqueued))
+                    except LoginGateError:
+                        raise
                     except Exception as exc:
                         log("  detail failed: {}".format(exc))
         finally:
@@ -950,9 +1048,15 @@ def collector_reference_dirs(config: CollectorConfig) -> List[Path]:
     return unique_paths([config.output_dir] + list(config.dedupe_reference_dirs or []))
 
 
-def load_download_index(reference_dirs: Iterable[Path]) -> DownloadIndex:
-    """Load successful downloads from one or more manifests for cross-run dedupe."""
+def load_download_index(
+    reference_dirs: Iterable[Path],
+    *,
+    max_bytes: int = DEFAULT_MAX_DOWNLOAD_BYTES,
+    max_pixels: int = DEFAULT_MAX_IMAGE_PIXELS,
+) -> DownloadIndex:
+    """Load manifest history while trusting only verified local image files."""
     index = DownloadIndex()
+    validation_cache: Dict[Tuple[str, str], bool] = {}
     for reference_dir in unique_paths(Path(path) for path in reference_dirs):
         manifest_path = reference_dir / "manifest.jsonl"
         if not manifest_path.exists():
@@ -964,15 +1068,33 @@ def load_download_index(reference_dirs: Iterable[Path]) -> DownloadIndex:
                         row = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if not row.get("ok"):
-                        continue
                     image_url = str(row.get("image_url") or "")
                     if image_url:
-                        index.candidate_keys.add(canonical_image_key(ImageCandidate(image_url=image_url)))
+                        index.seen_candidate_keys.add(
+                            canonical_image_key(ImageCandidate(image_url=image_url))
+                        )
+                    if not row.get("ok"):
+                        continue
                     digest = str(row.get("sha256") or "")
-                    if digest:
-                        local_path = str(row.get("local_path") or "")
-                        index.sha256_paths.setdefault(digest, local_path)
+                    local_path = str(row.get("local_path") or "")
+                    if not image_url or not digest or not local_path:
+                        continue
+                    cache_key = (str(Path(local_path).absolute()), digest)
+                    valid = validation_cache.get(cache_key)
+                    if valid is None:
+                        valid = existing_download_matches(
+                            Path(local_path),
+                            digest,
+                            max_bytes,
+                            max_pixels,
+                        )
+                        validation_cache[cache_key] = valid
+                    if not valid:
+                        continue
+                    index.candidate_keys.add(
+                        canonical_image_key(ImageCandidate(image_url=image_url))
+                    )
+                    index.sha256_paths.setdefault(digest, local_path)
         except OSError:
             continue
     return index
@@ -1076,23 +1198,50 @@ def download_one(
     errors: List[str] = []
     for url in urls:
         try:
+            if not allowed_image_url(url, config.pinimg_only):
+                raise ValueError("disallowed image URL: {}".format(url))
             headers = dict(DEFAULT_HEADERS)
             if candidate.source_page.startswith("http"):
                 headers["Referer"] = candidate.source_page
             request = Request(url, headers=headers)
             with urlopen(request, timeout=45) as response:
+                final_url = response.geturl()
+                if not allowed_image_url(final_url, config.pinimg_only):
+                    raise ValueError(
+                        "redirected to disallowed image URL: {}".format(final_url)
+                    )
                 content_type = response.headers.get("Content-Type", "")
-                data = response.read()
+                data = read_response_limited(response, config.max_download_bytes)
             if not data:
                 raise ValueError("empty response")
             if content_type and not content_type.lower().startswith("image/"):
                 raise ValueError("not an image content-type: {}".format(content_type))
+            actual_width, actual_height, detected_content_type = validate_downloaded_image(
+                data,
+                config.max_image_pixels,
+            )
+            content_type = detected_content_type
             digest = hashlib.sha256(data).hexdigest()
             ext = extension_from_content_type(content_type, extension_from_url(url))
             local_path = images_dir / "{}{}".format(digest[:20], ext)
-            already_exists = local_path.exists()
+            already_exists = local_path.exists() or local_path.is_symlink()
+            if local_path.is_symlink():
+                raise ValueError("existing download path must not be a symlink: {}".format(local_path))
+            if already_exists and not local_path.is_file():
+                raise ValueError("existing download path is not a regular file: {}".format(local_path))
+            existing_is_valid = already_exists and existing_download_matches(
+                local_path,
+                digest,
+                config.max_download_bytes,
+                config.max_image_pixels,
+            )
             reference_path = known_sha256_paths.get(digest, "")
-            if not already_exists and reference_path:
+            if not already_exists and reference_path and existing_download_matches(
+                Path(reference_path),
+                digest,
+                config.max_download_bytes,
+                config.max_image_pixels,
+            ):
                 return DownloadResult(
                     ok=True,
                     status="duplicate-content",
@@ -1101,26 +1250,25 @@ def download_one(
                     source_page=candidate.source_page,
                     detail_url=candidate.detail_url,
                     alt=candidate.alt,
-                    width=candidate.width,
-                    height=candidate.height,
+                    width=actual_width,
+                    height=actual_height,
                     bytes=len(data),
                     sha256=digest,
                     content_type=content_type,
                     downloaded_at=dt.datetime.now(dt.timezone.utc).isoformat(),
                 )
-            if not local_path.exists():
-                with local_path.open("wb") as output:
-                    output.write(data)
+            if not existing_is_valid:
+                atomic_write_download(local_path, data)
             return DownloadResult(
                 ok=True,
-                status="exists" if already_exists else "downloaded",
+                status="exists" if existing_is_valid else ("repaired" if already_exists else "downloaded"),
                 image_url=url,
                 local_path=str(local_path),
                 source_page=candidate.source_page,
                 detail_url=candidate.detail_url,
                 alt=candidate.alt,
-                width=candidate.width,
-                height=candidate.height,
+                width=actual_width,
+                height=actual_height,
                 bytes=len(data),
                 sha256=digest,
                 content_type=content_type,
@@ -1143,6 +1291,105 @@ def download_one(
     )
 
 
+def read_response_limited(response: object, max_bytes: int) -> bytes:
+    """Read one HTTP response without allowing an unbounded in-memory body."""
+    if max_bytes <= 0:
+        raise ValueError("max download bytes must be positive")
+    headers = getattr(response, "headers", {}) or {}
+    raw_length = headers.get("Content-Length", "") if hasattr(headers, "get") else ""
+    if raw_length:
+        try:
+            content_length = int(str(raw_length).strip())
+        except ValueError as exc:
+            raise ValueError("invalid Content-Length: {}".format(raw_length)) from exc
+        if content_length < 0 or content_length > max_bytes:
+            raise ValueError("image response exceeds {} bytes".format(max_bytes))
+
+    payload = bytearray()
+    while True:
+        remaining_with_sentinel = max_bytes - len(payload) + 1
+        chunk = response.read(min(DOWNLOAD_CHUNK_BYTES, remaining_with_sentinel))
+        if not chunk:
+            break
+        payload.extend(chunk)
+        if len(payload) > max_bytes:
+            raise ValueError("image response exceeds {} bytes".format(max_bytes))
+    return bytes(payload)
+
+
+def validate_downloaded_image(data: bytes, max_pixels: int) -> Tuple[int, int, str]:
+    """Verify image structure and reject oversized decoded images before writing."""
+    if max_pixels <= 0:
+        raise ValueError("max image pixels must be positive")
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise ValueError("Pillow is required to validate downloaded images") from exc
+    with Image.open(io.BytesIO(data)) as image:
+        image_format = str(image.format or "").upper()
+        if image_format not in IMAGE_FORMAT_MIME_TYPES:
+            raise ValueError("unsupported image format: {}".format(image_format or "unknown"))
+        width, height = image.size
+        if width <= 0 or height <= 0 or width * height > max_pixels:
+            raise ValueError(
+                "decoded image dimensions {}x{} exceed {} pixels".format(width, height, max_pixels)
+            )
+        image.verify()
+    return int(width), int(height), IMAGE_FORMAT_MIME_TYPES[image_format]
+
+
+def existing_download_matches(
+    path: Path,
+    expected_sha256: str,
+    max_bytes: int,
+    max_pixels: int,
+) -> bool:
+    """Verify an existing regular file before treating it as a completed download."""
+    try:
+        if path.is_symlink() or not path.is_file():
+            return False
+        size = path.stat().st_size
+        if size <= 0 or size > max_bytes:
+            return False
+        with path.open("rb") as input_file:
+            payload = input_file.read(max_bytes + 1)
+        if len(payload) != size or hashlib.sha256(payload).hexdigest() != expected_sha256:
+            return False
+        validate_downloaded_image(payload, max_pixels)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def atomic_write_download(path: Path, data: bytes) -> None:
+    """Durably write one image through a same-directory temporary and atomic rename."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".{}.".format(path.name),
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+    descriptor_open = True
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            descriptor_open = False
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(str(temporary), str(path))
+        if os.name == "posix" and hasattr(os, "O_DIRECTORY"):
+            directory_fd = os.open(str(path.parent), os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+    finally:
+        if descriptor_open:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+
+
 def run_collection(
     config: CollectorConfig,
     *,
@@ -1154,12 +1401,18 @@ def run_collection(
     log("Output: {}".format(config.output_dir))
     reference_dirs = collector_reference_dirs(config)
     log("Dedupe references: {}".format(", ".join(str(path) for path in reference_dirs)))
+    download_index = load_download_index(
+        reference_dirs,
+        max_bytes=config.max_download_bytes,
+        max_pixels=config.max_image_pixels,
+    )
 
     all_candidates, detail_urls = collect_from_browser(
         config,
         seed_detail_urls=[],
         log=log,
         stop_event=stop_event,
+        download_index=download_index,
     )
 
     deduped = dedupe_candidates(all_candidates, config.max_images)
@@ -1168,7 +1421,6 @@ def run_collection(
     log("Collected {} unique image candidates.".format(len(deduped)))
     log("Collected {} unique detail URLs.".format(len(unique_list(detail_urls))))
 
-    download_index = load_download_index(reference_dirs)
     completed_keys = download_index.candidate_keys
     remaining = [
         candidate for candidate in deduped
@@ -1184,8 +1436,17 @@ def run_collection(
         reset_manifest=False,
         known_sha256_paths=download_index.sha256_paths,
     )
-    current_keys = load_download_index([config.output_dir]).candidate_keys
-    known_keys = load_download_index(reference_dirs).candidate_keys
+    for result in results:
+        if result.ok:
+            download_index.candidate_keys.add(
+                canonical_image_key(ImageCandidate(image_url=result.image_url))
+            )
+    current_keys = load_download_index(
+        [config.output_dir],
+        max_bytes=config.max_download_bytes,
+        max_pixels=config.max_image_pixels,
+    ).candidate_keys
+    known_keys = download_index.candidate_keys
     ok_count = len(current_keys)
     failed_count = sum(1 for result in results if not result.ok)
     elapsed = int(time.time() - started_at)
@@ -1731,10 +1992,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workers", type=int, default=DEFAULT_DOWNLOAD_WORKERS)
     parser.add_argument("--scroll-pause", type=float, default=DEFAULT_SCROLL_PAUSE)
     parser.add_argument("--request-delay", type=float, default=DEFAULT_REQUEST_DELAY)
+    parser.add_argument("--max-download-bytes", type=int, default=DEFAULT_MAX_DOWNLOAD_BYTES)
+    parser.add_argument("--max-image-pixels", type=int, default=DEFAULT_MAX_IMAGE_PIXELS)
     parser.add_argument("--no-download", action="store_true")
     parser.add_argument("--no-upgrade-original", action="store_true")
     parser.add_argument("--allow-any-image-domain", action="store_true")
     parser.add_argument("--browser-profile", default=str(DEFAULT_BROWSER_PROFILE))
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="run Chromium without a visible window; CAPTCHA or 2FA cannot be handled interactively",
+    )
+    parser.add_argument(
+        "--fail-on-login-gate",
+        action="store_true",
+        help="stop instead of continuing when login, CAPTCHA, 2FA, or risk control is detected",
+    )
     return parser
 
 
@@ -1779,6 +2052,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         pinimg_only=not args.allow_any_image_domain,
         download_images=not args.no_download,
         browser_profile=Path(args.browser_profile),
+        headless=args.headless,
+        fail_on_login_gate=args.fail_on_login_gate or args.headless,
+        max_download_bytes=max(1, args.max_download_bytes),
+        max_image_pixels=max(1, args.max_image_pixels),
     )
     run_collection(config)
     return 0

@@ -34,6 +34,7 @@ x-backend-common: &backend-common
     APP_DATA_INITIALIZER_ENABLED: "false"
     APP_WEB_ALLOWED_ORIGIN_PATTERNS: ${APP_WEB_ALLOWED_ORIGIN_PATTERNS:-http://localhost}
     APP_AUTH_TOKEN_SECRET: ${APP_AUTH_TOKEN_SECRET:?set APP_AUTH_TOKEN_SECRET in .env.public}
+    APP_MODERATION_TOKEN: ${APP_MODERATION_TOKEN:?set APP_MODERATION_TOKEN in .env.public}
     APP_AUTH_TOKEN_TTL_SECONDS: ${APP_AUTH_TOKEN_TTL_SECONDS:-86400}
     APP_FEATURE_PUBLISHING_ENABLED: "false"
     APP_FEATURE_MEDIA_UPLOAD_ENABLED: "false"
@@ -48,6 +49,7 @@ x-backend-common: &backend-common
     ALIYUN_SMS_TEMPLATE_CODE: ${ALIYUN_SMS_TEMPLATE_CODE:-100001}
     VECTOR_ENABLED: ${VECTOR_ENABLED:-false}
     VECTOR_SERVICE_URL: ${VECTOR_SERVICE_URL:-http://host.docker.internal:8091}
+    SIMILAR_MIN_COSINE_SCORE: ${SIMILAR_MIN_COSINE_SCORE:-0.20}
     MODEL_RECALL_ENABLED: ${MODEL_RECALL_ENABLED:-false}
     MODEL_RANKING_ENABLED: ${MODEL_RANKING_ENABLED:-false}
     MODEL_SERVICE_URL: ${MODEL_SERVICE_URL:-http://host.docker.internal:8092}
@@ -80,6 +82,7 @@ services:
       - "${PUBLIC_HTTP_PORT:-80}:80"
     volumes:
       - ./nginx/gateway.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/gateway.routes.conf:/etc/nginx/vibelo/gateway.routes.conf:ro
     depends_on:
       backend:
         condition: service_healthy

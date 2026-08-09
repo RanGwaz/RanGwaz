@@ -432,14 +432,16 @@ public interface RecommendationMapper {
                                               @Param("size") int size);
 
     /**
-     * Stable fallback for detail-page related feed when vector or rich metadata recall is not enough.
+     * Stable fallback for detail-page related feed using only shared category or ratio metadata.
      *
      * @param imageId source image id
+     * @param excludeIds source and primary-pool ids to exclude before each limited window
      * @param offset row offset
      * @param size page size
      * @return image rows
      */
     @Select("""
+            <script>
             WITH source_image AS (
               SELECT id,main_category_id,ratio
               FROM images
@@ -451,8 +453,14 @@ public interface RecommendationMapper {
               FROM source_image src
               JOIN images i FORCE INDEX (idx_images_status_category_ratio_hot)
                 ON i.status='PUBLISHED'
-               AND i.id<>src.id
+               AND i.id!=src.id
                AND i.main_category_id=src.main_category_id
+              <if test="excludeIds != null and excludeIds.size() > 0">
+                AND i.id NOT IN
+                <foreach collection="excludeIds" item="excludeId" open="(" separator="," close=")">
+                  #{excludeId}
+                </foreach>
+              </if>
               WHERE src.main_category_id IS NOT NULL
               ORDER BY i.hot_score DESC,i.published_at DESC,i.id DESC
               LIMIT #{size}
@@ -461,16 +469,17 @@ public interface RecommendationMapper {
               SELECT i.id AS image_id,
                      0.7 + COALESCE(i.hot_score,0) * 0.18 AS score
               FROM source_image src
-              JOIN images i ON i.status='PUBLISHED' AND i.id<>src.id AND i.ratio=src.ratio
+              JOIN images i
+                ON i.status='PUBLISHED'
+               AND i.id!=src.id
+               AND i.ratio=src.ratio
+              <if test="excludeIds != null and excludeIds.size() > 0">
+                AND i.id NOT IN
+                <foreach collection="excludeIds" item="excludeId" open="(" separator="," close=")">
+                  #{excludeId}
+                </foreach>
+              </if>
               WHERE src.ratio IS NOT NULL
-              ORDER BY i.hot_score DESC,i.published_at DESC,i.id DESC
-              LIMIT #{size}
-            ),
-            hot_candidates AS (
-              SELECT i.id AS image_id,
-                     COALESCE(i.hot_score,0) * 0.12 + 24 / (TIMESTAMPDIFF(HOUR,i.published_at,NOW()) + 24) AS score
-              FROM source_image src
-              JOIN images i ON i.status='PUBLISHED' AND i.id<>src.id
               ORDER BY i.hot_score DESC,i.published_at DESC,i.id DESC
               LIMIT #{size}
             ),
@@ -478,8 +487,6 @@ public interface RecommendationMapper {
               SELECT image_id,score FROM category_candidates
               UNION ALL
               SELECT image_id,score FROM ratio_candidates
-              UNION ALL
-              SELECT image_id,score FROM hot_candidates
             ),
             scored_candidates AS (
               SELECT image_id,SUM(score) AS score
@@ -491,8 +498,10 @@ public interface RecommendationMapper {
             JOIN images i ON i.id=candidates.image_id
             ORDER BY candidates.score DESC,i.published_at DESC,i.id DESC
             LIMIT #{size} OFFSET #{offset}
+            </script>
             """)
     List<ImageEntity> selectSimilarFallback(@Param("imageId") Long imageId,
+                                            @Param("excludeIds") List<Long> excludeIds,
                                             @Param("offset") int offset,
                                             @Param("size") int size);
 }

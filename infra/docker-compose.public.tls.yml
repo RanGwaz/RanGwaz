@@ -1,0 +1,12 @@
+# Optional TLS overlay. Never pass this file before ICP filing, DNS and the
+# certificate gate in ops/public/validate-domain-tls.sh have all succeeded.
+services:
+  gateway:
+    ports:
+      - "${PUBLIC_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/gateway.tls.conf:/etc/nginx/nginx.conf:ro
+      - type: bind
+        source: ${VIBELO_TLS_CERT_DIR:?set VIBELO_TLS_CERT_DIR to the host certificate directory}
+        target: /etc/nginx/tls
+        read_only: true

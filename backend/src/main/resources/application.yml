@@ -83,6 +83,7 @@ app:
   recommendation:
     vector-service-url: ${VECTOR_SERVICE_URL:http://127.0.0.1:8091}
     vector-enabled: ${VECTOR_ENABLED:true}
+    similar-min-cosine-score: ${SIMILAR_MIN_COSINE_SCORE:0.20}
     model-service-url: ${MODEL_SERVICE_URL:http://127.0.0.1:8092}
     model-recall-enabled: ${MODEL_RECALL_ENABLED:false}
     model-ranking-enabled: ${MODEL_RANKING_ENABLED:false}

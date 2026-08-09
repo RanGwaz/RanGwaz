@@ -4,6 +4,8 @@
 
 工具不会绕过验证码、登录墙或平台风控。提供账号密码时，它只会尝试自动填写正常登录表单；遇到验证码、二次验证或风控确认时，需要你在浏览器里手动处理。
 
+登录信息不再保存在源码中。需要自动填写普通登录表单时，只在当前进程环境中设置 `RANGWAZ_LOGIN_EMAIL`、`RANGWAZ_LOGIN_PASSWORD`；不要提交到 Git。
+
 ## 输出目录
 
 ```text
@@ -24,6 +26,19 @@ python tools/dataset_collector.py
 ```
 
 入口页可以填完整 URL，也可以只填首页域名，例如 `www.pinterest.com`。
+
+明确授权且不需要人工验证码的来源可以使用无头模式：
+
+```powershell
+python tools/dataset_collector.py `
+  --headless `
+  --keyword-file tools/collector-keywords.local.txt `
+  --max-images 500 `
+  --workers 2 `
+  --request-delay 1.5
+```
+
+无头模式遇到验证码或二次验证时不能继续，应回到可见浏览器人工处理，不能尝试绕过。公网服务器定时运行的资源门禁与 systemd 配置见 `docs/内容定时任务与相似图片召回.md`。
 
 ## 依赖
 

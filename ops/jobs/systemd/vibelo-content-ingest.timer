@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Vibelo content ingestion during the weekly low-traffic window
+
+[Timer]
+OnCalendar=Sun *-*-* 03:30:00
+RandomizedDelaySec=30m
+Persistent=false
+Unit=vibelo-content-ingest.service
+
+[Install]
+WantedBy=timers.target

@@ -13,6 +13,8 @@ import com.rangwaz.imagesite.service.RankingModelClient.RankedHit;
 import com.rangwaz.imagesite.service.VectorRecallClient;
 import com.rangwaz.imagesite.service.VectorRecallClient.UserEvent;
 import com.rangwaz.imagesite.service.VectorRecallClient.VectorHit;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -22,6 +24,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -33,11 +36,11 @@ import java.util.Set;
 @Service
 public class FeedServiceImpl implements FeedService {
     private static final int MAX_RECALL_CANDIDATES = 240;
+    private static final double DEFAULT_SIMILAR_MIN_COSINE_SCORE = 0.20;
     private static final int ANONYMOUS_FIRST_PAGE_POOL_SIZE = 180;
     private static final int MAX_CLIENT_EXCLUDE_IDS = 240;
     private static final int RECENT_HOME_EXCLUDE_LIMIT = 400;
     private static final int HOME_RECALL_MULTIPLIER = 2;
-    private static final int SIMILAR_RECALL_MULTIPLIER = 4;
     private static final double ROUTE_VECTOR_WEIGHT = 0.38;
     private static final double ROUTE_TAG_WEIGHT = 0.2;
     private static final double ROUTE_TOPIC_WEIGHT = 0.14;
@@ -55,6 +58,7 @@ public class FeedServiceImpl implements FeedService {
     private final VectorRecallClient vectorRecallClient;
     private final RankingModelClient rankingModelClient;
     private final ImageServiceImpl imageService;
+    private final double similarMinCosineScore;
 
     /**
      * Creates the feed service.
@@ -72,12 +76,35 @@ public class FeedServiceImpl implements FeedService {
                            VectorRecallClient vectorRecallClient,
                            RankingModelClient rankingModelClient,
                            ImageServiceImpl imageService) {
+        this(
+                imageContentMapper,
+                recommendationMapper,
+                behaviorMapper,
+                vectorRecallClient,
+                rankingModelClient,
+                imageService,
+                DEFAULT_SIMILAR_MIN_COSINE_SCORE
+        );
+    }
+
+    /**
+     * Creates the Spring-managed feed service with a configurable similarity threshold.
+     */
+    @Autowired
+    public FeedServiceImpl(ImageContentMapper imageContentMapper,
+                           RecommendationMapper recommendationMapper,
+                           BehaviorMapper behaviorMapper,
+                           VectorRecallClient vectorRecallClient,
+                           RankingModelClient rankingModelClient,
+                           ImageServiceImpl imageService,
+                           @Value("${app.recommendation.similar-min-cosine-score:0.20}") double similarMinCosineScore) {
         this.imageContentMapper = imageContentMapper;
         this.recommendationMapper = recommendationMapper;
         this.behaviorMapper = behaviorMapper;
         this.vectorRecallClient = vectorRecallClient;
         this.rankingModelClient = rankingModelClient;
         this.imageService = imageService;
+        this.similarMinCosineScore = validateSimilarMinCosineScore(similarMinCosineScore);
     }
 
     /**
@@ -186,16 +213,29 @@ public class FeedServiceImpl implements FeedService {
         imageService.requirePost(postId);
         int safePage = Math.max(1, page);
         int safeSize = Math.max(1, Math.min(size, 60));
-        int offset = (safePage - 1) * safeSize;
-        int candidateLimit = candidateLimit(offset, safeSize, SIMILAR_RECALL_MULTIPLIER);
-        List<VectorHit> vectorHits = vectorRecallClient.similar(postId, 0, candidateLimit);
-        List<ImageEntity> metadataSimilar = recommendationMapper.selectSimilarByMetadata(postId, 0, candidateLimit);
-        List<ImageEntity> images = new ArrayList<>(rankSimilar(vectorHits, metadataSimilar, offset, safeSize));
-        if (images.size() < safeSize) {
-            fillSimilarFallback(postId, images, offset, safeSize);
-        }
+        long offset = (long) (safePage - 1) * safeSize;
+        // Keep one stable candidate universe for every page. Growing the pool with
+        // the page number can reorder earlier candidates and creates duplicates or
+        // gaps for offset pagination.
+        List<VectorHit> vectorHits = positiveUniqueSimilarVectorHits(
+                postId,
+                vectorRecallClient.similar(postId, 0, MAX_RECALL_CANDIDATES)
+        );
+        int metadataLimit = MAX_RECALL_CANDIDATES - vectorHits.size();
+        List<ImageEntity> metadataSimilar = metadataLimit > 0
+                ? recommendationMapper.selectSimilarByMetadata(postId, 0, metadataLimit)
+                : List.of();
+        List<ImageEntity> candidates = new ArrayList<>(rankSimilar(postId, vectorHits, metadataSimilar));
+        // Build the same complete, finite pool on every request so total and
+        // offset boundaries stay stable even when the primary pool ends exactly
+        // at a page boundary.
+        mergeSimilarFallback(postId, candidates);
+        List<ImageEntity> images = candidates.stream()
+                .skip(offset)
+                .limit(safeSize)
+                .toList();
         var records = imageService.toViews(images, similarReason(vectorHits, metadataSimilar, images));
-        return new PageResponse<>(records, imageContentMapper.countSimilar(postId), safePage, safeSize);
+        return new PageResponse<>(records, candidates.size(), safePage, safeSize);
     }
 
     private int candidateLimit(int offset, int size, int multiplier) {
@@ -390,21 +430,22 @@ public class FeedServiceImpl implements FeedService {
         return ANON_EXPLORATION_WEIGHT;
     }
 
-    private List<ImageEntity> rankSimilar(List<VectorHit> vectorHits,
-                                          List<ImageEntity> metadataSimilar,
-                                          int offset,
-                                          int size) {
+    private List<ImageEntity> rankSimilar(Long postId,
+                                          List<VectorHit> vectorHits,
+                                          List<ImageEntity> metadataSimilar) {
         Map<Long, Double> scores = new LinkedHashMap<>();
         int rank = 0;
         for (VectorHit hit : vectorHits) {
-            if (hit.imageId() != null && hit.imageId() > 0) {
-                scores.merge(hit.imageId(), cleanScore(hit.score()) * 0.76 + rankDecay(rank) * 0.06, Double::sum);
-                rank++;
-            }
+            scores.put(hit.imageId(), hit.score() * 0.76 + rankDecay(rank) * 0.06);
+            rank++;
         }
+        Set<Long> seenMetadataIds = new HashSet<>();
         rank = 0;
         for (ImageEntity image : metadataSimilar) {
-            if (image.getId() != null) {
+            if (image.getId() != null
+                    && image.getId() > 0
+                    && !image.getId().equals(postId)
+                    && seenMetadataIds.add(image.getId())) {
                 scores.merge(image.getId(), rankDecay(rank) * 0.24, Double::sum);
                 rank++;
             }
@@ -413,30 +454,72 @@ public class FeedServiceImpl implements FeedService {
             return List.of();
         }
         List<ImageEntity> candidates = imageContentMapper.findPublishedByIds(List.copyOf(scores.keySet()));
-        return candidates.stream()
-                .filter(image -> image.getId() != null)
+        Map<Long, ImageEntity> uniqueCandidates = new LinkedHashMap<>();
+        for (ImageEntity image : candidates) {
+            if (image.getId() != null
+                    && !image.getId().equals(postId)
+                    && scores.containsKey(image.getId())) {
+                uniqueCandidates.putIfAbsent(image.getId(), image);
+            }
+        }
+        return uniqueCandidates.values().stream()
                 .sorted(Comparator
                         .comparingDouble((ImageEntity image) -> similarScore(image, scores)).reversed()
                         .thenComparing(ImageEntity::getPublishedAt, Comparator.nullsLast(Comparator.reverseOrder()))
                         .thenComparing(ImageEntity::getId, Comparator.nullsLast(Comparator.reverseOrder())))
-                .skip(offset)
-                .limit(size)
+                .limit(MAX_RECALL_CANDIDATES)
                 .toList();
     }
 
-    private void fillSimilarFallback(Long postId, List<ImageEntity> images, int offset, int size) {
-        Set<Long> seen = new HashSet<>();
-        for (ImageEntity image : images) {
+    private void mergeSimilarFallback(Long postId, List<ImageEntity> candidates) {
+        int remainingCapacity = MAX_RECALL_CANDIDATES - candidates.size();
+        if (remainingCapacity <= 0) return;
+        Set<Long> seen = new LinkedHashSet<>();
+        for (ImageEntity image : candidates) {
             if (image.getId() != null) seen.add(image.getId());
         }
         seen.add(postId);
-        int fallbackLimit = Math.max(size * 3, size + 12);
-        for (ImageEntity image : recommendationMapper.selectSimilarFallback(postId, offset, fallbackLimit)) {
+        List<Long> excludeIds = seen.stream()
+                .limit(MAX_RECALL_CANDIDATES + 1L)
+                .toList();
+        for (ImageEntity image : recommendationMapper.selectSimilarFallback(postId, excludeIds, 0, remainingCapacity)) {
             if (image.getId() == null || seen.contains(image.getId())) continue;
-            images.add(image);
+            candidates.add(image);
             seen.add(image.getId());
-            if (images.size() >= size) break;
+            if (candidates.size() >= MAX_RECALL_CANDIDATES) break;
         }
+    }
+
+    private boolean isUsableSimilarVectorHit(VectorHit hit, Long postId) {
+        return isPositiveFiniteVectorHit(hit) && !hit.imageId().equals(postId);
+    }
+
+    private List<VectorHit> positiveUniqueSimilarVectorHits(Long postId, List<VectorHit> vectorHits) {
+        if (vectorHits == null || vectorHits.isEmpty()) return List.of();
+        List<VectorHit> normalized = new ArrayList<>();
+        Set<Long> seen = new HashSet<>();
+        for (VectorHit hit : vectorHits) {
+            if (!isUsableSimilarVectorHit(hit, postId) || !seen.add(hit.imageId())) continue;
+            normalized.add(hit);
+            if (normalized.size() >= MAX_RECALL_CANDIDATES) break;
+        }
+        return List.copyOf(normalized);
+    }
+
+    private boolean isPositiveFiniteVectorHit(VectorHit hit) {
+        return hit != null
+                && hit.imageId() != null
+                && hit.imageId() > 0
+                && Double.isFinite(hit.score())
+                && hit.score() > 0
+                && hit.score() >= similarMinCosineScore;
+    }
+
+    private static double validateSimilarMinCosineScore(double score) {
+        if (!Double.isFinite(score) || score < 0 || score > 1) {
+            throw new IllegalArgumentException("similar minimum cosine score must be finite and between 0 and 1");
+        }
+        return score;
     }
 
     private double similarScore(ImageEntity image, Map<Long, Double> recallScores) {
@@ -446,8 +529,18 @@ public class FeedServiceImpl implements FeedService {
     }
 
     private String similarReason(List<VectorHit> vectorHits, List<ImageEntity> metadataSimilar, List<ImageEntity> rankedImages) {
-        boolean hasVector = vectorHits.stream().map(VectorHit::imageId).anyMatch(Objects::nonNull);
-        boolean hasMetadata = metadataSimilar.stream().map(ImageEntity::getId).anyMatch(Objects::nonNull);
+        Set<Long> pageIds = rankedImages.stream()
+                .map(ImageEntity::getId)
+                .filter(Objects::nonNull)
+                .collect(java.util.stream.Collectors.toSet());
+        boolean hasVector = vectorHits.stream()
+                .filter(this::isPositiveFiniteVectorHit)
+                .map(VectorHit::imageId)
+                .anyMatch(pageIds::contains);
+        boolean hasMetadata = metadataSimilar.stream()
+                .map(ImageEntity::getId)
+                .filter(Objects::nonNull)
+                .anyMatch(pageIds::contains);
         boolean hasFallback = !rankedImages.isEmpty() && !hasVector && !hasMetadata;
         if (hasVector && hasMetadata) return "similar-vector-tags";
         if (hasVector) return "similar-vector";

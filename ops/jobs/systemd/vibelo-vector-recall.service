@@ -1,0 +1,38 @@
+[Unit]
+Description=Vibelo Milvus vector recall API
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=vibelo-vector-recall
+Group=vibelo-vector-recall
+SupplementaryGroups=vibelo-vector-runtime
+WorkingDirectory=/opt/vibelo
+EnvironmentFile=/etc/vibelo/vector-job.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+UMask=0077
+
+ExecStart=/usr/bin/bash -c 'exec /opt/vibelo/.venv-vector/bin/python /opt/vibelo/tools/vector_recall_service.py'
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=30
+
+Nice=5
+CPUQuota=100%
+MemoryHigh=768M
+MemoryMax=1024M
+TasksMax=256
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

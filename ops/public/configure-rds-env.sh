@@ -578,6 +578,7 @@ set_env_raw VIBELO_DB_PASSWORD "$SELECTED_RAW"
 unset SPRING_PASSWORD_RAW VIBELO_PASSWORD_RAW RDS_PASSWORD_EXISTING SELECTED_RAW
 
 prompt_secret_key APP_AUTH_TOKEN_SECRET "登录 Token 签名密钥" 32 true
+prompt_secret_key APP_MODERATION_TOKEN "人工审核令牌" 32 true
 prompt_secret_key MINIO_ACCESS_KEY "MinIO Access Key" 3 false
 prompt_secret_key MINIO_SECRET_KEY "MinIO Secret Key" 8 true
 

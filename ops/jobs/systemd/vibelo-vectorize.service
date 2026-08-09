@@ -1,0 +1,41 @@
+[Unit]
+Description=Vibelo incremental image vectorization
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+ConditionPathIsMountPoint=/data
+
+[Service]
+Type=oneshot
+User=vibelo-vectorize
+Group=vibelo-vectorize
+SupplementaryGroups=vibelo-vector-runtime
+WorkingDirectory=/opt/vibelo
+EnvironmentFile=/etc/vibelo/vector-job.env
+EnvironmentFile=/etc/vibelo/vector-db.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+RuntimeDirectory=vibelo-vector-jobs
+UMask=0077
+
+ExecStart=/usr/bin/flock --nonblock --conflict-exit-code=75 /run/vibelo-vector-jobs/vectorize.lock /usr/bin/bash /opt/vibelo/ops/jobs/run-vectorize-job.sh
+SuccessExitStatus=75
+TimeoutStartSec=8h
+TimeoutStopSec=180
+KillSignal=SIGINT
+
+Nice=15
+IOSchedulingClass=idle
+CPUQuota=300%
+MemoryHigh=5G
+MemoryMax=6G
+TasksMax=512
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/data/vibelo-vector/cache /data/vibelo-vector/state /run/vibelo-vector-jobs
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+StandardOutput=journal
+StandardError=journal

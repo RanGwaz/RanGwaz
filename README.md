@@ -50,6 +50,7 @@ $env:SPRING_DATASOURCE_PASSWORD="validation-only"
 $env:MINIO_ACCESS_KEY="validation-only"
 $env:MINIO_SECRET_KEY="validation-only"
 $env:APP_AUTH_TOKEN_SECRET="validation-only-token-secret-at-least-32-characters"
+$env:APP_MODERATION_TOKEN="distinct-validation-moderation-token-32-characters"
 docker compose -f infra/docker-compose.public.yml config --quiet
 ```
 
@@ -80,7 +81,7 @@ flowchart LR
 
 只有决定正式上线时才生成未跟踪的 `.env.public`。公网发布采用离线、不可变 release：在本机已提交全部跟踪变更且前后端没有未跟踪构建输入的完整 40 位 Git SHA 上，用 `--pull=false --platform linux/amd64` 构建带 `org.opencontainers.image.revision` 标签的 Backend/Frontend commit 镜像，再由 `Export-PublicImageBundle.ps1` 连同固定运行镜像导出并在 ECS 上校验导入；PyMySQL 1.1.2 wheel 单独离线传输。ECS 不构建、不拉取、不在线安装 Python 包，所有 `up` 都使用 `--no-build --pull never` 和显式服务名。完整命令见部署手册第 9 节。
 
-完整的域名、TLS、数据迁移、首次发布、验收、更新与回滚步骤见 [公网部署与 Nginx 网关](docs/公网部署与Nginx网关.md)。
+完整的域名、TLS、数据迁移、首次发布、验收、更新与回滚步骤见 [公网部署与 Nginx 网关](docs/公网部署与Nginx网关.md)。增量图片导入、systemd 定时任务、向量计算资源门禁和详情页相似召回说明见 [内容定时任务与相似图片召回](docs/内容定时任务与相似图片召回.md)。
 
 公网目标系统是 Ubuntu Server 26.04 LTS 64 位。服务器必须先按手册安装 Docker、设置 `vm.max_map_count=1048576`、增加 4 GB 应急 Swap，并保持 `recommendation` profile 关闭。
 
