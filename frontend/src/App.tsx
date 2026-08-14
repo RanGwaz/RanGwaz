@@ -5,6 +5,7 @@ import { AppShell } from './components/AppShell'
 import { AuthModal } from './components/AuthModal'
 import { LaunchSplash } from './components/LaunchSplash'
 import { DetailPage } from './pages/DetailPage'
+import { DiscoverPage } from './pages/DiscoverPage'
 import { FeedPage } from './pages/FeedPage'
 import { ProfileEditPage } from './pages/ProfileEditPage'
 import { ProfilePage } from './pages/ProfilePage'
@@ -22,7 +23,7 @@ export function App() {
             <Route path="/" element={<Navigate to="/home" replace />} />
             <Route path="/home" element={<FeedPage />} />
             <Route path="/image/:id" element={<DetailPage />} />
-            <Route path="/discover" element={<Navigate to="/home" replace />} />
+            <Route path="/discover" element={<DiscoverPage />} />
             <Route path="/publish" element={<Navigate to="/home" replace />} />
             <Route path="/profile" element={<ProfilePage />} />
             <Route path="/profile/edit" element={<ProfileEditPage />} />

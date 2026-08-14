@@ -49,6 +49,14 @@ public interface AuthService {
     ApiDtos.AuthTokenResponse loginWithPhonePassword(ApiDtos.PhonePasswordLoginRequest request);
 
     /**
+     * Replaces an existing phone account password after SMS verification.
+     *
+     * @param request verified password reset request
+     * @return a fresh token for the account
+     */
+    ApiDtos.AuthTokenResponse resetPhonePassword(ApiDtos.PhonePasswordResetRequest request);
+
+    /**
      * Resolves the current user from a bearer token.
      *
      * @param authorization authorization header

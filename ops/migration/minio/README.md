@@ -85,6 +85,19 @@ sudo bash ops/migration/minio/start-minio-target.sh --verify-existing
 建立隧道；任一项失败都要保留现场并先诊断，尤其在 mirror 开始后绝不能删除
 目标卷。
 
+站点上线后，同一 Compose 项目会同时运行 Gateway、前后端和中间件，此时使用在线
+严格只读模式：
+
+```bash
+sudo bash ops/migration/minio/start-minio-target.sh --verify-online
+```
+
+`--verify-online` 保留上述全部 MinIO 身份、固定镜像、配置哈希、健康、回环端口和卷
+门禁，只额外允许简化 HTTP 栈的固定服务集合同时运行；`mysql`、推荐 profile、未知
+orphan、重复服务或错误 MinIO 容器仍会失败。它会把预检的 80/443 例外严格绑定到当前
+Gateway，因此可在正常在线、维护窗口前以及其他服务停止后重复运行。该模式同样绝不
+启动、重启、重建或删除容器/数据卷；MinIO 尚不存在时会明确失败。
+
 三个 Bash 入口的纯 fixture/mock 回归测试不会真实加载镜像或启动服务：
 
 ```bash

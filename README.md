@@ -81,7 +81,7 @@ flowchart LR
 
 只有决定正式上线时才生成未跟踪的 `.env.public`。公网发布采用离线、不可变 release：在本机已提交全部跟踪变更且前后端没有未跟踪构建输入的完整 40 位 Git SHA 上，用 `--pull=false --platform linux/amd64` 构建带 `org.opencontainers.image.revision` 标签的 Backend/Frontend commit 镜像，再由 `Export-PublicImageBundle.ps1` 连同固定运行镜像导出并在 ECS 上校验导入；PyMySQL 1.1.2 wheel 单独离线传输。ECS 不构建、不拉取、不在线安装 Python 包，所有 `up` 都使用 `--no-build --pull never` 和显式服务名。完整命令见部署手册第 9 节。
 
-完整的域名、TLS、数据迁移、首次发布、验收、更新与回滚步骤见 [公网部署与 Nginx 网关](docs/公网部署与Nginx网关.md)。增量图片导入、systemd 定时任务、向量计算资源门禁和详情页相似召回说明见 [内容定时任务与相似图片召回](docs/内容定时任务与相似图片召回.md)。
+日常更新优先按 [公网简化发布](docs/公网简化发布.md) 使用本地和 ECS 两个薄入口；完整的域名、TLS、数据迁移、首次发布、底层验收与灾难恢复步骤见 [公网部署与 Nginx 网关](docs/公网部署与Nginx网关.md)。增量图片导入、systemd 定时任务、向量计算资源门禁和详情页相似召回说明见 [内容定时任务与相似图片召回](docs/内容定时任务与相似图片召回.md)。
 
 公网目标系统是 Ubuntu Server 26.04 LTS 64 位。服务器必须先按手册安装 Docker、设置 `vm.max_map_count=1048576`、增加 4 GB 应急 Swap，并保持 `recommendation` profile 关闭。
 
@@ -274,13 +274,7 @@ collection: vibelo_image_vectors_siglip2_base_p224_d512
 
 ## 手机号登录与短信
 
-前端登录弹窗已支持手机号验证码登录。单一配置默认调用真实阿里云短信；本地需要固定验证码时显式设置 `APP_SMS_MOCK=true`。同时兼容 `ALIYUN_SMS_*` 与旧的 `ALIYUN_PNVS_SMS_*` 变量名。
-
-短信服务配置说明见：
-
-```text
-docs/sms-login.md
-```
+登录弹窗支持验证码登录和手机号密码登录：新手机号验证后必须设置密码，已有账号可直接使用验证码，忘记密码走独立短信重置流程。单一配置默认调用真实阿里云短信；本地需要固定验证码时显式设置 `APP_SMS_MOCK=true`。同时兼容 `ALIYUN_SMS_*` 与旧的 `ALIYUN_PNVS_SMS_*` 变量名。完整接口与配置见 [手机号登录与号码认证短信配置](docs/sms-login.md)。
 
 ## 图片安全审核服务（首发暂不启用）
 

@@ -1,7 +1,7 @@
 package com.rangwaz.imagesite.service.impl;
 
-import com.rangwaz.imagesite.common.auth.PasswordHasher;
 import com.rangwaz.imagesite.common.auth.AuthTokenCodec;
+import com.rangwaz.imagesite.common.auth.PasswordHasher;
 import com.rangwaz.imagesite.common.exception.BusinessException;
 import com.rangwaz.imagesite.dto.ApiDtos;
 import com.rangwaz.imagesite.entity.UserEntity;
@@ -16,8 +16,8 @@ import org.springframework.stereotype.Service;
 
 import java.security.SecureRandom;
 import java.time.Duration;
+import java.util.Locale;
 import java.util.Optional;
-import java.util.UUID;
 import java.util.regex.Pattern;
 
 /**
@@ -98,9 +98,7 @@ public class AuthServiceImpl implements AuthService {
     @Override
     public ApiDtos.AuthTokenResponse login(ApiDtos.LoginRequest request) {
         UserEntity user = userMapper.findByUsername(request.username().trim());
-        if (user == null || !PasswordHasher.matches(request.password(), user.getPasswordHash())) {
-            throw new BusinessException("BAD_CREDENTIALS", "用户名或密码错误");
-        }
+        authenticateWithPassword(user, request.password(), "用户名或密码错误");
         return tokenResponse(user);
     }
 
@@ -113,12 +111,18 @@ public class AuthServiceImpl implements AuthService {
     @Override
     public ApiDtos.SmsCodeResponse sendSmsCode(ApiDtos.SendSmsCodeRequest request) {
         String phone = normalizePhone(request.phone());
+        String scene = normalizeSmsScene(request.scene());
+        UserEntity user = userMapper.findByPhone(phone);
+        boolean registered = user != null;
+        if ("password_reset".equals(scene) && !registered) {
+            throw new BusinessException("ACCOUNT_NOT_FOUND", "该手机号尚未注册");
+        }
+        if (user != null) requireActive(user);
         Duration cooldown = Duration.ofSeconds(smsCooldownSeconds);
-        if (!smsChallengeStore.reserveSend(phone, cooldown)) {
-            long retryAfter = smsChallengeStore.retryAfterSeconds(phone, smsCooldownSeconds);
+        if (!smsChallengeStore.reserveSend(phone, scene, cooldown)) {
+            long retryAfter = smsChallengeStore.retryAfterSeconds(phone, scene, smsCooldownSeconds);
             throw new BusinessException("SMS_TOO_FREQUENT", "验证码发送太频繁，请 " + retryAfter + " 秒后再试");
         }
-        boolean registered = userMapper.findByPhone(phone) != null;
         String code = newSmsCode();
         try {
             if (smsMock) {
@@ -126,11 +130,11 @@ public class AuthServiceImpl implements AuthService {
             } else {
                 SmsSender sender = smsSender.orElseThrow(() ->
                         new BusinessException("SMS_PROVIDER_NOT_CONFIGURED", "真实短信服务尚未启用，请先配置短信发送适配器"));
-                sender.sendVerificationCode(phone, code, Duration.ofSeconds(smsCodeTtlSeconds), request.scene());
+                sender.sendVerificationCode(phone, code, Duration.ofSeconds(smsCodeTtlSeconds), scene);
             }
-            smsChallengeStore.save(phone, code, Duration.ofSeconds(smsCodeTtlSeconds));
+            smsChallengeStore.save(phone, scene, code, Duration.ofSeconds(smsCodeTtlSeconds));
         } catch (RuntimeException exception) {
-            smsChallengeStore.releaseSend(phone);
+            smsChallengeStore.releaseSend(phone, scene);
             throw exception;
         }
         return new ApiDtos.SmsCodeResponse(true, smsMock ? code : null, smsCodeTtlSeconds, smsCooldownSeconds, registered);
@@ -145,13 +149,14 @@ public class AuthServiceImpl implements AuthService {
     @Override
     public ApiDtos.AuthTokenResponse loginWithPhone(ApiDtos.PhoneLoginRequest request) {
         String phone = normalizePhone(request.phone());
-        assertSmsCode(phone, request.code());
         UserEntity user = userMapper.findByPhone(phone);
         if (user == null) {
-            String password = optionalMatchingPassword(request.password(), request.passwordConfirm());
+            String password = requireMatchingPassword(request.password(), request.passwordConfirm());
+            assertSmsCode(phone, "login", request.code());
             user = createPhoneUser(phone, password);
         } else {
-            user = maybeUpdatePassword(user, request.password(), request.passwordConfirm());
+            requireActive(user);
+            assertSmsCode(phone, "login", request.code());
         }
         return tokenResponse(user);
     }
@@ -166,9 +171,29 @@ public class AuthServiceImpl implements AuthService {
     public ApiDtos.AuthTokenResponse loginWithPhonePassword(ApiDtos.PhonePasswordLoginRequest request) {
         String phone = normalizePhone(request.phone());
         UserEntity user = userMapper.findByPhone(phone);
-        if (user == null || !PasswordHasher.matches(request.password(), user.getPasswordHash())) {
-            throw new BusinessException("BAD_CREDENTIALS", "手机号或密码错误");
+        authenticateWithPassword(user, request.password(), "手机号或密码错误");
+        return tokenResponse(user);
+    }
+
+    /**
+     * Replaces an existing phone account password after SMS verification.
+     *
+     * @param request verified password reset request
+     * @return a fresh token response
+     */
+    @Override
+    public ApiDtos.AuthTokenResponse resetPhonePassword(ApiDtos.PhonePasswordResetRequest request) {
+        String phone = normalizePhone(request.phone());
+        UserEntity user = userMapper.findByPhone(phone);
+        if (user == null) {
+            throw new BusinessException("ACCOUNT_NOT_FOUND", "该手机号尚未注册");
         }
+        requireActive(user);
+        String password = requireMatchingPassword(request.password(), request.passwordConfirm());
+        assertSmsCode(phone, "password_reset", request.code());
+        String passwordHash = PasswordHasher.hash(password);
+        userMapper.updatePassword(user.getId(), passwordHash);
+        user.setPasswordHash(passwordHash);
         return tokenResponse(user);
     }
 
@@ -195,8 +220,30 @@ public class AuthServiceImpl implements AuthService {
     }
 
     private ApiDtos.AuthTokenResponse tokenResponse(UserEntity user) {
+        requireActive(user);
         AuthTokenCodec.IssuedToken token = tokenCodec.issue(user.getId());
         return new ApiDtos.AuthTokenResponse(token.value(), "Bearer", token.expiresInSeconds(), userService.toSummary(user));
+    }
+
+    private void authenticateWithPassword(UserEntity user, String rawPassword, String badCredentialsMessage) {
+        if (user == null || !PasswordHasher.matches(rawPassword, user.getPasswordHash())) {
+            throw new BusinessException("BAD_CREDENTIALS", badCredentialsMessage);
+        }
+        requireActive(user);
+        if (PasswordHasher.needsUpgrade(user.getPasswordHash())
+                && PasswordHasher.isBcryptCompatible(rawPassword)) {
+            String previousHash = user.getPasswordHash();
+            String upgradedHash = PasswordHasher.hash(rawPassword);
+            if (userMapper.updatePasswordIfHashMatches(user.getId(), previousHash, upgradedHash) == 1) {
+                user.setPasswordHash(upgradedHash);
+            }
+        }
+    }
+
+    private void requireActive(UserEntity user) {
+        if (user == null || !"ACTIVE".equals(user.getStatus())) {
+            throw new BusinessException("ACCOUNT_DISABLED", "账号已停用");
+        }
     }
 
     private String normalizePhone(String rawPhone) {
@@ -215,9 +262,9 @@ public class AuthServiceImpl implements AuthService {
         return String.format("%06d", random.nextInt(1_000_000));
     }
 
-    private void assertSmsCode(String phone, String rawCode) {
+    private void assertSmsCode(String phone, String scene, String rawCode) {
         String code = rawCode == null ? "" : rawCode.trim();
-        long result = smsChallengeStore.verifyAndConsume(phone, code, 5);
+        long result = smsChallengeStore.verifyAndConsume(phone, scene, code, 5);
         if (result == -2) {
             throw new BusinessException("SMS_CODE_EXPIRED", "验证码已过期，请重新获取");
         }
@@ -229,34 +276,36 @@ public class AuthServiceImpl implements AuthService {
         }
     }
 
-    private String requireUsablePassword(String rawPassword) {
-        String password = rawPassword == null ? "" : rawPassword.trim();
-        if (password.length() < 6 || password.length() > 64) {
-            throw new BusinessException("INVALID_PASSWORD", "密码需为 6-64 位");
+    private String normalizeSmsScene(String rawScene) {
+        String scene = rawScene == null || rawScene.isBlank()
+                ? "login"
+                : rawScene.trim().toLowerCase(Locale.ROOT);
+        if (!"login".equals(scene) && !"password_reset".equals(scene)) {
+            throw new BusinessException("INVALID_SMS_SCENE", "验证码场景只能是 login 或 password_reset");
         }
-        return password;
+        return scene;
+    }
+
+    private String requireUsablePassword(String rawPassword) {
+        if (rawPassword == null || rawPassword.isBlank()) {
+            throw new BusinessException("PASSWORD_REQUIRED", "请设置密码");
+        }
+        if (rawPassword.length() < 8 || rawPassword.length() > 64) {
+            throw new BusinessException("INVALID_PASSWORD", "密码需为 8-64 位");
+        }
+        if (!PasswordHasher.isBcryptCompatible(rawPassword)) {
+            throw new BusinessException("PASSWORD_TOO_LONG", "密码的 UTF-8 编码不能超过 72 字节");
+        }
+        return rawPassword;
     }
 
     private String requireMatchingPassword(String rawPassword, String rawPasswordConfirm) {
         String password = requireUsablePassword(rawPassword);
-        String passwordConfirm = rawPasswordConfirm == null ? "" : rawPasswordConfirm.trim();
+        String passwordConfirm = rawPasswordConfirm == null ? "" : rawPasswordConfirm;
         if (!password.equals(passwordConfirm)) {
             throw new BusinessException("PASSWORD_MISMATCH", "两次输入的密码不一致");
         }
         return password;
-    }
-
-    private UserEntity maybeUpdatePassword(UserEntity user, String rawPassword, String rawPasswordConfirm) {
-        String password = rawPassword == null ? "" : rawPassword.trim();
-        String passwordConfirm = rawPasswordConfirm == null ? "" : rawPasswordConfirm.trim();
-        if (password.isEmpty() && passwordConfirm.isEmpty()) {
-            return user;
-        }
-        String matchingPassword = requireMatchingPassword(password, passwordConfirm);
-        String passwordHash = PasswordHasher.hash(matchingPassword);
-        userMapper.updatePassword(user.getId(), passwordHash);
-        user.setPasswordHash(passwordHash);
-        return user;
     }
 
     private UserEntity createPhoneUser(String phone, String password) {
@@ -271,21 +320,15 @@ public class AuthServiceImpl implements AuthService {
         try {
             userMapper.insert(user);
         } catch (DuplicateKeyException exception) {
-            throw new BusinessException("PHONE_EXISTS", "该手机号已注册，请直接登录");
+            UserEntity concurrentUser = userMapper.findByPhone(phone);
+            if (concurrentUser != null) {
+                requireActive(concurrentUser);
+                return concurrentUser;
+            }
+            throw new BusinessException("REGISTRATION_CONFLICT", "注册冲突，请重试");
         }
         return user;
     }
-    private String optionalMatchingPassword(String rawPassword, String rawPasswordConfirm) {
-        String password = rawPassword == null ? "" : rawPassword.trim();
-        String confirmation = rawPasswordConfirm == null ? "" : rawPasswordConfirm.trim();
-        if (password.isEmpty() && confirmation.isEmpty()) {
-            return UUID.randomUUID() + "-" + UUID.randomUUID();
-        }
-        return requireMatchingPassword(password, confirmation);
-    }
-
-
-
     private String uniquePhoneUsername(String phone) {
         String digits = phone.replaceAll("\\D", "");
         String base = "phone_" + (digits.length() > 20 ? digits.substring(digits.length() - 20) : digits);

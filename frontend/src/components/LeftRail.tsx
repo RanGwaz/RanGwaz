@@ -1,5 +1,5 @@
 /** Compact left navigation rail for primary image-site actions. */
-import { Home } from 'lucide-react'
+import { Compass, Home } from 'lucide-react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { BrandLogo } from './BrandLogo'
 
@@ -14,6 +14,9 @@ export function LeftRail() {
       <nav className="left-rail__nav">
         <NavLink to="/home" className={({ isActive }) => (isActive ? 'is-active' : '')} aria-label="首页" title="首页">
           <Home size={22} />
+        </NavLink>
+        <NavLink to="/discover" className={({ isActive }) => (isActive ? 'is-active' : '')} aria-label="发现灵感" title="发现灵感">
+          <Compass size={22} />
         </NavLink>
       </nav>
     </aside>

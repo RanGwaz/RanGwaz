@@ -88,6 +88,18 @@ public class AuthController {
     }
 
     /**
+     * Replaces the password of an existing phone account after SMS verification.
+     *
+     * @param request password reset request
+     * @return a fresh token response
+     */
+    @PostMapping("/phone-password-reset")
+    public ApiResponse<ApiDtos.AuthTokenResponse> phonePasswordReset(
+            @Valid @RequestBody ApiDtos.PhonePasswordResetRequest request) {
+        return ApiResponse.ok(authService.resetPhonePassword(request));
+    }
+
+    /**
      * Returns the current user.
      *
      * @param authorization authorization header

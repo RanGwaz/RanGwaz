@@ -47,41 +47,41 @@ public class SmsChallengeStore {
         this.redis = redis;
     }
 
-    public boolean reserveSend(String phone, Duration cooldown) {
-        return Boolean.TRUE.equals(redis.opsForValue().setIfAbsent(cooldownKey(phone), "1", cooldown));
+    public boolean reserveSend(String phone, String scene, Duration cooldown) {
+        return Boolean.TRUE.equals(redis.opsForValue().setIfAbsent(cooldownKey(phone, scene), "1", cooldown));
     }
 
-    public long retryAfterSeconds(String phone, long fallbackSeconds) {
-        Long ttl = redis.getExpire(cooldownKey(phone), TimeUnit.SECONDS);
+    public long retryAfterSeconds(String phone, String scene, long fallbackSeconds) {
+        Long ttl = redis.getExpire(cooldownKey(phone, scene), TimeUnit.SECONDS);
         return ttl == null || ttl < 1 ? fallbackSeconds : ttl;
     }
 
-    public void releaseSend(String phone) {
-        redis.delete(cooldownKey(phone));
+    public void releaseSend(String phone, String scene) {
+        redis.delete(cooldownKey(phone, scene));
     }
 
-    public void save(String phone, String code, Duration ttl) {
-        redis.opsForValue().set(challengeKey(phone), code + "|0", ttl);
+    public void save(String phone, String scene, String code, Duration ttl) {
+        redis.opsForValue().set(challengeKey(phone, scene), code + "|0", ttl);
     }
 
     /**
      * @return 1 verified, 0 incorrect, -1 too many attempts, -2 missing or expired
      */
-    public long verifyAndConsume(String phone, String code, int maxAttempts) {
+    public long verifyAndConsume(String phone, String scene, String code, int maxAttempts) {
         Long result = redis.execute(
                 VERIFY_SCRIPT,
-                List.of(challengeKey(phone)),
+                List.of(challengeKey(phone, scene)),
                 code,
                 Integer.toString(maxAttempts)
         );
         return result == null ? -2 : result;
     }
 
-    private String challengeKey(String phone) {
-        return CHALLENGE_PREFIX + phone;
+    private String challengeKey(String phone, String scene) {
+        return CHALLENGE_PREFIX + scene + ":" + phone;
     }
 
-    private String cooldownKey(String phone) {
-        return COOLDOWN_PREFIX + phone;
+    private String cooldownKey(String phone, String scene) {
+        return COOLDOWN_PREFIX + scene + ":" + phone;
     }
 }

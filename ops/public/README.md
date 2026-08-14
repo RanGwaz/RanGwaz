@@ -7,6 +7,22 @@
 3. 在干净的完整 Git SHA 上导出、导入并验收固定的 `linux/amd64` 公网镜像 release；
 4. 下载、校验并在 ECS 离线安装搜索重建所需的固定 PyMySQL wheel。
 
+日常发布不用再手工拼接这些底层步骤：Windows 运行
+`New-PublicReleaseBundle.ps1` 完成本地测试、两个应用镜像各构建一次和 full-SHA
+导出；上传三文件后，ECS 先运行 `public-release.sh validate`，再用同一脚本的
+`deploy` 动作完成受控更新。简明命令、失败恢复和回滚见
+[`docs/公网简化发布.md`](../../docs/公网简化发布.md)。底层脚本继续保留，供首次迁移、
+审计和灾难恢复使用。
+
+简化入口要求 `.env.public` 已有前后端同一 full-SHA 基线；没有基线的应用首次发布、
+或 current→target 间 Flyway migration 目录有任何变化时都会 fail-closed，必须使用
+完整发布流程。每次运行前先把 ECS `main` 快进到 `origin/main`：deploy 还要求
+`HEAD == RELEASE == origin/main`，rollback 则保持最新 HEAD 并只切旧镜像，不执行旧
+commit 中的 helper，也不切换/清理 Git 工作树。validate、deploy、rollback 都要求当前
+release 与目标 release 的 Compose、Nginx、reindex/固定 requirements 完全一致；rollback
+还要求旧目标与最新主线的这些真实运行契约一致。发布与 MinIO 控制脚本始终使用受信任
+的最新主线版本，不属于旧应用运行契约；任一运行契约门禁失败都必须改走完整手册。
+
 此外，`validate-domain-tls.sh` 提供域名 HTTPS 的只读上线门禁。域名实名认证不等于
 ICP 备案；中国内地 ECS 首次备案审核期间必须关站，备案通过前不要启用 TLS 覆盖文件。
 完整顺序和命令见 [`docs/域名备案与HTTPS上线.md`](../../docs/域名备案与HTTPS上线.md)。
@@ -103,11 +119,19 @@ sudo bash ops/public/preflight.sh
 - `docker compose ... config --quiet` 是否通过。
 
 Compose 检查只解析配置，输出会被隐藏以免泄露秘密；它不会拉取、构建或启动镜像。
+受控入口固定 `-p vibelo-public` 和本机 `unix:///var/run/docker.sock`，并以白名单环境
+执行；调用者 shell 的业务变量、`COMPOSE_*`、远程 `DOCKER_HOST` 或 context 不能覆盖
+`.env.public` 或改变目标 Engine。
 预检存在任一 `[失败]` 时退出码为 `1`，全部通过时退出码为 `0`。`[警告]` 不会单独
 阻止通过，但上线前仍应确认其影响。
 
 80/443 的检查是“上线前端口应空闲”。网关正式启动后再次运行该脚本，这两项会因
 网关正在监听而失败，这是预期现象。
+
+受控日常更新由 `public-release.sh` 调用
+`preflight.sh --allow-running-gateway-ports`：该例外只有在每一个繁忙监听地址都与唯一
+`vibelo-public` Gateway 的 Docker 端口发布完全一致时才通过，TLS/其他进程占用仍会
+失败。不要把这个参数用于绕过未知端口占用。
 
 修改预检公共校验逻辑后，可运行不接触系统配置的回归测试：
 
@@ -116,6 +140,15 @@ bash ops/public/test-public-common.sh
 ```
 
 ## 3. 导出并导入离线公网镜像 release
+
+推荐直接使用：
+
+```powershell
+.\ops\public\New-PublicReleaseBundle.ps1 -ValidateOnly
+.\ops\public\New-PublicReleaseBundle.ps1
+```
+
+下面是薄入口内部复用的底层等价步骤，排障时再单独执行。
 
 先在联网 Windows 主机完成测试并提交所有发布内容。全部跟踪文件必须无改动，`backend/`、`frontend/` 不能有未跟踪构建输入；不参与镜像构建的个人未跟踪文档可以保留。`$release` 必须是当前 HEAD 的完整 40 位 SHA；所需基础镜像和固定中间件镜像也必须已经存在于本机：
 
@@ -158,18 +191,32 @@ if (Test-Path -LiteralPath $bundleDir) {
 cd /opt/vibelo
 RELEASE='<完整的 40 位 Git SHA>'
 test "$(git rev-parse HEAD)" = "$RELEASE"
-test -z "$(git status --porcelain=v1 --untracked-files=all)"
+test -z "$(git status --porcelain=v1 --untracked-files=no)"
 
 bash ops/public/import-public-image-bundle.sh \
   --release "$RELEASE" \
-  --target-directory "/data/releases/$RELEASE"
+  --target-directory "/data/releases/$RELEASE" \
+  --validate-only
 ```
 
-导入器会校验目录内容、SHA256、八个固定引用、镜像 ID、平台和应用镜像 revision label。把其输出的两行值写入 `.env.public`，每个键只保留一条，并恢复权限 `600`：
+去掉 `--validate-only` 才会把归档加载到 Docker；日常更新由
+`public-release.sh deploy` 在全部只读门禁通过后完成。导入器会校验目录内容、
+SHA256、八个固定引用、镜像 ID、平台，并直接解析归档内 OCI config 验证两个应用镜像
+的 revision label；这些检查在 `--validate-only` 中已经完成，不依赖先加载镜像。它还会
+输出归档中固定 MinIO 的内容 ID，受控发布会在正式 `docker image load` 前将该值与当前
+运行 MinIO 容器的实际 Image ID 比较；即使 tag 相同，内容 ID 不同也会停止发布。底层
+手工操作时只把其中两个应用镜像引用写入 `.env.public`，每个键只保留一条，并恢复权限
+`600`：
 
 ```text
 VIBELO_BACKEND_IMAGE=vibelo-public-backend:<完整的 40 位 Git SHA>
 VIBELO_FRONTEND_IMAGE=vibelo-public-frontend:<完整的 40 位 Git SHA>
+```
+
+完整输出还包含只用于身份验收、不要写入 `.env.public` 的诊断值：
+
+```text
+VIBELO_MINIO_IMAGE_ID=sha256:<64 位十六进制内容 ID，仅用于身份验收，不写入 .env.public>
 ```
 
 不要使用 `latest`、短 SHA、ECS 上的 `docker build`、公网 Compose 的 `up --build` 或任何镜像拉取。上传、首次启动和更新的完整顺序见部署手册第 9、12 节。
@@ -189,10 +236,15 @@ $wheelDir = Join-Path $env:TEMP 'vibelo-search-reindex'
 cd /opt/vibelo
 bash ops/public/install-search-reindex-dependencies.sh \
   --wheel /data/migration/search-reindex/pymysql-1.1.2-py3-none-any.whl \
-  --venv /opt/vibelo/.venv-ops
+  --venv /opt/vibelo/.venv-ops \
+  --validate-only
 ```
 
-安装器强制 `--no-index --no-deps`，不会访问包索引或升级 pip；既有 venv 只有在包版本和 wheel SHA256 凭据均匹配时才会复用。搜索索引的首次启动顺序、维护窗口和证书门禁见 [`docs/公网部署与Nginx网关.md`](../../docs/公网部署与Nginx网关.md#9-首次构建与发布)。
+`--validate-only` 不创建或修改 venv；正式安装时去掉它。安装器强制
+`--no-index --no-deps`，不会访问包索引或升级 pip；既有 venv 只有在包版本和 wheel
+SHA256 凭据均匹配时才会复用。日常更新由 `public-release.sh` 自动选择只读/正式模式。
+搜索索引的首次启动顺序、维护窗口和证书门禁见
+[`docs/公网部署与Nginx网关.md`](../../docs/公网部署与Nginx网关.md#9-首次构建与发布)。
 
 ## 安全边界
 

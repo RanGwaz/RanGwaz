@@ -34,18 +34,30 @@ export function readFeedSession(): FeedSession | null {
     if (!value.feedSessionId) value.feedSessionId = value.refreshSeed
     return value
   } catch {
-    sessionStorage.removeItem(FEED_SESSION_KEY)
+    try {
+      sessionStorage.removeItem(FEED_SESSION_KEY)
+    } catch {
+      // Session restoration is optional when browser storage is unavailable.
+    }
     return null
   }
 }
 
 export function writeFeedSession(value: Omit<FeedSession, 'savedAt'>) {
   if (!value.loadedOnce && value.images.length === 0) return
-  sessionStorage.setItem(FEED_SESSION_KEY, JSON.stringify({ ...value, savedAt: Date.now() }))
+  try {
+    sessionStorage.setItem(FEED_SESSION_KEY, JSON.stringify({ ...value, savedAt: Date.now() }))
+  } catch {
+    // The feed remains usable without return-from-detail restoration.
+  }
 }
 
 export function clearFeedSession() {
-  sessionStorage.removeItem(FEED_SESSION_KEY)
+  try {
+    sessionStorage.removeItem(FEED_SESSION_KEY)
+  } catch {
+    // Browser storage can be disabled by the user.
+  }
 }
 
 export function updateFeedScroll(scrollY = window.scrollY) {
@@ -82,7 +94,11 @@ function readRecentIds(key: string, ttl: number, limit: number) {
     }
     return value.ids.filter((id) => Number.isFinite(id) && id > 0).slice(0, limit)
   } catch {
-    localStorage.removeItem(key)
+    try {
+      localStorage.removeItem(key)
+    } catch {
+      // Recent-ID persistence is optional.
+    }
     return []
   }
 }
@@ -95,5 +111,9 @@ function rememberRecentIds(key: string, ttl: number, ids: number[], limit: numbe
     seen.add(id)
     return true
   }).slice(0, limit)
-  localStorage.setItem(key, JSON.stringify({ ids: next, savedAt: Date.now() }))
+  try {
+    localStorage.setItem(key, JSON.stringify({ ids: next, savedAt: Date.now() }))
+  } catch {
+    // Recommendation requests still work without persisted exclusions.
+  }
 }

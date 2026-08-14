@@ -11,9 +11,10 @@ interface AuthContextValue {
   openAuth: () => void
   closeAuth: () => void
   login: (username: string, password: string) => Promise<void>
-  sendSmsCode: (phone: string) => Promise<SmsCodeResponse>
+  sendSmsCode: (phone: string, scene?: string) => Promise<SmsCodeResponse>
   loginWithPhone: (phone: string, code: string, password?: string, passwordConfirm?: string) => Promise<void>
   loginWithPhonePassword: (phone: string, password: string) => Promise<void>
+  resetPassword: (phone: string, code: string, password: string, passwordConfirm: string) => Promise<void>
   register: (username: string, password: string, nickname: string) => Promise<void>
   logout: () => Promise<void>
   updateUser: (user: UserSummary) => void
@@ -51,8 +52,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setAuthOpen(false)
   }, [])
 
-  const sendSmsCode = useCallback(async (phone: string) => {
-    return api.sendSmsCode({ phone, scene: 'login' })
+  const sendSmsCode = useCallback(async (phone: string, scene = 'login') => {
+    return api.sendSmsCode({ phone, scene })
   }, [])
 
   const loginWithPhone = useCallback(async (phone: string, code: string, password?: string, passwordConfirm?: string) => {
@@ -65,6 +66,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const loginWithPhonePassword = useCallback(async (phone: string, password: string) => {
     const response = await api.phonePasswordLogin({ phone, password })
+    setToken(response.accessToken)
+    setTokenState(response.accessToken)
+    setUser(response.me)
+    setAuthOpen(false)
+  }, [])
+
+  const resetPassword = useCallback(async (phone: string, code: string, password: string, passwordConfirm: string) => {
+    const response = await api.resetPassword({ phone, code, password, passwordConfirm })
     setToken(response.accessToken)
     setTokenState(response.accessToken)
     setUser(response.me)
@@ -100,10 +109,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     sendSmsCode,
     loginWithPhone,
     loginWithPhonePassword,
+    resetPassword,
     register,
     logout,
     updateUser,
-  }), [authOpen, closeAuth, login, loginWithPhone, loginWithPhonePassword, logout, openAuth, ready, register, sendSmsCode, token, updateUser, user])
+  }), [authOpen, closeAuth, login, loginWithPhone, loginWithPhonePassword, logout, openAuth, ready, register, resetPassword, sendSmsCode, token, updateUser, user])
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

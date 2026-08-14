@@ -98,6 +98,22 @@ public interface UserMapper {
     void updatePassword(@Param("id") Long id, @Param("passwordHash") String passwordHash);
 
     /**
+     * Atomically upgrades a password only if no concurrent password change won the race.
+     *
+     * @param id user id
+     * @param expectedPasswordHash hash observed during authentication
+     * @param passwordHash replacement hash
+     * @return affected row count
+     */
+    @Update("""
+            UPDATE app_users SET password_hash=#{passwordHash}
+            WHERE id=#{id} AND password_hash=#{expectedPasswordHash}
+            """)
+    int updatePasswordIfHashMatches(@Param("id") Long id,
+                                    @Param("expectedPasswordHash") String expectedPasswordHash,
+                                    @Param("passwordHash") String passwordHash);
+
+    /**
      * Lists users that match a keyword.
      *
      * @param keyword search keyword

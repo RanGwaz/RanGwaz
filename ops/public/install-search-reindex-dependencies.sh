@@ -14,15 +14,18 @@ EXPECTED_WHEEL_SHA256='e6b1d89711dd51f8f74b1631fe08f039e7d76cf67a42a323d3178f0f2
 EXPECTED_PYMYSQL_VERSION='1.1.2'
 WHEEL_PATH=''
 VENV_PATH='/opt/vibelo/.venv-ops'
+VALIDATE_ONLY=false
 
 usage() {
   cat <<'EOF'
 用法：
   bash ops/public/install-search-reindex-dependencies.sh \
     --wheel /data/migration/search-reindex/pymysql-1.1.2-py3-none-any.whl \
-    [--venv /opt/vibelo/.venv-ops]
+    [--venv /opt/vibelo/.venv-ops] \
+    [--validate-only]
 
 只从固定 wheel 离线安装搜索重建依赖；不访问 PyPI，不升级 pip。
+--validate-only 只校验 wheel 与既有 venv（如存在），不会创建或修改 venv。
 EOF
 }
 
@@ -42,6 +45,10 @@ while (($# > 0)); do
       (($# >= 2)) || die '--venv 缺少路径'
       VENV_PATH=$2
       shift 2
+      ;;
+    --validate-only)
+      VALIDATE_ONLY=true
+      shift
       ;;
     -h | --help)
       usage
@@ -99,6 +106,13 @@ fi
 parent_dir=${VENV_PATH%/*}
 [[ -d $parent_dir && ! -L $parent_dir ]] ||
   die "venv 父目录必须已存在且不能是符号链接：$parent_dir"
+
+if [[ $VALIDATE_ONLY == true ]]; then
+  python3 -m venv --help >/dev/null 2>&1 ||
+    die 'python3 venv 模块不可用；请先通过系统镜像安装 python3-venv'
+  printf '[通过] 固定 wheel 校验通过；正式发布时将离线创建 venv：%s\n' "$VENV_PATH"
+  exit 0
+fi
 
 umask 022
 temporary_venv=$(mktemp -d "$parent_dir/.vibelo-venv.tmp.XXXXXXXX") ||

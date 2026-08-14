@@ -35,7 +35,7 @@ write_fixture() {
   )
 
   mkdir -p -- "$target"
-  python3 - "$bundle" "$manifest" "${refs[@]}" <<'PY'
+  python3 - "$bundle" "$manifest" "$RELEASE" "${refs[@]}" <<'PY'
 import hashlib
 import io
 import json
@@ -45,7 +45,8 @@ import tarfile
 
 bundle = pathlib.Path(sys.argv[1])
 manifest_path = pathlib.Path(sys.argv[2])
-refs = sys.argv[3:]
+release = sys.argv[3]
+refs = sys.argv[4:]
 
 
 def json_bytes(value):
@@ -57,9 +58,17 @@ oci_descriptors = []
 blobs = {}
 tsv_lines = ["ref\timage_id\tos\tarch"]
 for ref in refs:
+    image_config = {}
+    if ref in {
+        f"vibelo-public-backend:{release}",
+        f"vibelo-public-frontend:{release}",
+    }:
+        image_config["Labels"] = {
+            "org.opencontainers.image.revision": release,
+        }
     config_blob = json_bytes({
         "architecture": "amd64",
-        "config": {},
+        "config": image_config,
         "fixtureRef": ref,
         "os": "linux",
         "rootfs": {"diff_ids": [], "type": "layers"},
@@ -117,6 +126,114 @@ PY
   )
 }
 
+tamper_application_revision() {
+  local target=$1
+  local target_ref=$2
+  local stale_release=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+
+  python3 - \
+    "$target/vibelo-public-$RELEASE-linux-amd64.tar" \
+    "$target/vibelo-public-$RELEASE-images.tsv" \
+    "$target_ref" \
+    "$stale_release" <<'PY'
+import hashlib
+import io
+import json
+import pathlib
+import sys
+import tarfile
+
+bundle = pathlib.Path(sys.argv[1])
+manifest_path = pathlib.Path(sys.argv[2])
+target_ref = sys.argv[3]
+stale_release = sys.argv[4]
+
+
+def json_bytes(value):
+    return json.dumps(value, separators=(",", ":"), sort_keys=True).encode("ascii")
+
+
+def digest(payload):
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def blob_name(value):
+    return "blobs/sha256/" + value.removeprefix("sha256:")
+
+
+with tarfile.open(bundle, "r") as source:
+    files = {
+        member.name: source.extractfile(member).read()
+        for member in source.getmembers()
+        if member.isfile()
+    }
+
+docker_manifest = json.loads(files["manifest.json"])
+index = json.loads(files["index.json"])
+target_item = next(
+    (item for item in docker_manifest if item.get("RepoTags") == [target_ref]),
+    None,
+)
+if target_item is None:
+    raise SystemExit("target application image is missing")
+
+old_config_name = target_item["Config"]
+old_config_digest = "sha256:" + old_config_name.rsplit("/", 1)[-1]
+config = json.loads(files[old_config_name])
+config.setdefault("config", {}).setdefault("Labels", {})[
+    "org.opencontainers.image.revision"
+] = stale_release
+config_blob = json_bytes(config)
+new_config_digest = digest(config_blob)
+new_config_name = blob_name(new_config_digest)
+files[new_config_name] = config_blob
+target_item["Config"] = new_config_name
+
+target_descriptor = None
+target_platform = None
+old_platform_name = None
+for descriptor in index["manifests"]:
+    if descriptor.get("platform") != {"architecture": "amd64", "os": "linux"}:
+        continue
+    platform_name = blob_name(descriptor["digest"])
+    platform = json.loads(files[platform_name])
+    if platform.get("config", {}).get("digest") == old_config_digest:
+        target_descriptor = descriptor
+        target_platform = platform
+        old_platform_name = platform_name
+        break
+if target_descriptor is None or target_platform is None or old_platform_name is None:
+    raise SystemExit("target OCI descriptor is missing")
+
+target_platform["config"]["digest"] = new_config_digest
+target_platform["config"]["size"] = len(config_blob)
+platform_blob = json_bytes(target_platform)
+new_platform_digest = digest(platform_blob)
+files[blob_name(new_platform_digest)] = platform_blob
+target_descriptor["digest"] = new_platform_digest
+target_descriptor["size"] = len(platform_blob)
+
+files["manifest.json"] = json_bytes(docker_manifest)
+files["index.json"] = json_bytes(index)
+with tarfile.open(bundle, "w") as target:
+    for name, payload in files.items():
+        info = tarfile.TarInfo(name)
+        info.size = len(payload)
+        target.addfile(info, io.BytesIO(payload))
+
+lines = manifest_path.read_text(encoding="ascii").splitlines()
+rewritten = []
+for line in lines:
+    columns = line.split("\t")
+    if columns[0] == target_ref:
+        columns[1] = new_platform_digest
+    rewritten.append("\t".join(columns))
+manifest_path.write_text("\n".join(rewritten) + "\n", encoding="ascii", newline="\n")
+PY
+
+  refresh_checksums "$target"
+}
+
 refresh_checksums() {
   local target=$1
   (
@@ -139,6 +256,22 @@ invoke_importer_fixture() {
       --docker-command "$FAKE_DOCKER" 2>&1
   )
   IMPORT_RC=$?
+  set -e
+}
+
+invoke_validate_fixture() {
+  local target=$1
+
+  export VIBELO_TEST_MANIFEST_PATH=$target/vibelo-public-$RELEASE-images.tsv
+  set +e
+  VALIDATE_OUTPUT=$(
+    "$BASH" "$IMPORTER" \
+      --release "$RELEASE" \
+      --target-directory "$target" \
+      --docker-command "$FAKE_DOCKER" \
+      --validate-only 2>&1
+  )
+  VALIDATE_RC=$?
   set -e
 }
 
@@ -501,13 +634,46 @@ TARGET=$TEMP_ROOT/release
 DOCKER_LOG=$TEMP_ROOT/docker.log
 : >"$DOCKER_LOG"
 write_fixture "$TARGET"
+MINIO_IMAGE_ID=$(
+  awk -F '\t' \
+    '$1 == "minio/minio:RELEASE.2025-04-22T22-12-26Z" {print $2}' \
+    "$TARGET/vibelo-public-$RELEASE-images.tsv"
+)
 export VIBELO_TEST_DOCKER_LOG=$DOCKER_LOG
+
+invoke_validate_fixture "$TARGET"
+((VALIDATE_RC == 0)) || fail "validate-only should succeed; output: $VALIDATE_OUTPUT"
+[[ ! -s $DOCKER_LOG ]] || fail 'validate-only must not load or inspect local images'
+[[ $VALIDATE_OUTPUT == *'no image was loaded'* ]] || fail 'validate-only should report its read-only result'
+[[ $VALIDATE_OUTPUT == *"VIBELO_MINIO_IMAGE_ID=$MINIO_IMAGE_ID"* ]] ||
+  fail 'validate-only should expose the fully validated bundle MinIO image ID'
+[[ $(awk -v expected="VIBELO_MINIO_IMAGE_ID=$MINIO_IMAGE_ID" '$0 == expected {count++} END {print count + 0}' <<<"$VALIDATE_OUTPUT") == 1 ]] ||
+  fail 'validate-only should expose exactly one unambiguous MinIO image ID record'
+
+revision_case=0
+for application_image in "$BACKEND_IMAGE" "$FRONTEND_IMAGE"; do
+  ((revision_case += 1))
+  WRONG_REVISION_TARGET=$TEMP_ROOT/wrong-application-revision-$revision_case
+  write_fixture "$WRONG_REVISION_TARGET"
+  tamper_application_revision "$WRONG_REVISION_TARGET" "$application_image"
+  : >"$DOCKER_LOG"
+  invoke_validate_fixture "$WRONG_REVISION_TARGET"
+  ((VALIDATE_RC != 0)) || fail 'validate-only must reject an application image with a stale revision label'
+  [[ $VALIDATE_OUTPUT == *'application image revision label mismatch'* ]] ||
+    fail 'stale revision should fail at the OCI config revision gate'
+  [[ ! -s $DOCKER_LOG ]] || fail 'stale revision must fail before docker image load or inspect'
+done
+unset application_image revision_case WRONG_REVISION_TARGET
 
 invoke_importer_fixture "$TARGET"
 ((IMPORT_RC == 0)) || fail "fixture import should succeed; output: $IMPORT_OUTPUT"
 [[ $(cat "$DOCKER_LOG") == load ]] || fail 'fixture should invoke exactly one docker image load'
 [[ $IMPORT_OUTPUT == *"VIBELO_BACKEND_IMAGE=$BACKEND_IMAGE"* ]] || fail 'import output should provide the ECS backend image variable'
 [[ $IMPORT_OUTPUT == *"VIBELO_FRONTEND_IMAGE=$FRONTEND_IMAGE"* ]] || fail 'import output should provide the ECS frontend image variable'
+[[ $IMPORT_OUTPUT == *"VIBELO_MINIO_IMAGE_ID=$MINIO_IMAGE_ID"* ]] ||
+  fail 'import output should expose the fully validated bundle MinIO image ID'
+[[ $(awk -v expected="VIBELO_MINIO_IMAGE_ID=$MINIO_IMAGE_ID" '$0 == expected {count++} END {print count + 0}' <<<"$IMPORT_OUTPUT") == 1 ]] ||
+  fail 'import output should expose exactly one unambiguous MinIO image ID record'
 
 VALID_ATTESTATION_TARGET=$TEMP_ROOT/valid-attestation
 write_fixture "$VALID_ATTESTATION_TARGET"

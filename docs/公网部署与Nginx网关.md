@@ -662,7 +662,7 @@ cd /opt/vibelo
 RELEASE='<完整的 40 位 Git SHA>'
 git pull --ff-only origin main
 test "$(git rev-parse HEAD)" = "$RELEASE"
-test -z "$(git status --porcelain=v1 --untracked-files=all)"
+test -z "$(git status --porcelain=v1 --untracked-files=no)"
 
 bash ops/public/import-public-image-bundle.sh \
   --release "$RELEASE" \
@@ -673,11 +673,17 @@ bash ops/public/install-search-reindex-dependencies.sh \
   --venv /opt/vibelo/.venv-ops
 ```
 
-导入器会校验三文件目录、SHA256、归档结构、八个固定引用、镜像 ID、平台以及应用镜像 revision label；它不会启动服务。把其输出的两个值写入 `.env.public`，每个键只保留一条，不使用 `latest` 或短 SHA：
+导入器会校验三文件目录、SHA256、归档结构、八个固定引用、镜像 ID、平台，并直接解析归档内 OCI config 验证应用镜像 revision label；它不会启动服务。它还会输出固定 MinIO 的内容 ID，受控发布必须在正式加载镜像前将其与当前运行 MinIO 容器的实际 Image ID 比较，同 tag 不同 ID 也必须失败。只把输出中的两个应用镜像引用写入 `.env.public`，每个键只保留一条，不使用 `latest` 或短 SHA：
 
 ```text
 VIBELO_BACKEND_IMAGE=vibelo-public-backend:<完整的 40 位 Git SHA>
 VIBELO_FRONTEND_IMAGE=vibelo-public-frontend:<完整的 40 位 Git SHA>
+```
+
+完整输出还包含只用于身份验收、不要写入 `.env.public` 的诊断值：
+
+```text
+VIBELO_MINIO_IMAGE_ID=sha256:<64 位十六进制内容 ID，仅用于身份验收，不写入 .env.public>
 ```
 
 保存后执行 `chmod 600 .env.public`。安装器固定使用 PyMySQL 1.1.2，并强制 `--no-index --no-deps`；ECS 不运行在线 `pip install`。
@@ -774,6 +780,32 @@ MODEL_RANKING_ENABLED=true
 
 ## 12. 更新与回滚
 
+日常更新和兼容回滚优先使用 [公网简化发布](./公网简化发布.md) 中的两个薄入口：
+
+```powershell
+.\ops\public\New-PublicReleaseBundle.ps1
+```
+
+```bash
+sudo bash ops/public/public-release.sh validate --release "$RELEASE"
+sudo bash ops/public/public-release.sh deploy \
+  --release "$RELEASE" --confirm-release "$RELEASE"
+```
+
+它们复用本节全部 bundle、MinIO、搜索证书和分阶段启动门禁；不使用 `latest`，不在
+ECS pull/build，不执行 `down -v`，也不启用 TLS 或 recommendation。以下保留的是
+底层展开步骤，供首次迁移、审计和故障排查使用，不建议日常手工复制。
+
+该简化入口只接受已经存在前后端同一 full-SHA 基线、且 current→target 的 Flyway
+migration 目录完全不变的更新。每次必须先让 ECS `HEAD == origin/main`；deploy 再要求
+目标就是该 HEAD，rollback 也保持最新发布器，只切旧镜像而不切换 Git 工作树。在线
+MinIO 会在 validate、维护窗口前和停站后分别做严格只读验收，并在正式 load 前比较
+bundle 与运行容器的实际 image ID。无基线、包含 migration 改动或任一身份门禁失败时，
+或当前 release 与目标 release 的 Compose/Nginx/reindex/固定 requirements 不一致时，
+都要回到本章完整流程。rollback 还要求旧目标与最新主线的上述运行契约一致。发布和
+MinIO 控制脚本始终使用受信任的最新主线版本，不属于旧应用运行契约，不能靠手工命令
+跳过任一门禁。
+
 每次更新都生成新的完整 SHA release；不覆盖旧 tag，不在 ECS 重新构建。先在 Windows 对目标 commit 完整重复 9.1 节的两次 `docker build --pull=false --platform linux/amd64`、`Export-PublicImageBundle.ps1`、固定 wheel 准备和上传。随后在 ECS 校验源码并导入新 release：
 
 ```bash
@@ -782,7 +814,7 @@ RELEASE='<新的完整 40 位 Git SHA>'
 git switch main
 git pull --ff-only origin main
 test "$(git rev-parse HEAD)" = "$RELEASE"
-test -z "$(git status --porcelain=v1 --untracked-files=all)"
+test -z "$(git status --porcelain=v1 --untracked-files=no)"
 
 bash ops/public/import-public-image-bundle.sh \
   --release "$RELEASE" \
@@ -814,14 +846,18 @@ docker compose --env-file .env.public \
 以后任何会创建或重建 `gateway` 的命令都遵守这一规则；只有明确执行 TLS 回退时才省略
 覆盖文件。完整门禁、续期与回退见 [域名备案与 HTTPS 上线](./域名备案与HTTPS上线.md)。
 
-回滚只允许使用已经在 ECS 验收导入、仍有完整 SHA tag 且数据库迁移向前兼容的旧 release。记录故障现场后，切到与旧镜像一致的 commit，把 `.env.public` 的两个镜像变量改回旧完整 SHA，停止上述七个非 MinIO 服务，再完整重复 9.3 节：
+回滚只允许使用已经在 ECS 验收导入、仍有完整 SHA tag 且数据库迁移向前兼容的旧
+release。记录故障现场后，仍保持最新 `origin/main` 的受信任发布控制面，只把
+`.env.public` 的两个应用镜像变量改回旧完整 SHA；不要切到旧 commit 执行旧脚本。
+随后停止上述七个非 MinIO 服务，再完整重复 9.3 节：
 
 ```bash
 cd /opt/vibelo
 ROLLBACK_RELEASE='<已导入的旧完整 40 位 Git SHA>'
-git switch --detach "$ROLLBACK_RELEASE"
-test "$(git rev-parse HEAD)" = "$ROLLBACK_RELEASE"
-test -z "$(git status --porcelain=v1 --untracked-files=all)"
+git switch main
+git pull --ff-only origin main
+test "$(git rev-parse HEAD)" = "$(git rev-parse refs/remotes/origin/main)"
+test -z "$(git status --porcelain=v1 --untracked-files=no)"
 docker image inspect \
   "vibelo-public-backend:$ROLLBACK_RELEASE" \
   "vibelo-public-frontend:$ROLLBACK_RELEASE" >/dev/null
@@ -837,6 +873,9 @@ docker image inspect \
 ECS 拉取同一 commit → 导入镜像 → 按第 12 节滚动更新”的流程。代码提交本身不会改变
 公网服务；只有 ECS 显式导入并切换到新镜像 tag 后才算发布。不要在低内存生产机临时
 编译源码，也不要用 `latest` 代替可回滚的完整 SHA。
+
+当前推荐的日常命令已收敛在 [公网简化发布](./公网简化发布.md)：本地一个入口生成
+release，ECS 同一入口先 `validate` 再 `deploy`。代码 push 本身仍不会自动部署。
 
 当前公网 Compose 的持久服务都使用 `restart: unless-stopped`。Docker 服务设为开机启动
 后，直接关停 ECS 时仍处于运行状态的容器会在下次开机由 Docker 自动恢复：

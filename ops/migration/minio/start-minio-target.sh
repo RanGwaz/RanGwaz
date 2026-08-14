@@ -6,17 +6,22 @@ set -Eeuo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # shellcheck source=prepare-minio-target.sh
 source "$SCRIPT_DIR/prepare-minio-target.sh"
+# shellcheck source=../../public/public-common.sh
+source "$REPO_ROOT/ops/public/public-common.sh"
+vibelo_lock_docker_to_local_engine
 
 ARTIFACT_DIR=$DEFAULT_ARTIFACT_DIR
 COMPOSE_ARGS=()
 START_TEMP_DIR=''
 VERIFY_EXISTING=false
+VERIFY_ONLINE=false
 
 start_usage() {
   cat <<EOF
 用法：
   sudo bash ops/migration/minio/start-minio-target.sh [--artifact-dir $DEFAULT_ARTIFACT_DIR]
   sudo bash ops/migration/minio/start-minio-target.sh --verify-existing [--artifact-dir $DEFAULT_ARTIFACT_DIR]
+  sudo bash ops/migration/minio/start-minio-target.sh --verify-online [--artifact-dir $DEFAULT_ARTIFACT_DIR]
 
 重新核对固定离线文件、已安装 mc、已载入镜像和 Compose 拓扑后，只执行：
   docker compose ... up -d --pull never --no-build --no-deps minio
@@ -24,7 +29,11 @@ start_usage() {
 随后验证健康状态、项目中唯一运行服务、回环端口及卷在 /data/docker 下的落点。
 
 --verify-existing 仅对首次启动已留下的既有容器执行同等严格的只读验收；
-不执行启动、重启、重建或删除。
+要求该项目唯一运行服务为 MinIO，不执行启动、重启、重建或删除。
+
+--verify-online 用于已经上线的站点：允许同一 vibelo-public 项目的预期 HTTP
+服务同时运行，但仍严格核对 MinIO 身份、固定镜像、健康、回环端口和数据卷；
+同样不执行启动、重启、重建或删除。MinIO 不存在时会明确失败。
 EOF
 }
 
@@ -40,8 +49,12 @@ start_cleanup() {
 }
 
 start_minio_service() {
-  docker compose "${COMPOSE_ARGS[@]}" \
+  vibelo_run_clean_environment docker compose "${COMPOSE_ARGS[@]}" \
     up -d --pull never --no-build --no-deps minio
+}
+
+minio_compose() {
+  vibelo_run_clean_environment docker compose "${COMPOSE_ARGS[@]}" "$@"
 }
 
 validate_runtime_ports() {
@@ -247,6 +260,64 @@ print(f"[通过] 目标卷身份和实际落点通过：{expected_mountpoint}")
 PY
 }
 
+validate_project_runtime_membership() {
+  local project_containers=$1
+  local minio_container_id=$2
+  local allow_online_services=$3
+
+  python3 - "$project_containers" "$minio_container_id" "$allow_online_services" <<'PY'
+import sys
+
+
+def fail(message: str) -> None:
+    print(f"错误：Compose 项目运行成员门禁失败：{message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+path, minio_id, online = sys.argv[1:]
+allowed_online = {
+    "backend",
+    "elasticsearch",
+    "frontend",
+    "gateway",
+    "kafka",
+    "minio",
+    "redis",
+    "zookeeper",
+}
+entries = []
+try:
+    with open(path, "r", encoding="utf-8") as stream:
+        for raw_line in stream:
+            line = raw_line.rstrip("\n")
+            if not line:
+                continue
+            parts = line.split("\t")
+            if len(parts) != 2 or not all(parts):
+                fail("无法解析运行容器 ID/服务标签")
+            entries.append(tuple(parts))
+except OSError as exc:
+    fail(f"无法读取运行容器清单：{exc}")
+
+ids = [container_id for container_id, _ in entries]
+services = [service for _, service in entries]
+if len(ids) != len(set(ids)) or len(services) != len(set(services)):
+    fail("存在重复容器 ID 或同一服务运行多个实例")
+if (minio_id, "minio") not in entries:
+    fail("目标 MinIO 不属于当前运行项目成员")
+
+if online == "true":
+    unexpected = sorted(set(services) - allowed_online)
+    if unexpected:
+        fail("存在简化 HTTP 栈之外的运行服务：" + ",".join(unexpected))
+    print("[通过] 项目运行成员仅包含 MinIO 与预期简化 HTTP 服务")
+elif entries == [(minio_id, "minio")]:
+    print("[通过] 该 Compose 项目唯一运行服务为 minio")
+else:
+    fail("迁移期只读验收要求项目唯一运行服务为 minio")
+PY
+}
+
 start_main() {
   while (($# > 0)); do
     case "$1" in
@@ -259,6 +330,10 @@ start_main() {
         VERIFY_EXISTING=true
         shift
         ;;
+      --verify-online)
+        VERIFY_ONLINE=true
+        shift
+        ;;
       -h | --help)
         start_usage
         return 0
@@ -269,12 +344,18 @@ start_main() {
     esac
   done
 
+  if [[ $VERIFY_EXISTING == true && $VERIFY_ONLINE == true ]]; then
+    die '--verify-existing 与 --verify-online 不能同时使用'
+  fi
+
   [[ $(id -u) -eq 0 ]] || die '请以 root 运行（需要访问 Docker）'
   for command_name in awk bash chmod curl docker id mktemp python3 readlink rm sha256sum sleep ss stat; do
     require_command "$command_name"
   done
   docker info >/dev/null 2>&1 || die 'Docker Engine 未就绪'
-  docker compose version >/dev/null 2>&1 || die 'Docker Compose 插件不可用'
+  vibelo_run_clean_environment docker compose \
+    -p "$EXPECTED_COMPOSE_PROJECT" version >/dev/null 2>&1 ||
+    die 'Docker Compose 插件不可用'
 
   [[ -d $ARTIFACT_DIR && ! -L $ARTIFACT_DIR ]] ||
     die "离线文件目录不存在或是符号链接：$ARTIFACT_DIR"
@@ -283,7 +364,13 @@ start_main() {
   local minio_archive="$ARTIFACT_DIR/$MINIO_ARCHIVE_NAME"
   local mc_binary="$ARTIFACT_DIR/$MC_BINARY_NAME"
 
-  note '=== 启动 Vibelo 迁移目标 MinIO ==='
+  if [[ $VERIFY_ONLINE == true ]]; then
+    note '=== 在线严格只读验收 Vibelo MinIO ==='
+  elif [[ $VERIFY_EXISTING == true ]]; then
+    note '=== 严格只读验收 Vibelo 迁移目标 MinIO ==='
+  else
+    note '=== 启动 Vibelo 迁移目标 MinIO ==='
+  fi
   require_regular_artifact \
     "$minio_archive" "$MINIO_ARCHIVE_SIZE" "$MINIO_ARCHIVE_SHA256" 'MinIO 镜像归档'
   require_regular_artifact \
@@ -314,7 +401,11 @@ start_main() {
 
   [[ -f $PREFLIGHT_SCRIPT ]] || die "缺少公网预检脚本：$PREFLIGHT_SCRIPT"
   note '=== 再次执行公网只读预检 ==='
-  bash "$PREFLIGHT_SCRIPT"
+  if [[ $VERIFY_ONLINE == true ]]; then
+    vibelo_run_clean_environment bash "$PREFLIGHT_SCRIPT" --allow-running-gateway-ports
+  else
+    vibelo_run_clean_environment bash "$PREFLIGHT_SCRIPT"
+  fi
 
   local docker_root
   docker_root=$(docker info --format '{{.DockerRootDir}}') || die '无法读取 DockerRoot'
@@ -329,17 +420,18 @@ start_main() {
   chmod 700 "$START_TEMP_DIR"
   trap start_cleanup EXIT
   local compose_json="$START_TEMP_DIR/compose.json"
-  docker compose \
-    --env-file "$ENV_FILE" \
-    -f "$COMPOSE_FILE" \
+  COMPOSE_ARGS=(
+    -p "$EXPECTED_COMPOSE_PROJECT"
+    --env-file "$ENV_FILE"
+    -f "$COMPOSE_FILE"
+  )
+  minio_compose \
     config --format json \
     >"$compose_json" || die 'Compose 配置无法展开'
   chmod 600 "$compose_json"
   validate_compose_config "$compose_json"
-  COMPOSE_ARGS=(--env-file "$ENV_FILE" -f "$COMPOSE_FILE")
-
   local expected_config_hash
-  expected_config_hash=$(docker compose "${COMPOSE_ARGS[@]}" \
+  expected_config_hash=$(minio_compose \
     config --hash minio | parse_compose_service_hash) ||
     die '无法读取当前 MinIO Compose 配置哈希'
   [[ $expected_config_hash =~ ^[0-9a-f]{64}$ ]] ||
@@ -351,9 +443,9 @@ start_main() {
     --filter 'label=com.docker.compose.service=minio') ||
     die '无法检查既有 MinIO 容器'
 
-  if [[ $VERIFY_EXISTING == true ]]; then
+  if [[ $VERIFY_EXISTING == true || $VERIFY_ONLINE == true ]]; then
     [[ -n $existing_container_ids && $existing_container_ids != *$'\n'* ]] ||
-      die '--verify-existing 要求该 Compose 项目恰好存在一个 MinIO 容器'
+      die '只读验收要求该 Compose 项目恰好存在一个 MinIO 容器；首次上线请先完成 MinIO 迁移流程'
     named_container_id=$(docker container inspect \
       --format '{{.Id}}' "$EXPECTED_CONTAINER_NAME" 2>/dev/null) ||
       die "既有 MinIO 容器名称不是 $EXPECTED_CONTAINER_NAME"
@@ -376,7 +468,7 @@ start_main() {
 
     note '只启动 MinIO；明确禁止拉取、构建和启动依赖服务。'
     start_minio_service
-    container_id=$(docker compose "${COMPOSE_ARGS[@]}" ps -q minio) ||
+    container_id=$(minio_compose ps -q minio) ||
       die '无法取得 MinIO 容器 ID'
     [[ -n $container_id && $container_id != *$'\n'* ]] ||
       die 'MinIO 容器数量不是 1'
@@ -423,18 +515,14 @@ start_main() {
     >/dev/null || die 'MinIO 回环健康接口不可用'
   note '[通过] MinIO 容器和回环健康接口均为 healthy'
 
-  local running_services project_running_ids
-  running_services=$(docker compose "${COMPOSE_ARGS[@]}" ps \
-    --status running --services | awk 'NF { print }') ||
-    die '无法列出 Compose 运行服务'
-  [[ $running_services == 'minio' ]] ||
-    die "该 Compose 项目运行了 MinIO 之外的服务：${running_services:-无}"
-  project_running_ids=$(docker ps -q --no-trunc \
-    --filter "label=com.docker.compose.project=$EXPECTED_COMPOSE_PROJECT") ||
-    die '无法检查项目运行容器'
-  [[ $project_running_ids == "$container_id" ]] ||
-    die '该 Compose 项目运行容器数量不为 1，或唯一容器不是 MinIO'
-  note '[通过] 该 Compose 项目唯一运行服务为 minio'
+  local project_containers="$START_TEMP_DIR/project-containers.tsv"
+  docker ps --no-trunc \
+    --filter "label=com.docker.compose.project=$EXPECTED_COMPOSE_PROJECT" \
+    --format '{{.ID}}\t{{.Label "com.docker.compose.service"}}' \
+    >"$project_containers" || die '无法检查项目运行容器'
+  chmod 600 "$project_containers"
+  validate_project_runtime_membership \
+    "$project_containers" "$container_id" "$VERIFY_ONLINE"
 
   local container_json="$START_TEMP_DIR/container.json"
   local ports_json="$START_TEMP_DIR/ports.json"
@@ -462,7 +550,10 @@ start_main() {
     die '目标卷被 MinIO 之外的容器使用，或使用容器数量不是 1'
   note '[通过] 目标卷只由当前 MinIO 容器使用'
 
-  if [[ $VERIFY_EXISTING == true ]]; then
+  if [[ $VERIFY_ONLINE == true ]]; then
+    note '=== 在线 MinIO 严格只读验收通过 ==='
+    note '本次没有启动、重启、重建或删除容器/数据卷；其他运行服务也未被操作。'
+  elif [[ $VERIFY_EXISTING == true ]]; then
     note '=== 既有迁移目标 MinIO 只读验收通过 ==='
     note '本次没有启动、重启、重建或删除容器/数据卷。'
   else
@@ -470,7 +561,11 @@ start_main() {
     note '只运行了 minio；没有拉取、构建或启动其他服务。'
   fi
   note '9000/9001 仅回环可达，安全组不要开放 9000、9001、19090。'
-  note '现在可以建立反向隧道并运行 minio-migrate.sh。'
+  if [[ $VERIFY_ONLINE == true ]]; then
+    note '在线只读验收没有改变服务状态；可继续受控 validate/deploy 流程。'
+  else
+    note '现在可以建立反向隧道并运行 minio-migrate.sh。'
+  fi
 }
 
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then

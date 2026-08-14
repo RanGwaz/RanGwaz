@@ -15,8 +15,12 @@ const THEME_KEY = 'vibelo-theme'
 const ThemeContext = createContext<ThemeContextValue | null>(null)
 
 function storedMode(): ThemeMode {
-  const value = localStorage.getItem(THEME_KEY)
-  return value === 'light' || value === 'dark' || value === 'system' ? value : 'system'
+  try {
+    const value = localStorage.getItem(THEME_KEY)
+    return value === 'light' || value === 'dark' || value === 'system' ? value : 'system'
+  } catch {
+    return 'system'
+  }
 }
 
 function systemTheme(): ResolvedTheme {
@@ -45,7 +49,11 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   }, [resolvedTheme])
 
   const setMode = useCallback((nextMode: ThemeMode) => {
-    localStorage.setItem(THEME_KEY, nextMode)
+    try {
+      localStorage.setItem(THEME_KEY, nextMode)
+    } catch {
+      // Theme switching remains available for the current page session.
+    }
     setModeState(nextMode)
   }, [])
 

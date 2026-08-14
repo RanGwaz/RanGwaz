@@ -25,14 +25,26 @@ import { getVisitorId } from '../utils/visitorIdentity'
 
 const TOKEN_KEY = 'rangwaz-token'
 const API_BASE = (import.meta.env.VITE_API_BASE || '').replace(/\/$/, '')
+let memoryToken: string | null = null
 
 export function getToken() {
-  return localStorage.getItem(TOKEN_KEY) || ''
+  if (memoryToken !== null) return memoryToken
+  try {
+    memoryToken = localStorage.getItem(TOKEN_KEY) || ''
+  } catch {
+    memoryToken = ''
+  }
+  return memoryToken
 }
 
 export function setToken(token: string) {
-  if (token) localStorage.setItem(TOKEN_KEY, token)
-  else localStorage.removeItem(TOKEN_KEY)
+  memoryToken = token
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token)
+    else localStorage.removeItem(TOKEN_KEY)
+  } catch {
+    // The in-memory session still works until the page is refreshed.
+  }
 }
 
 function nonJsonMessage(path: string, response: Response, text: string) {
@@ -97,6 +109,9 @@ export const api = {
   },
   phonePasswordLogin(payload: { phone: string; password: string }) {
     return request<AuthTokenResponse>('/auth/phone-password-login', { method: 'POST', body: JSON.stringify(payload) })
+  },
+  resetPassword(payload: { phone: string; code: string; password: string; passwordConfirm: string }) {
+    return request<AuthTokenResponse>('/auth/phone-password-reset', { method: 'POST', body: JSON.stringify(payload) })
   },
   logout() {
     return request<void>('/auth/logout', { method: 'POST' })

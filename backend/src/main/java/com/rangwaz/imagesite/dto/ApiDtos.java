@@ -69,6 +69,15 @@ public final class ApiDtos {
     }
 
     /**
+     * Replaces an existing phone account password after SMS verification.
+     */
+    public record PhonePasswordResetRequest(@NotBlank String phone,
+                                            @NotBlank String code,
+                                            @NotBlank String password,
+                                            @NotBlank String passwordConfirm) {
+    }
+
+    /**
      * Media upload response.
      */
     public record UploadResponse(String objectKey,

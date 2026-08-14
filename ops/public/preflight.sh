@@ -8,6 +8,7 @@ fi
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # shellcheck source=public-common.sh
 source "$SCRIPT_DIR/public-common.sh"
+vibelo_lock_docker_to_local_engine
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd -P)
 ENV_FILE="$REPO_ROOT/.env.public"
 COMPOSE_FILE="$REPO_ROOT/infra/docker-compose.public.yml"
@@ -33,19 +34,26 @@ ENV_AVAILABLE=0
 ENV_FOUND=0
 ENV_RAW=''
 ENV_PLAIN=''
+ALLOW_RUNNING_GATEWAY_PORTS=false
 
 usage() {
   cat <<'EOF'
 用法：
-  sudo bash ops/public/preflight.sh
+  sudo bash ops/public/preflight.sh [--allow-running-gateway-ports]
 
 这是只读上线预检：不创建目录、不修改配置、不启动容器、不拉取或构建镜像。
 脚本会列出全部通过、警告和失败项，并在存在失败项时返回非零状态。
+--allow-running-gateway-ports 仅供受控更新流程使用：80/443 只有在确由当前
+vibelo-public Gateway 容器发布时才允许占用；其他监听者仍会导致失败。
 EOF
 }
 
-if (($# > 0)); then
+while (($# > 0)); do
   case "$1" in
+    --allow-running-gateway-ports)
+      ALLOW_RUNNING_GATEWAY_PORTS=true
+      shift
+      ;;
     -h | --help)
       usage
       exit 0
@@ -56,7 +64,7 @@ if (($# > 0)); then
       exit 2
       ;;
   esac
-fi
+done
 
 pass() {
   PASSES=$((PASSES + 1))
@@ -241,8 +249,23 @@ fi
 
 if have_command ss; then
   if socket_list=$(ss -H -ltn 2>/dev/null); then
+    gateway_container_id=''
+    gateway_container_count=0
+    if [[ $ALLOW_RUNNING_GATEWAY_PORTS == true ]] && have_command docker; then
+      mapfile -t gateway_container_ids < <(
+        docker ps \
+          --filter 'label=com.docker.compose.project=vibelo-public' \
+          --filter 'label=com.docker.compose.service=gateway' \
+          --format '{{.ID}}' 2>/dev/null || true
+      )
+      gateway_container_count=${#gateway_container_ids[@]}
+      if ((gateway_container_count == 1)); then
+        gateway_container_id=${gateway_container_ids[0]}
+      fi
+    fi
     for port in 80 443; do
       port_busy=0
+      gateway_owns_all_busy_addresses=0
       busy_addresses=()
       while IFS= read -r socket_line || [[ -n $socket_line ]]; do
         [[ -n $socket_line ]] || continue
@@ -253,12 +276,33 @@ if have_command ss; then
           busy_addresses+=("$local_address")
         fi
       done <<<"$socket_list"
+      if ((port_busy == 1)) &&
+        [[ $ALLOW_RUNNING_GATEWAY_PORTS == true &&
+          $gateway_container_count -eq 1 ]]; then
+        mapfile -t gateway_port_bindings < <(
+          docker port "$gateway_container_id" "$port/tcp" 2>/dev/null || true
+        )
+        if ((${#gateway_port_bindings[@]} > 0)); then
+          gateway_owns_all_busy_addresses=1
+          for busy_address in "${busy_addresses[@]}"; do
+            if ! printf '%s\n' "${gateway_port_bindings[@]}" |
+              grep -Fqx -- "$busy_address"; then
+              gateway_owns_all_busy_addresses=0
+              break
+            fi
+          done
+        fi
+      fi
       if ((port_busy == 0)); then
         pass "TCP $port 端口空闲"
+      elif ((gateway_owns_all_busy_addresses == 1)); then
+        pass "TCP $port 由当前 vibelo-public Gateway 占用（受控更新模式）"
       else
         fail "TCP $port 已被占用：${busy_addresses[*]}"
       fi
+      unset gateway_port_bindings busy_address gateway_owns_all_busy_addresses
     done
+    unset gateway_container_id gateway_container_count gateway_container_ids
   else
     fail '无法读取 TCP 监听端口'
   fi
@@ -474,11 +518,9 @@ elif ((ENV_AVAILABLE == 0)); then
   fail '缺少 .env.public，跳过 Compose 配置校验'
 elif ! have_command docker; then
   fail '缺少 docker，跳过 Compose 配置校验'
-elif ! docker compose version >/dev/null 2>&1; then
+elif ! vibelo_run_clean_environment docker compose -p vibelo-public version >/dev/null 2>&1; then
   fail 'Docker Compose 插件不可用'
-elif docker compose \
-  --env-file "$ENV_FILE" \
-  -f "$COMPOSE_FILE" \
+elif vibelo_public_compose "$ENV_FILE" "$COMPOSE_FILE" \
   config --quiet \
   >/dev/null 2>&1; then
   pass 'Docker Compose 配置可展开（未构建、未启动）'

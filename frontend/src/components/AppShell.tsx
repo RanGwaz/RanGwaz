@@ -20,13 +20,26 @@ function loadRecentSearches() {
     const parsed = JSON.parse(localStorage.getItem(RECENT_SEARCH_KEY) || '[]') as SearchSuggestionItem[]
     return Array.isArray(parsed) ? parsed.filter((item) => item?.keyword).slice(0, 10) : []
   } catch {
-    localStorage.removeItem(RECENT_SEARCH_KEY)
     return []
   }
 }
 
 function saveRecentSearches(items: SearchSuggestionItem[]) {
-  localStorage.setItem(RECENT_SEARCH_KEY, JSON.stringify(items.slice(0, 10)))
+  try {
+    localStorage.setItem(RECENT_SEARCH_KEY, JSON.stringify(items.slice(0, 10)))
+  } catch {
+    // Searching still works when the browser blocks local persistence.
+  }
+}
+
+function uniqueSuggestions(...groups: SearchSuggestionItem[][]) {
+  const seen = new Set<string>()
+  return groups.flat().filter((item) => {
+    const key = item.keyword.trim().toLocaleLowerCase()
+    if (!key || seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
 
 export function AppShell({ children }: PropsWithChildren) {
@@ -97,11 +110,26 @@ export function AppShell({ children }: PropsWithChildren) {
   useEffect(() => {
     if (!searchOpen) return
     let cancelled = false
+    const query = keyword.trim()
+    setSuggestionsLoading(true)
+    setSuggestions(EMPTY_SUGGESTIONS)
     const timer = window.setTimeout(() => {
-      setSuggestionsLoading(true)
-      api.searchSuggestions(keyword.trim())
-        .then((next) => {
-          if (!cancelled) setSuggestions(next)
+      Promise.all([
+        api.searchSuggestions(query),
+        query ? Promise.resolve([]) : api.trendingTopics(8).catch(() => []),
+      ])
+        .then(([next, topics]) => {
+          if (cancelled) return
+          const topicSuggestions: SearchSuggestionItem[] = topics.map((topic) => ({
+            keyword: topic.name,
+            kind: 'topic',
+            imageUrl: topic.coverUrl,
+            postCount: topic.postCount,
+          }))
+          setSuggestions({
+            recommended: uniqueSuggestions(next.recommended),
+            trending: uniqueSuggestions(next.trending, topicSuggestions),
+          })
         })
         .catch(() => {
           if (!cancelled) setSuggestions(EMPTY_SUGGESTIONS)
@@ -155,6 +183,11 @@ export function AppShell({ children }: PropsWithChildren) {
               if (event.key === 'Escape') setSearchOpen(false)
             }}
             placeholder="搜索图片、标签或用户"
+            type="search"
+            aria-label="搜索图片、标签、主题或用户"
+            aria-expanded={searchOpen}
+            aria-controls="global-search-suggestions"
+            autoComplete="off"
           />
         </form>
         <div className="app-shell__actions">
@@ -165,22 +198,25 @@ export function AppShell({ children }: PropsWithChildren) {
               onClick={() => setThemeMenuOpen((value) => !value)}
               aria-label="主题设置"
               title="主题设置"
+              aria-haspopup="menu"
+              aria-expanded={themeMenuOpen}
+              aria-controls="theme-menu"
             >
               {theme.resolvedTheme === 'dark' ? <Moon size={18} /> : <Sun size={18} />}
             </button>
             {themeMenuOpen && (
-              <div className="app-shell__theme-menu" role="menu" aria-label="主题设置">
-                <button className={theme.mode === 'light' ? 'is-active' : undefined} type="button" onClick={() => { theme.setMode('light'); setThemeMenuOpen(false) }}>
+              <div id="theme-menu" className="app-shell__theme-menu" role="menu" aria-label="主题设置">
+                <button role="menuitemradio" aria-checked={theme.mode === 'light'} className={theme.mode === 'light' ? 'is-active' : undefined} type="button" onClick={() => { theme.setMode('light'); setThemeMenuOpen(false) }}>
                   <Sun size={16} />
                   浅色
                   {theme.mode === 'light' && <Check size={15} />}
                 </button>
-                <button className={theme.mode === 'dark' ? 'is-active' : undefined} type="button" onClick={() => { theme.setMode('dark'); setThemeMenuOpen(false) }}>
+                <button role="menuitemradio" aria-checked={theme.mode === 'dark'} className={theme.mode === 'dark' ? 'is-active' : undefined} type="button" onClick={() => { theme.setMode('dark'); setThemeMenuOpen(false) }}>
                   <Moon size={16} />
                   深色
                   {theme.mode === 'dark' && <Check size={15} />}
                 </button>
-                <button className={theme.mode === 'system' ? 'is-active' : undefined} type="button" onClick={() => { theme.setMode('system'); setThemeMenuOpen(false) }}>
+                <button role="menuitemradio" aria-checked={theme.mode === 'system'} className={theme.mode === 'system' ? 'is-active' : undefined} type="button" onClick={() => { theme.setMode('system'); setThemeMenuOpen(false) }}>
                   <Monitor size={16} />
                   跟随系统
                   {theme.mode === 'system' && <Check size={15} />}
@@ -225,6 +261,7 @@ export function AppShell({ children }: PropsWithChildren) {
             query={keyword}
             recent={recentSearches}
             recommended={suggestions.recommended}
+            trending={suggestions.trending}
             onClearRecent={clearRecentSearches}
             onPick={commitSearch}
           />

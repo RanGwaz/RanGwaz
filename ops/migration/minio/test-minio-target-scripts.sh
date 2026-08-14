@@ -403,6 +403,8 @@ fi
 assert_file_contains "$START_SCRIPT" \
   '--verify-existing' '缺少既有 MinIO 只读验收入口'
 assert_file_contains "$START_SCRIPT" \
+  '--verify-online' '缺少在线 MinIO 严格只读验收入口'
+assert_file_contains "$START_SCRIPT" \
   '本次没有启动、重启、重建或删除容器/数据卷。' \
   '缺少既有 MinIO 只读验收成功声明'
 
@@ -414,7 +416,10 @@ with open(sys.argv[1], "r", encoding="utf-8") as stream:
     source = stream.read()
 
 anchor = source.index("  local existing_container_ids container_id named_container_id")
-branch_start = source.index("  if [[ $VERIFY_EXISTING == true ]]; then", anchor)
+branch_start = source.index(
+    "  if [[ $VERIFY_EXISTING == true || $VERIFY_ONLINE == true ]]; then",
+    anchor,
+)
 branch_else = source.index("\n  else\n", branch_start)
 branch_end = source.index("\n  fi\n\n  local health_status", branch_else)
 verify_branch = source[branch_start:branch_else]
@@ -429,6 +434,49 @@ if forbidden.search(verify_branch) or forbidden.search(common_verification):
 if "start_minio_service" not in source[branch_else:branch_end]:
     raise SystemExit("首次启动路径丢失单服务启动调用")
 PY
+
+cat >"$TEMP_ROOT/project-minio-only.tsv" <<'EOF'
+minio-container-id	minio
+EOF
+validate_project_runtime_membership \
+  "$TEMP_ROOT/project-minio-only.tsv" minio-container-id false >/dev/null
+validate_project_runtime_membership \
+  "$TEMP_ROOT/project-minio-only.tsv" minio-container-id true >/dev/null
+
+cat >"$TEMP_ROOT/project-online.tsv" <<'EOF'
+minio-container-id	minio
+gateway-container-id	gateway
+backend-container-id	backend
+frontend-container-id	frontend
+redis-container-id	redis
+elasticsearch-container-id	elasticsearch
+zookeeper-container-id	zookeeper
+kafka-container-id	kafka
+EOF
+validate_project_runtime_membership \
+  "$TEMP_ROOT/project-online.tsv" minio-container-id true >/dev/null
+if validate_project_runtime_membership \
+  "$TEMP_ROOT/project-online.tsv" minio-container-id false >/dev/null 2>&1; then
+  fail '迁移期验收未拒绝项目中的在线应用服务'
+fi
+
+cat >"$TEMP_ROOT/project-forbidden.tsv" <<'EOF'
+minio-container-id	minio
+mysql-container-id	mysql
+EOF
+if validate_project_runtime_membership \
+  "$TEMP_ROOT/project-forbidden.tsv" minio-container-id true >/dev/null 2>&1; then
+  fail '在线验收未拒绝 local-database profile 服务'
+fi
+
+cat >"$TEMP_ROOT/project-wrong-minio.tsv" <<'EOF'
+other-minio-id	minio
+gateway-container-id	gateway
+EOF
+if validate_project_runtime_membership \
+  "$TEMP_ROOT/project-wrong-minio.tsv" minio-container-id true >/dev/null 2>&1; then
+  fail '在线验收未拒绝不同的 MinIO 容器身份'
+fi
 
 MOCK_BIN="$TEMP_ROOT/bin"
 mkdir -p "$MOCK_BIN"
@@ -460,15 +508,15 @@ actual_free_inodes=$(PATH="$MOCK_BIN:$PATH" read_data_free_inodes /data)
 cat >"$MOCK_BIN/docker" <<'MOCK_DOCKER'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-printf '%s\n' "$*" >>"$MOCK_DOCKER_LOG"
+printf '%s\n' "$*"
 MOCK_DOCKER
 chmod +x "$MOCK_BIN/docker"
-COMPOSE_ARGS=(--env-file /private/env -f /repo/infra/docker-compose.public.yml)
-MOCK_DOCKER_LOG="$TEMP_ROOT/docker.log" \
+COMPOSE_ARGS=(-p vibelo-public --env-file /private/env -f /repo/infra/docker-compose.public.yml)
+actual_start=$(
   PATH="$MOCK_BIN:$PATH" \
-  start_minio_service
-expected_start='compose --env-file /private/env -f /repo/infra/docker-compose.public.yml up -d --pull never --no-build --no-deps minio'
-actual_start=$(<"$TEMP_ROOT/docker.log")
+    start_minio_service
+)
+expected_start='compose -p vibelo-public --env-file /private/env -f /repo/infra/docker-compose.public.yml up -d --pull never --no-build --no-deps minio'
 [[ $actual_start == "$expected_start" ]] ||
   fail "启动参数不安全；期望 <$expected_start>，实际 <$actual_start>"
 
