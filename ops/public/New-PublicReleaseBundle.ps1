@@ -61,8 +61,8 @@ $trackedDirty = @(& $GitExecutable -C $repoRoot status --porcelain=v1 --untracke
 if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect the Git worktree' }
 $untrackedBuildInputs = @(& $GitExecutable -C $repoRoot ls-files --others --exclude-standard -- backend frontend)
 if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect untracked build inputs' }
-if (($trackedDirty | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -ne 0 -or
-    ($untrackedBuildInputs | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -ne 0) {
+if (@($trackedDirty | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -ne 0 -or
+    @($untrackedBuildInputs | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -ne 0) {
     throw 'Commit all tracked changes and remove untracked backend/frontend build inputs first'
 }
 
